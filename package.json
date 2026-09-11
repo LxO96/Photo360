@@ -4,6 +4,6 @@
   "private": true,
   "description": "Insta360 X5 single-lens fisheye print extractor",
   "scripts": {
-    "test": "node --test test/"
+    "test": "node test/run.js"
   }
 }
