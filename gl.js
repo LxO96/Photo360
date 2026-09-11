@@ -78,24 +78,29 @@
     for (const c of layout.circles) {
       const texIndex = lensTextureIndex(state, c.lens);
       if (!ctx.textures[texIndex]) continue;
-      const cell = c.radius * (1 + GLOW_HEADROOM) * 2;
-      const vx = Math.round(c.cx - cell / 2);
-      const vy = Math.round(targetH - c.cy - cell / 2);
-      const vw = Math.round(cell);
-      const vh = Math.round(cell);
-      gl.viewport(vx, vy, vw, vh);
+      // Cell reaches diameter * (1 + 2*GLOW_HEADROOM) so a later task's rim
+      // glow, which extends past the crop edge, has room to render.
+      const cellF = c.radius * 2 * (1 + 2 * GLOW_HEADROOM);
+      const cell = Math.round(cellF);
+      const vx = Math.round(c.cx - cellF / 2);
+      const vy = Math.round(targetH - c.cy - cellF / 2);
+      gl.viewport(vx, vy, cell, cell);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, ctx.textures[texIndex]);
       const u = (n) => gl.getUniformLocation(ctx.composite, n);
       gl.uniform1i(u('uLens'), 0);
       // gl_FragCoord is in absolute framebuffer pixels (see shaders.js), so
       // the shader needs this cell's viewport origin to recover local
-      // center-relative coordinates.
+      // center-relative coordinates. Use the same rounded values as the
+      // viewport call so the uniform and the actual raster agree.
       gl.uniform2f(u('uCellOrigin'), vx, vy);
       gl.uniform2f(u('uCellSize'), cell, cell);
       gl.uniform1f(u('uCircleRadius'), c.radius);
       gl.uniform1f(u('uCropFrac'), Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg));
-      gl.uniform1f(u('uRoll'), Lens.rollFor(state, c.lens) * Math.PI / 180);
+      // The roll mirror is a property of the physical, back-to-back optics,
+      // so it must follow the texture actually bound (physicalLens), not
+      // c.lens, which is just the layout slot -- those differ once swapped.
+      gl.uniform1f(u('uRoll'), Lens.rollFor(state, physicalLens(state, c.lens)) * Math.PI / 180);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.BLEND);
@@ -105,6 +110,15 @@
   function lensTextureIndex(state, lens) {
     const base = lens === 'A' ? 0 : 1;
     return state.swap ? 1 - base : base;
+  }
+
+  // Which physical lens (A or B) backs a given output slot, honouring the
+  // swap. Unlike lensTextureIndex (a texture-array index), this returns the
+  // physical lens label so callers can look up lens-specific properties --
+  // such as the roll mirror -- that belong to the optics, not the layout.
+  function physicalLens(state, slotLens) {
+    if (!state.swap) return slotLens;
+    return slotLens === 'A' ? 'B' : 'A';
   }
 
   // Scale Lens.exportLayout's pixel geometry to fit the given target.
@@ -127,5 +141,5 @@
     };
   }
 
-  return { create, uploadLens, renderComposition, compositionLayout, program };
+  return { create, uploadLens, renderComposition, compositionLayout, lensTextureIndex, physicalLens, program };
 });
