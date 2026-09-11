@@ -59,3 +59,16 @@ test('the highlight weight is superlinear above the knee', () => {
   const b = Edge.highlightWeight(0.7, 0.5, 2);
   assert.ok(b / a > 2, 'a 0.1 rise past the knee should more than double the weight');
 });
+
+test('rimBell with zero width is an impulse at the peak', () => {
+  assert.strictEqual(Edge.rimBell(1.0, 1.0, 0), 1);
+  assert.strictEqual(Edge.rimBell(1.02, 1.0, 0), 0);
+  assert.strictEqual(Edge.rimBell(0.98, 1.0, 0), 0);
+});
+
+test('rimBell zero width returns are not NaN', () => {
+  const a = Edge.rimBell(1.0, 1.0, 0);
+  const b = Edge.rimBell(1.02, 1.0, 0);
+  assert.ok(!isNaN(a), 'rimBell(1.0, 1.0, 0) must not be NaN');
+  assert.ok(!isNaN(b), 'rimBell(1.02, 1.0, 0) must not be NaN');
+});

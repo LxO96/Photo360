@@ -31,6 +31,10 @@
   }
 
   function rimBell(u, peak, width) {
+    if (width <= 0) {
+      // Degenerate to an impulse at the peak
+      return u === peak ? 1 : 0;
+    }
     const t = (u - peak) / width;
     return Math.exp(-t * t);
   }
