@@ -37,6 +37,30 @@
     <h2>Framing</h2>
     <label><span>Field of view <output id="fovOut">180.0°</output></span>
       <input id="fov" type="range" min="120" max="210" step="0.5" value="180"></label>
+    <label><span>Sensors</span>
+      <select id="sensors">
+        <option value="A">Lens A only</option>
+        <option value="B">Lens B only</option>
+        <option value="both">Both</option>
+      </select></label>
+    <label><span>Layout</span>
+      <select id="orientation">
+        <option value="side">Side by side (2:1)</option>
+        <option value="stacked">Stacked (1:2)</option>
+      </select></label>
+    <label><span><input id="swap" type="checkbox"> Swap A and B</span></label>
+    <label><span>Gap <output id="gapOut">0%</output></span>
+      <input id="gap" type="range" min="0" max="25" step="0.5" value="0"></label>
+    <label><span>Margin <output id="marginOut">0%</output></span>
+      <input id="margin" type="range" min="0" max="25" step="0.5" value="0"></label>
+
+    <h2>Level</h2>
+    <label><span>Camera roll <output id="rollOut">0.0°</output></span>
+      <input id="roll" type="range" min="-180" max="180" step="0.1" value="0"></label>
+    <label><span>Lens A nudge <output id="nudgeAOut">0.0°</output></span>
+      <input id="nudgeA" type="range" min="-10" max="10" step="0.1" value="0"></label>
+    <label><span>Lens B nudge <output id="nudgeBOut">0.0°</output></span>
+      <input id="nudgeB" type="range" min="-10" max="10" step="0.1" value="0"></label>
     <div id="readout"></div>
     <div id="error"></div>
   </aside>

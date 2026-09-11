@@ -63,24 +63,69 @@
     ctx.textures[index] = t;
   }
 
-  function renderPreview(ctx, state) {
+  const GLOW_HEADROOM = 0.08;   // fraction of the circle radius reserved outside the edge
+
+  function renderComposition(ctx, state, targetW, targetH) {
     const gl = ctx.gl;
+    const layout = compositionLayout(state, targetW, targetH);
     gl.bindVertexArray(ctx.vao);
     gl.useProgram(ctx.composite);
-    gl.clearColor(0, 0, 0, 1);
+    gl.clearColor(state.background[0], state.background[1], state.background[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    const w = ctx.canvas.width, h = ctx.canvas.height;
-    gl.viewport(0, 0, w, h);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, ctx.textures[0]);
-    gl.uniform1i(gl.getUniformLocation(ctx.composite, 'uLens'), 0);
-    gl.uniform2f(gl.getUniformLocation(ctx.composite, 'uCellSize'), w, h);
-    gl.uniform1f(gl.getUniformLocation(ctx.composite, 'uCircleRadius'), Math.min(w, h) / 2);
-    gl.uniform1f(gl.getUniformLocation(ctx.composite, 'uCropFrac'),
-      Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg));
-    gl.uniform1f(gl.getUniformLocation(ctx.composite, 'uRoll'), 0);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+
+    for (const c of layout.circles) {
+      const texIndex = lensTextureIndex(state, c.lens);
+      if (!ctx.textures[texIndex]) continue;
+      const cell = c.radius * (1 + GLOW_HEADROOM) * 2;
+      const vx = Math.round(c.cx - cell / 2);
+      const vy = Math.round(targetH - c.cy - cell / 2);
+      const vw = Math.round(cell);
+      const vh = Math.round(cell);
+      gl.viewport(vx, vy, vw, vh);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, ctx.textures[texIndex]);
+      const u = (n) => gl.getUniformLocation(ctx.composite, n);
+      gl.uniform1i(u('uLens'), 0);
+      // gl_FragCoord is in absolute framebuffer pixels (see shaders.js), so
+      // the shader needs this cell's viewport origin to recover local
+      // center-relative coordinates.
+      gl.uniform2f(u('uCellOrigin'), vx, vy);
+      gl.uniform2f(u('uCellSize'), cell, cell);
+      gl.uniform1f(u('uCircleRadius'), c.radius);
+      gl.uniform1f(u('uCropFrac'), Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg));
+      gl.uniform1f(u('uRoll'), Lens.rollFor(state, c.lens) * Math.PI / 180);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.disable(gl.BLEND);
   }
 
-  return { create, uploadLens, renderPreview, program };
+  // Which uploaded texture backs a given output slot, honouring the swap.
+  function lensTextureIndex(state, lens) {
+    const base = lens === 'A' ? 0 : 1;
+    return state.swap ? 1 - base : base;
+  }
+
+  // Scale Lens.exportLayout's pixel geometry to fit the given target.
+  function compositionLayout(state, targetW, targetH) {
+    const d = 1000;  // arbitrary reference diameter; everything is scaled below
+    const g = Lens.exportLayout({
+      circleDiameter: d,
+      sensors: state.sensors,
+      orientation: state.orientation,
+      gapPx: state.gapFrac * d,
+      marginPx: state.marginFrac * d,
+    });
+    const s = Math.min(targetW / g.width, targetH / g.height);
+    const offX = (targetW - g.width * s) / 2;
+    const offY = (targetH - g.height * s) / 2;
+    return {
+      circles: g.circles.map((c) => ({
+        lens: c.lens, cx: offX + c.cx * s, cy: offY + c.cy * s, radius: (d / 2) * s,
+      })),
+    };
+  }
+
+  return { create, uploadLens, renderComposition, compositionLayout, program };
 });

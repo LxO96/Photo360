@@ -15,6 +15,7 @@
   const COMPOSITE_FS = `#version 300 es
   precision highp float;
   uniform sampler2D uLens;      // one square lens frame, S x S
+  uniform vec2  uCellOrigin;    // viewport origin in absolute framebuffer pixels
   uniform vec2  uCellSize;      // viewport size in pixels
   uniform float uCircleRadius;  // output circle radius in pixels
   uniform float uCropFrac;      // crop radius as a fraction of the image circle
@@ -30,7 +31,11 @@
   }
 
   void main() {
-    vec2 p = gl_FragCoord.xy - uCellSize * 0.5;
+    // gl_FragCoord.xy is in absolute framebuffer pixels, not relative to the
+    // current viewport -- when the composition draws several circles into
+    // their own sub-viewports (Task 6), the cell's origin must be
+    // subtracted first to recover the cell-local, center-relative position.
+    vec2 p = gl_FragCoord.xy - uCellOrigin - uCellSize * 0.5;
     float r = length(p);
     float u = r / uCircleRadius;
     if (u > 1.0) { fragColor = vec4(0.0); return; }

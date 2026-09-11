@@ -6,12 +6,33 @@
   const fileEl = document.getElementById('file');
   const fovEl = document.getElementById('fov');
   const fovOut = document.getElementById('fovOut');
+  const sensorsEl = document.getElementById('sensors');
+  const orientationEl = document.getElementById('orientation');
+  const swapEl = document.getElementById('swap');
+  const gapEl = document.getElementById('gap');
+  const gapOut = document.getElementById('gapOut');
+  const marginEl = document.getElementById('margin');
+  const marginOut = document.getElementById('marginOut');
+  const rollEl = document.getElementById('roll');
+  const rollOut = document.getElementById('rollOut');
+  const nudgeAEl = document.getElementById('nudgeA');
+  const nudgeAOut = document.getElementById('nudgeAOut');
+  const nudgeBEl = document.getElementById('nudgeB');
+  const nudgeBOut = document.getElementById('nudgeBOut');
   const readout = document.getElementById('readout');
   const errorEl = document.getElementById('error');
 
   const state = {
     fovDeg: 180, thetaMaxDeg: Lens.THETA_MAX_DEG,
-    sensors: 'A', sourceName: '', sourceLensSize: 0,
+    rollDeg: 0,
+    nudgeDeg: { A: 0, B: 0 },
+    sensors: 'A', swap: false,
+    orientation: 'side',
+    gapFrac: 0, marginFrac: 0,
+    background: [0, 0, 0],
+    sourceName: '', sourceLensSize: 0,
+    edge: { ...Edge.PRESETS.x1classic },
+    tone: { exposureEv: 0, contrast: 0, saturation: 0 },
   };
   let ctx = null;
 
@@ -85,10 +106,26 @@
 
   function render() {
     if (!ctx || !state.sourceLensSize) return;
-    const side = Math.min(canvas.parentElement.clientWidth, canvas.parentElement.clientHeight) - 48;
-    canvas.width = canvas.height = Math.max(256, Math.floor(side));
-    canvas.style.width = canvas.style.height = canvas.width + 'px';
-    GL.renderPreview(ctx, state);
+    const avail = Math.min(canvas.parentElement.clientWidth, canvas.parentElement.clientHeight) - 48;
+    const layout = Lens.exportLayout({
+      circleDiameter: 1000,
+      sensors: state.sensors,
+      orientation: state.orientation,
+      gapPx: state.gapFrac * 1000,
+      marginPx: state.marginFrac * 1000,
+    });
+    const aspect = layout.width / layout.height;
+    const fit = Math.max(256, Math.floor(avail));
+    if (aspect >= 1) {
+      canvas.width = fit;
+      canvas.height = Math.round(fit / aspect);
+    } else {
+      canvas.height = fit;
+      canvas.width = Math.round(fit * aspect);
+    }
+    canvas.style.width = canvas.width + 'px';
+    canvas.style.height = canvas.height + 'px';
+    GL.renderComposition(ctx, state, canvas.width, canvas.height);
     const c = Lens.coverage(state.fovDeg, state.thetaMaxDeg);
     readout.textContent = c.overlapDeg === 0
       ? 'Exactly one hemisphere — nothing duplicated with the other lens.'
@@ -104,6 +141,51 @@
     render();
   });
 
+  sensorsEl.addEventListener('input', () => {
+    state.sensors = sensorsEl.value;
+    render();
+  });
+
+  orientationEl.addEventListener('input', () => {
+    state.orientation = orientationEl.value;
+    render();
+  });
+
+  swapEl.addEventListener('input', () => {
+    state.swap = swapEl.checked;
+    render();
+  });
+
+  gapEl.addEventListener('input', () => {
+    state.gapFrac = parseFloat(gapEl.value) / 100;
+    gapOut.textContent = gapEl.value + '%';
+    render();
+  });
+
+  marginEl.addEventListener('input', () => {
+    state.marginFrac = parseFloat(marginEl.value) / 100;
+    marginOut.textContent = marginEl.value + '%';
+    render();
+  });
+
+  rollEl.addEventListener('input', () => {
+    state.rollDeg = parseFloat(rollEl.value);
+    rollOut.textContent = state.rollDeg.toFixed(1) + '°';
+    render();
+  });
+
+  nudgeAEl.addEventListener('input', () => {
+    state.nudgeDeg.A = parseFloat(nudgeAEl.value);
+    nudgeAOut.textContent = state.nudgeDeg.A.toFixed(1) + '°';
+    render();
+  });
+
+  nudgeBEl.addEventListener('input', () => {
+    state.nudgeDeg.B = parseFloat(nudgeBEl.value);
+    nudgeBOut.textContent = state.nudgeDeg.B.toFixed(1) + '°';
+    render();
+  });
+
   dropEl.addEventListener('click', () => fileEl.click());
   fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));
   document.addEventListener('dragover', (e) => { e.preventDefault(); });
@@ -113,5 +195,5 @@
   });
   window.addEventListener('resize', render);
 
-  window.App = { loadFile, state, render };
+  window.App = { loadFile, state, render, rollFor: Lens.rollFor };
 })();

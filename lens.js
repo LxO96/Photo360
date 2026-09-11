@@ -78,11 +78,18 @@
     return { width, height, circles };
   }
 
+  // The two lenses are back-to-back and their azimuths run in opposite
+  // directions, so a single camera roll appears mirrored between them.
+  function rollFor(state, lens) {
+    const base = lens === 'A' ? state.rollDeg : -state.rollDeg;
+    return base + state.nudgeDeg[lens];
+  }
+
   function exportFilename(sourceName, lensLabel, fovDeg, ext) {
     const stem = sourceName.replace(/\.[^.]+$/, '');
     const fov = String(Math.round(fovDeg * 10) / 10).replace('.', '-');
     return `${stem}_${lensLabel}_${fov}deg.${ext}`;
   }
 
-  return { THETA_MAX_DEG, radiusForFov, fovForRadius, coverage, detectLayout, exportLayout, exportFilename };
+  return { THETA_MAX_DEG, radiusForFov, fovForRadius, coverage, detectLayout, exportLayout, exportFilename, rollFor };
 });
