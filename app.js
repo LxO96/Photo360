@@ -15,30 +15,62 @@
   };
   let ctx = null;
 
+  // The X5's own .insp files carry several megabytes of embedded metadata
+  // (gain-map / preview APPn segments) before the SOF marker that carries
+  // the frame size, so the probe has to read a generous head -- still
+  // trivial next to decoding the full 283MB frame just to read two numbers.
+  const HEAD_PROBE_BYTES = 6 * 1024 * 1024;
+
   function fail(msg) { errorEl.textContent = msg; }
+
+  // Read the frame dimensions without decoding pixel data: parse the JPEG
+  // header directly, and only fall back to a full decode if that fails
+  // (e.g. an unusual file whose SOF sits beyond the probed head).
+  async function probeSize(blob, buf) {
+    const head = new Uint8Array(buf, 0, Math.min(buf.byteLength, HEAD_PROBE_BYTES));
+    const size = Exif.readJpegSize(head);
+    if (size) return size;
+    const probe = await createImageBitmap(blob);
+    const fallback = { width: probe.width, height: probe.height };
+    probe.close();
+    return fallback;
+  }
 
   async function loadFile(file) {
     errorEl.textContent = '';
     try {
       const buf = await file.arrayBuffer();
       const blob = new Blob([buf], { type: 'image/jpeg' });  // .insp has no MIME type
-      const probe = await createImageBitmap(blob);
-      const layout = Lens.detectLayout(probe.width, probe.height);
-      probe.close();
+      const size = await probeSize(blob, buf);
+      const layout = Lens.detectLayout(size.width, size.height);
       if (layout.kind === 'unsupported') {
         fail('Not a fisheye file: expected a 2:1 dual fisheye or a 1:1 single fisheye.');
         return;
       }
       if (!ctx) ctx = GL.create(canvas);
-      if (layout.lensSize > ctx.maxTextureSize) {
+      const overLimit = layout.lensSize > ctx.maxTextureSize;
+      if (overLimit) {
         fail('This GPU caps textures at ' + ctx.maxTextureSize +
-             ' px; the image will be downscaled from ' + layout.lensSize + ' px.');
+             ' px; the image is being downscaled from ' + layout.lensSize + ' px.');
       }
+      // imageOrientation: 'flipY' makes GL texture t=0 the bottom of the
+      // image, matching gl_FragCoord.y (increases upward). Tried
+      // gl.pixelStorei(UNPACK_FLIP_Y_WEBGL) first, but that pixel-store
+      // flag has no effect on ImageBitmap sources -- this option, baked in
+      // at decode time, is what actually flips the sampled orientation.
+      const decodeOpts = overLimit
+        ? { imageOrientation: 'flipY', resizeWidth: ctx.maxTextureSize,
+            resizeHeight: ctx.maxTextureSize, resizeQuality: 'high' }
+        : { imageOrientation: 'flipY' };
       for (let i = 0; i < layout.lenses.length; i++) {
         const o = layout.lenses[i];
-        const half = await createImageBitmap(blob, o.x, o.y, layout.lensSize, layout.lensSize);
-        GL.uploadLens(ctx, i, half);
-        half.close();
+        const half = await createImageBitmap(
+          blob, o.x, o.y, layout.lensSize, layout.lensSize, decodeOpts);
+        try {
+          GL.uploadLens(ctx, i, half);
+        } finally {
+          half.close();
+        }
       }
       state.sourceName = file.name;
       state.sourceLensSize = layout.lensSize;
