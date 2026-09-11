@@ -76,17 +76,16 @@
     gl.blendFunc(gl.ONE, gl.ONE);
 
     for (const c of layout.circles) {
-      const texIndex = lensTextureIndex(state, c.lens);
-      if (!ctx.textures[texIndex]) continue;
+      const draw = circleDraw(state, c.lens);
+      if (!ctx.textures[draw.texIndex]) continue;
       // Cell reaches diameter * (1 + 2*GLOW_HEADROOM) so a later task's rim
       // glow, which extends past the crop edge, has room to render.
-      const cellF = c.radius * 2 * (1 + 2 * GLOW_HEADROOM);
-      const cell = Math.round(cellF);
-      const vx = Math.round(c.cx - cellF / 2);
-      const vy = Math.round(targetH - c.cy - cellF / 2);
+      const cell = Math.round(c.radius * 2 * (1 + 2 * GLOW_HEADROOM));
+      const vx = Math.round(c.cx - cell / 2);
+      const vy = Math.round(targetH - c.cy - cell / 2);
       gl.viewport(vx, vy, cell, cell);
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, ctx.textures[texIndex]);
+      gl.bindTexture(gl.TEXTURE_2D, ctx.textures[draw.texIndex]);
       const u = (n) => gl.getUniformLocation(ctx.composite, n);
       gl.uniform1i(u('uLens'), 0);
       // gl_FragCoord is in absolute framebuffer pixels (see shaders.js), so
@@ -97,10 +96,7 @@
       gl.uniform2f(u('uCellSize'), cell, cell);
       gl.uniform1f(u('uCircleRadius'), c.radius);
       gl.uniform1f(u('uCropFrac'), Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg));
-      // The roll mirror is a property of the physical, back-to-back optics,
-      // so it must follow the texture actually bound (physicalLens), not
-      // c.lens, which is just the layout slot -- those differ once swapped.
-      gl.uniform1f(u('uRoll'), Lens.rollFor(state, physicalLens(state, c.lens)) * Math.PI / 180);
+      gl.uniform1f(u('uRoll'), draw.rollDeg * Math.PI / 180);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.BLEND);
@@ -119,6 +115,19 @@
   function physicalLens(state, slotLens) {
     if (!state.swap) return slotLens;
     return slotLens === 'A' ? 'B' : 'A';
+  }
+
+  // The single source of truth for what a given output slot draws: which
+  // texture backs it, and what roll its pixels need. Both are driven by the
+  // same physical lens, so they can never disagree the way they did before
+  // (texture chosen by physical lens via the swap, roll looked up by the
+  // slot label -- a bug once those diverged under swap).
+  function circleDraw(state, slotLens) {
+    const physical = physicalLens(state, slotLens);
+    return {
+      texIndex: lensTextureIndex(state, slotLens),
+      rollDeg: Lens.rollFor(state, physical),
+    };
   }
 
   // Scale Lens.exportLayout's pixel geometry to fit the given target.
@@ -141,5 +150,5 @@
     };
   }
 
-  return { create, uploadLens, renderComposition, compositionLayout, lensTextureIndex, physicalLens, program };
+  return { create, uploadLens, renderComposition, compositionLayout, lensTextureIndex, physicalLens, circleDraw, program };
 });
