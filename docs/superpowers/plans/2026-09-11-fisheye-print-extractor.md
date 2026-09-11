@@ -2077,3 +2077,159 @@ git commit -m "docs: add README and rim verification tool"
 **Type consistency.** `state` is defined once in Task 6 and every later task reads the same field names. `Lens.rollFor`, `Lens.exportLayout`, `Lens.exportFilename`, `Edge.terminator`, `Edge.rimBell`, `Edge.dispersionPeaks`, `Edge.applyTone`, `Exif.readTags`, `Exif.buildApp1` and `Exif.reattach` are each defined in exactly one task and used under those exact names afterwards. `GL.renderPreview` exists only in Task 5 and is explicitly deleted in Task 6, which is called out in that task's steps.
 
 **Known forward references, each resolved in its own step:** `Exif.reattach` is stubbed in Task 12 Step 3 and the stub is deleted in Task 13 Step 5. `Edge.PRESETS.x1classic` ships placeholder numbers in Task 4 and is overwritten with fitted values in Task 9 Step 4.
+
+---
+
+### Task 15: Stacked 1:2 input and per-camera lens calibration
+
+**Added 2026-09-12**, after the user supplied two Insta360 ONE X reference files and asked that
+the tool accept them as input, not merely use them as references for the edge look.
+
+**Files:**
+- Modify: `lens.js`, `test/lens.test.js`, `app.js`, `README.md` (if it exists by then)
+- Test: `test/lens.test.js`
+
+**Interfaces:**
+- Consumes: `Exif.readJpegSize`, `Lens.detectLayout`.
+- Produces:
+  - `Lens.detectLayout(width, height)` gains a **stacked dual** case: aspect 1:2 → `{kind: 'dual', lensSize: width, lenses: [{x: 0, y: 0}, {x: 0, y: width}]}`. The existing 2:1 and 1:1 cases are unchanged.
+  - `Lens.CALIBRATIONS: {[model: string]: number}` mapping an EXIF camera model to its `thetaMaxDeg`.
+  - `Lens.calibrationFor(model: string|null): {thetaMaxDeg: number, model: string, confident: boolean}` — falls back to the X5 default with `confident: false` when the model is unknown.
+
+**Why this task exists:** the two ONE X files are stacked 1:2, which `detectLayout` rejects as
+unsupported. Accepting them also means the FOV slider's degree labels are only honest if the
+calibration follows the camera: the two bodies have materially different lenses.
+
+**Measured calibration** (same overlap-correlation method as the X5, run on
+`Testfiles/Outputs/IMG_20210605_193319_00_019.jpg`):
+
+| Camera | EXIF `Model` | θmax | Full FOV | 180° at | Confidence |
+|---|---|---|---|---|---|
+| Insta360 X5 | `Insta360 X5` | 105° | 210° | 0.857 R | Good — three files agree at 104–107° |
+| Insta360 ONE X | `Insta360 One2` | 112.5° | 225° | 0.800 R | **Provisional** — one usable file, peak correlation 0.60 |
+
+The ONE X figure is a single-file estimate and must be presented as such: the other ONE X
+reference has a circle clipped by its frame, so its true circle radius cannot be recovered and
+it cannot corroborate the fit. Do not present 112.5° with the same confidence as 105°.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `test/lens.test.js`:
+
+```js
+test('a stacked 1:2 file is detected as dual fisheye', () => {
+  const l = Lens.detectLayout(1520, 3040);
+  assert.strictEqual(l.kind, 'dual');
+  assert.strictEqual(l.lensSize, 1520);
+  assert.deepStrictEqual(l.lenses, [{ x: 0, y: 0 }, { x: 0, y: 1520 }]);
+});
+
+test('the full-size stacked reference is detected as dual fisheye', () => {
+  const l = Lens.detectLayout(3040, 6080);
+  assert.strictEqual(l.kind, 'dual');
+  assert.strictEqual(l.lensSize, 3040);
+  assert.deepStrictEqual(l.lenses, [{ x: 0, y: 0 }, { x: 0, y: 3040 }]);
+});
+
+test('side-by-side detection is unchanged by the stacked case', () => {
+  const l = Lens.detectLayout(11904, 5952);
+  assert.strictEqual(l.kind, 'dual');
+  assert.deepStrictEqual(l.lenses, [{ x: 0, y: 0 }, { x: 5952, y: 0 }]);
+});
+
+test('the X5 calibration is the measured 105 degrees', () => {
+  const c = Lens.calibrationFor('Insta360 X5');
+  assert.strictEqual(c.thetaMaxDeg, 105);
+  assert.strictEqual(c.confident, true);
+});
+
+test('the ONE X calibration is applied but flagged as provisional', () => {
+  const c = Lens.calibrationFor('Insta360 One2');
+  assert.strictEqual(c.thetaMaxDeg, 112.5);
+  assert.strictEqual(c.confident, false);
+});
+
+test('an unknown camera falls back to the X5 default, unconfidently', () => {
+  const c = Lens.calibrationFor('Some Other Camera');
+  assert.strictEqual(c.thetaMaxDeg, Lens.THETA_MAX_DEG);
+  assert.strictEqual(c.confident, false);
+});
+
+test('a missing model falls back the same way', () => {
+  assert.strictEqual(Lens.calibrationFor(null).thetaMaxDeg, Lens.THETA_MAX_DEG);
+});
+
+test('the two calibrations put 180 degrees at different crop radii', () => {
+  const x5 = Lens.radiusForFov(180, Lens.calibrationFor('Insta360 X5').thetaMaxDeg);
+  const one = Lens.radiusForFov(180, Lens.calibrationFor('Insta360 One2').thetaMaxDeg);
+  assert.ok(Math.abs(x5 - 90 / 105) < 1e-9);
+  assert.ok(Math.abs(one - 0.8) < 1e-9);
+  assert.ok(one < x5, 'the wider ONE X lens must crop deeper for the same FOV');
+});
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
+
+Run: `npm test`
+Expected: FAIL — stacked detection returns `unsupported`; `Lens.calibrationFor` is not a function.
+
+- [ ] **Step 3: Implement in `lens.js`**
+
+Extend `detectLayout` with the stacked branch (guarding that the 1:1 case is tested before
+either 2:1 or 1:2, so a square image cannot fall into a dual branch), and add:
+
+```js
+  // theta-max per camera body, measured by correlating the two lenses' overlap
+  // annuli. The X5 figure is corroborated by three files; the ONE X figure comes
+  // from a single usable reference, so it is applied but flagged unconfident.
+  const CALIBRATIONS = {
+    'Insta360 X5': { thetaMaxDeg: 105, confident: true },
+    'Insta360 One2': { thetaMaxDeg: 112.5, confident: false },
+  };
+
+  function calibrationFor(model) {
+    const key = (model || '').replace(/\0+$/, '').trim();
+    const hit = CALIBRATIONS[key];
+    if (hit) return { thetaMaxDeg: hit.thetaMaxDeg, model: key, confident: hit.confident };
+    return { thetaMaxDeg: THETA_MAX_DEG, model: key, confident: false };
+  }
+```
+
+Note the trailing-NUL strip: EXIF ASCII values are NUL-padded in the real files.
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `npm test`
+Expected: PASS, with the count risen by 8.
+
+- [ ] **Step 5: Wire it into `app.js`**
+
+On load, read the camera model from the source file's EXIF (`exif.js` already parses JPEG
+markers; extend it to expose `Model` if it does not already, or reuse `Exif.readTags` once
+Task 13 lands — whichever exists at the time), set `state.thetaMaxDeg` from
+`Lens.calibrationFor`, and show the camera and calibration in the UI near the FOV readout.
+
+When `confident` is false, say so plainly in the UI — e.g. *"Insta360 ONE X — 225° lens
+(provisional calibration; adjust below if the 180° crop looks wrong)"* — and make sure the
+advanced `thetaMaxDeg` override is reachable. Never present a provisional number as measured
+fact.
+
+- [ ] **Step 6: Verify in the browser**
+
+Serve over HTTP and load each of: `Testfiles/Sunscreen.insp` (2:1), 
+`Testfiles/Outputs/IMG_20210605_193319_00_019.jpg` (1:2 stacked), and
+`Testfiles/Outputs/IMG_20210721_192852_00_141.jpg` (1:2 stacked).
+
+Expected: all three load; the stacked files produce two circles; the FOV readout and
+calibration line reflect the right camera for each; the roll mirror still behaves correctly on
+the stacked files (the ONE X lenses are back-to-back with the same mirrored azimuth
+relationship — measured offset 183°, mirrored).
+
+Report the detected layout, lens size, calibration and duplication readout for each file.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add lens.js test/lens.test.js app.js
+git commit -m "feat: accept stacked 1:2 dual fisheye and calibrate per camera"
+```
