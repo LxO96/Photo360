@@ -142,6 +142,10 @@
     gl.uniform1f(uu('uBins'), bins);
     const spreadBins = (state.edge.glowSpreadDeg || 0) / 360 * bins;
     gl.uniform1f(uu('uSpreadBins'), spreadBins);
+    // The single place this constant is threaded into the shader -- see
+    // Edge.MAX_BLUR_RADIUS_BINS for why the GLSL loop bound and the JS
+    // kernel-radius clamp must always agree.
+    gl.uniform1f(uu('uMaxRadiusBins'), Edge.MAX_BLUR_RADIUS_BINS);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

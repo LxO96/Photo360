@@ -203,10 +203,10 @@
   // exact opts baked into test/fixtures/parity-input.json, and compares
   // the readback against that fixture's expected values. Requires the page
   // to be served over HTTP (fetch of a local file fails under file://).
-  async function checkParity() {
+  async function checkParity(fixtureUrl) {
     if (!ctx) ctx = GL.create(canvas);
     const gl = ctx.gl;
-    const res = await fetch('test/fixtures/parity-input.json');
+    const res = await fetch(fixtureUrl || 'test/fixtures/parity-input.json');
     const fixture = await res.json();
     const bins = fixture.opts.bins;
 
@@ -240,6 +240,7 @@
     gl.uniform1i(uu('uProfile'), 0);
     gl.uniform1f(uu('uBins'), bins);
     gl.uniform1f(uu('uSpreadBins'), fixture.spreadBins);
+    gl.uniform1f(uu('uMaxRadiusBins'), Edge.MAX_BLUR_RADIUS_BINS);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 

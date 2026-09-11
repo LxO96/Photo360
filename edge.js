@@ -46,6 +46,15 @@
   const PROFILE_BINS = 2048;
   const LUMA = { r: 0.2126, g: 0.7152, b: 0.0722 };
 
+  // Hard ceiling on the angular blur's kernel radius, in bins. Both
+  // blurProfileAngular (below) and PROFILE_BLUR_FS (shaders.js, via the
+  // uMaxRadiusBins uniform gl.js sets from this same constant) clamp to
+  // it, so the two implementations can never silently diverge past this
+  // point the way an unbounded JS kernel vs. a fixed-size GLSL loop once
+  // could. Sized to cover the full glowSpreadDeg slider (0-45 deg) at
+  // PROFILE_BINS bins: 45/360 * 2048 * 3 = 768.
+  const MAX_BLUR_RADIUS_BINS = 768;
+
   // Reference implementation of render pass 1. The GLSL in shaders.js
   // mirrors this; test/parity.test.js keeps the two honest.
   function buildRimProfile(sample, opts) {
@@ -71,7 +80,7 @@
 
   function blurProfileAngular(profile, bins, spreadBins) {
     if (spreadBins <= 0) return profile.slice();
-    const radius = Math.max(1, Math.ceil(spreadBins * 3));
+    const radius = Math.min(MAX_BLUR_RADIUS_BINS, Math.max(1, Math.ceil(spreadBins * 3)));
     const kernel = new Float64Array(radius * 2 + 1);
     let sum = 0;
     for (let k = -radius; k <= radius; k++) {
@@ -115,5 +124,8 @@
     },
   };
 
-  return { DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight, PROFILE_BINS, buildRimProfile, blurProfileAngular, PRESETS };
+  return {
+    DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight,
+    PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS,
+  };
 });

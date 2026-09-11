@@ -141,3 +141,43 @@ test('a zero spread leaves the profile untouched', () => {
   const b = Edge.blurProfileAngular(p, bins, 0);
   assert.deepStrictEqual(Array.from(b), Array.from(p));
 });
+
+// Task 7 review, Finding 1: PROFILE_BLUR_FS's GLSL loop has a bounded
+// extent (it must -- GPU loops can't be unbounded), so blurProfileAngular's
+// kernel radius must be clamped to the exact same ceiling or a wide enough
+// glowSpreadDeg silently diverges between the shader and this reference
+// (no NaN, no crash -- the glow just quietly stops widening in the GLSL
+// while the JS reference keeps going). These tests pin that the clamp
+// exists, and that gl.js wires the *same* constant into the shader rather
+// than a second hardcoded number that could drift from this one.
+test('MAX_BLUR_RADIUS_BINS is a sane, finite bound', () => {
+  assert.ok(Number.isFinite(Edge.MAX_BLUR_RADIUS_BINS));
+  assert.ok(Edge.MAX_BLUR_RADIUS_BINS > 0);
+});
+
+test('blurProfileAngular clamps its kernel radius to MAX_BLUR_RADIUS_BINS instead of growing unboundedly', () => {
+  const bins = 2048;
+  const p = new Float32Array(bins * 4);
+  p[0] = 1;
+  // An unclamped radius here would be far larger than MAX_BLUR_RADIUS_BINS
+  // (ceil(100000 * 3) = 300000), and the O(bins * radius) double loop over
+  // 2048 * 300000 pairs would take seconds; a clamped radius keeps this
+  // fast. This is a behavioural proxy for "the clamp actually fires",
+  // since blurProfileAngular does not expose its kernel radius directly.
+  const start = Date.now();
+  const b = Edge.blurProfileAngular(p, bins, 100000);
+  const elapsedMs = Date.now() - start;
+  assert.ok(elapsedMs < 2000,
+    `blurProfileAngular took ${elapsedMs}ms for an extreme spreadBins -- ` +
+    'the radius clamp does not appear to be firing');
+  assert.strictEqual(b.length, bins * 4);
+});
+
+test('gl.js wires PROFILE_BLUR_FS\'s uMaxRadiusBins from Edge.MAX_BLUR_RADIUS_BINS, not a duplicated literal', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const glSrc = fs.readFileSync(path.join(__dirname, '..', 'gl.js'), 'utf8');
+  assert.ok(glSrc.includes('Edge.MAX_BLUR_RADIUS_BINS'),
+    'gl.js must reference Edge.MAX_BLUR_RADIUS_BINS when setting the blur uniform, ' +
+    'so the GLSL loop bound and the JS kernel clamp can never drift apart');
+});
