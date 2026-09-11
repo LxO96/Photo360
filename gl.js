@@ -33,15 +33,135 @@
       premultipliedAlpha: false,
     });
     if (!gl) throw new Error('WEBGL2_UNAVAILABLE');
+    // An RGBA16F render target (the profile passes' output) needs this --
+    // without it, framebuffers with a float colour attachment are
+    // incomplete and rendering to them silently fails.
+    if (!gl.getExtension('EXT_color_buffer_float')) {
+      throw new Error('FLOAT_FBO_UNAVAILABLE');
+    }
     const ctx = {
       gl,
       canvas,
       maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
       textures: [null, null],
       composite: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_FS),
+      profileBuild: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_FS),
+      profileBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BLUR_FS),
       vao: gl.createVertexArray(),
+      profileTargets: [null, null],  // lazily allocated ping-pong RGBA16F targets
     };
     return ctx;
+  }
+
+  // Allocate one bins x 1 RGBA16F texture + framebuffer pair. NEAREST
+  // filtering only: LINEAR on a float texture needs the
+  // OES_texture_float_linear extension (not guaranteed), and the consuming
+  // shader floors the bin index anyway, so linear filtering buys nothing.
+  // The texture is tagged with its own bin count (`tex.bins`) so
+  // `readProfile` can size its readback without a separate bins argument --
+  // useful since the parity check (app.js) renders profiles at a different
+  // bin count than the running app's `Edge.PROFILE_BINS`.
+  function makeProfileTarget(gl, bins) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, bins, 1, 0, gl.RGBA, gl.FLOAT, null);
+    tex.bins = bins;
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, bins };
+  }
+
+  function ensureProfileTargets(ctx, bins) {
+    if (ctx.profileTargets[0] && ctx.profileTargets[0].bins === bins) return;
+    const gl = ctx.gl;
+    for (let i = 0; i < 2; i++) {
+      if (ctx.profileTargets[i]) {
+        gl.deleteTexture(ctx.profileTargets[i].tex);
+        gl.deleteFramebuffer(ctx.profileTargets[i].fbo);
+      }
+      ctx.profileTargets[i] = makeProfileTarget(gl, bins);
+    }
+  }
+
+  // Radial sampling window for the rim measurement: a thin annulus just
+  // inside the crop edge (u=1.0), matched to the values baked into
+  // test/fixtures/parity-input.json so the parity check exercises the same
+  // sampling density this pass actually uses.
+  const RADIAL_SAMPLES = 8;
+  const U_MIN = 0.94;
+  const U_MAX = 1.0;
+
+  // Renders the two rim-profile passes (build, then angular blur) for one
+  // lens circle into a bins x 1 RGBA16F texture and returns it. The
+  // returned texture belongs to ctx's ping-pong pair and is reused on the
+  // next call -- callers must finish using it (e.g. bind it for the
+  // composite draw) before calling buildProfile again.
+  function buildProfile(ctx, state, texIndex, rollRad) {
+    const gl = ctx.gl;
+    const bins = Edge.PROFILE_BINS;
+    ensureProfileTargets(ctx, bins);
+    const [a, b] = ctx.profileTargets;
+
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    gl.viewport(0, 0, bins, 1);
+
+    // Pass 1: build the raw per-bin highlight-weighted profile. Samples the
+    // lens the same way COMPOSITE_FS does (same uCropFrac, same roll
+    // convention) so the glow this drives lines up with the image it came
+    // from -- see PROFILE_BUILD_FS / sampleLens in shaders.js.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, a.fbo);
+    gl.useProgram(ctx.profileBuild);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, ctx.textures[texIndex]);
+    const ub = (n) => gl.getUniformLocation(ctx.profileBuild, n);
+    gl.uniform1i(ub('uLens'), 0);
+    gl.uniform1f(ub('uBins'), bins);
+    gl.uniform1i(ub('uRadialSamples'), RADIAL_SAMPLES);
+    gl.uniform1f(ub('uUMin'), U_MIN);
+    gl.uniform1f(ub('uUMax'), U_MAX);
+    gl.uniform1f(ub('uKnee'), state.edge.highlightKnee);
+    gl.uniform1f(ub('uExponent'), state.edge.highlightExponent);
+    gl.uniform1f(ub('uCropFrac'), Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg));
+    gl.uniform1f(ub('uRoll'), rollRad);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // Pass 2: blur the raw profile angularly, wrapping around the circle.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, b.fbo);
+    gl.useProgram(ctx.profileBlur);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, a.tex);
+    const uu = (n) => gl.getUniformLocation(ctx.profileBlur, n);
+    gl.uniform1i(uu('uProfile'), 0);
+    gl.uniform1f(uu('uBins'), bins);
+    const spreadBins = (state.edge.glowSpreadDeg || 0) / 360 * bins;
+    gl.uniform1f(uu('uSpreadBins'), spreadBins);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return b.tex;
+  }
+
+  // Reads a bins x 1 profile texture back as a Float32Array of bins*4
+  // floats (RGBA per bin). `tex.bins` is set by makeProfileTarget; used by
+  // the browser-side parity check and by nothing else in the running app.
+  function readProfile(ctx, tex) {
+    const gl = ctx.gl;
+    const bins = tex.bins || Edge.PROFILE_BINS;
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const out = new Float32Array(bins * 4);
+    gl.readPixels(0, 0, bins, 1, gl.RGBA, gl.FLOAT, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo);
+    return out;
   }
 
   function uploadLens(ctx, index, bitmap) {
@@ -78,14 +198,28 @@
     for (const c of layout.circles) {
       const draw = circleDraw(state, c.lens);
       if (!ctx.textures[draw.texIndex]) continue;
+      const rollRad = draw.rollDeg * Math.PI / 180;
+      // buildProfile renders into ctx's own bins x 1 framebuffer (its own
+      // coordinate frame, unrelated to this viewport) before the composite
+      // draw below reclaims the GL state (program, viewport, vao) it needs.
+      const profileTex = buildProfile(ctx, state, draw.texIndex, rollRad);
       // Cell reaches diameter * (1 + 2*GLOW_HEADROOM) so a later task's rim
       // glow, which extends past the crop edge, has room to render.
       const cell = Math.round(c.radius * 2 * (1 + 2 * GLOW_HEADROOM));
       const vx = Math.round(c.cx - cell / 2);
       const vy = Math.round(targetH - c.cy - cell / 2);
+      gl.bindVertexArray(ctx.vao);
+      gl.useProgram(ctx.composite);
+      // buildProfile disables blending for its own passes; the composite
+      // draw below needs it back on (additive, so overlapping cells don't
+      // clobber each other's background-filled corners).
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
       gl.viewport(vx, vy, cell, cell);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, ctx.textures[draw.texIndex]);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, profileTex);
       const u = (n) => gl.getUniformLocation(ctx.composite, n);
       gl.uniform1i(u('uLens'), 0);
       // gl_FragCoord is in absolute framebuffer pixels (see shaders.js), so
@@ -96,7 +230,7 @@
       gl.uniform2f(u('uCellSize'), cell, cell);
       gl.uniform1f(u('uCircleRadius'), c.radius);
       gl.uniform1f(u('uCropFrac'), Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg));
-      gl.uniform1f(u('uRoll'), draw.rollDeg * Math.PI / 180);
+      gl.uniform1f(u('uRoll'), rollRad);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.BLEND);
@@ -150,5 +284,8 @@
     };
   }
 
-  return { create, uploadLens, renderComposition, compositionLayout, lensTextureIndex, physicalLens, circleDraw, program };
+  return {
+    create, uploadLens, renderComposition, compositionLayout, lensTextureIndex,
+    physicalLens, circleDraw, program, buildProfile, readProfile, makeProfileTarget,
+  };
 });

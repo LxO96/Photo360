@@ -100,7 +100,9 @@
     } catch (e) {
       fail(e.message === 'WEBGL2_UNAVAILABLE'
         ? 'This browser has no WebGL2 support.'
-        : 'Could not read that file: ' + e.message);
+        : e.message === 'FLOAT_FBO_UNAVAILABLE'
+          ? 'This GPU/browser lacks floating-point render targets (EXT_color_buffer_float), needed for the rim glow.'
+          : 'Could not read that file: ' + e.message);
     }
   }
 
@@ -195,5 +197,66 @@
   });
   window.addEventListener('resize', render);
 
-  window.App = { loadFile, state, render, rollFor: Lens.rollFor };
+  // Browser-side half of the GLSL/JS parity check (test/parity.test.js is
+  // the other half). Renders PROFILE_BUILD_PARITY_FS + PROFILE_BLUR_FS --
+  // the analytic-sampler variant of the real profile shaders -- with the
+  // exact opts baked into test/fixtures/parity-input.json, and compares
+  // the readback against that fixture's expected values. Requires the page
+  // to be served over HTTP (fetch of a local file fails under file://).
+  async function checkParity() {
+    if (!ctx) ctx = GL.create(canvas);
+    const gl = ctx.gl;
+    const res = await fetch('test/fixtures/parity-input.json');
+    const fixture = await res.json();
+    const bins = fixture.opts.bins;
+
+    const buildProg = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_PARITY_FS);
+    const blurProg = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BLUR_FS);
+    const a = GL.makeProfileTarget(gl, bins);
+    const b = GL.makeProfileTarget(gl, bins);
+
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    gl.viewport(0, 0, bins, 1);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, a.fbo);
+    gl.useProgram(buildProg);
+    const ub = (n) => gl.getUniformLocation(buildProg, n);
+    gl.uniform1f(ub('uBins'), bins);
+    gl.uniform1i(ub('uRadialSamples'), fixture.opts.radialSamples);
+    gl.uniform1f(ub('uUMin'), fixture.opts.uMin);
+    gl.uniform1f(ub('uUMax'), fixture.opts.uMax);
+    gl.uniform1f(ub('uKnee'), fixture.opts.knee);
+    gl.uniform1f(ub('uExponent'), fixture.opts.exponent);
+    gl.uniform1f(ub('uCropFrac'), 1.0);
+    gl.uniform1f(ub('uRoll'), 0.0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, b.fbo);
+    gl.useProgram(blurProg);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, a.tex);
+    const uu = (n) => gl.getUniformLocation(blurProg, n);
+    gl.uniform1i(uu('uProfile'), 0);
+    gl.uniform1f(uu('uBins'), bins);
+    gl.uniform1f(uu('uSpreadBins'), fixture.spreadBins);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    const actual = GL.readProfile(ctx, b.tex);
+    let maxDiff = 0;
+    for (let i = 0; i < fixture.expected.length; i++) {
+      maxDiff = Math.max(maxDiff, Math.abs(actual[i] - fixture.expected[i]));
+    }
+
+    gl.deleteTexture(a.tex); gl.deleteFramebuffer(a.fbo);
+    gl.deleteTexture(b.tex); gl.deleteFramebuffer(b.fbo);
+    gl.deleteProgram(buildProg); gl.deleteProgram(blurProg);
+
+    console.log('rim profile parity: max abs diff =', maxDiff,
+      maxDiff < 2e-3 ? '(OK, below 2e-3)' : '(FAIL, exceeds 2e-3)');
+    return maxDiff;
+  }
+
+  window.App = { loadFile, state, render, rollFor: Lens.rollFor, checkParity };
 })();
