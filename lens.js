@@ -36,5 +36,53 @@
     return { overlapDeg, duplicatedAreaFraction };
   }
 
-  return { THETA_MAX_DEG, radiusForFov, fovForRadius, coverage };
+  const ASPECT_TOLERANCE = 0.02;
+
+  function detectLayout(width, height) {
+    const aspect = width / height;
+    if (Math.abs(aspect - 2) < ASPECT_TOLERANCE) {
+      return { kind: 'dual', lensSize: height, lenses: [{ x: 0, y: 0 }, { x: height, y: 0 }] };
+    }
+    if (Math.abs(aspect - 1) < ASPECT_TOLERANCE) {
+      return { kind: 'single', lensSize: height, lenses: [{ x: 0, y: 0 }] };
+    }
+    return { kind: 'unsupported', lensSize: 0, lenses: [] };
+  }
+
+  function exportLayout(opts) {
+    const d = opts.circleDiameter;
+    const m = opts.marginPx;
+    const both = opts.sensors === 'both';
+    const gap = both ? opts.gapPx : 0;
+    const stacked = opts.orientation === 'stacked';
+    const along = m + d + gap + d + m;   // long axis when two-up
+    const across = m + d + m;
+    const width = both ? (stacked ? across : along) : d + 2 * m;
+    const height = both ? (stacked ? along : across) : d + 2 * m;
+    const first = m + d / 2;
+    const second = m + d + gap + d / 2;
+    let circles;
+    if (!both) {
+      circles = [{ cx: width / 2, cy: height / 2, lens: opts.sensors }];
+    } else if (stacked) {
+      circles = [
+        { cx: width / 2, cy: first, lens: 'A' },
+        { cx: width / 2, cy: second, lens: 'B' },
+      ];
+    } else {
+      circles = [
+        { cx: first, cy: height / 2, lens: 'A' },
+        { cx: second, cy: height / 2, lens: 'B' },
+      ];
+    }
+    return { width, height, circles };
+  }
+
+  function exportFilename(sourceName, lensLabel, fovDeg, ext) {
+    const stem = sourceName.replace(/\.[^.]+$/, '');
+    const fov = String(Math.round(fovDeg * 10) / 10).replace('.', '-');
+    return `${stem}_${lensLabel}_${fov}deg.${ext}`;
+  }
+
+  return { THETA_MAX_DEG, radiusForFov, fovForRadius, coverage, detectLayout, exportLayout, exportFilename };
 });
