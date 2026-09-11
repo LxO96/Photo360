@@ -62,6 +62,24 @@
     <label><span>Lens B nudge <output id="nudgeBOut">0.0°</output></span>
       <input id="nudgeB" type="range" min="-10" max="10" step="0.1" value="0"></label>
     <div id="readout"></div>
+
+    <h2>Edge</h2>
+    <label><span>Intensity <output id="edgeIntensityOut"></output></span>
+      <input id="edgeIntensity" type="range" min="0" max="4" step="0.01"></label>
+    <label><span>Ring width <output id="ringWidthOut"></output></span>
+      <input id="ringWidth" type="range" min="0.002" max="0.06" step="0.001"></label>
+    <label><span>Dispersion <output id="dispersionOut"></output></span>
+      <input id="dispersion" type="range" min="0" max="0.05" step="0.001"></label>
+    <label><span>Glow spread <output id="glowSpreadDegOut"></output></span>
+      <input id="glowSpreadDeg" type="range" min="0" max="45" step="0.5"></label>
+    <label><span>Highlight knee <output id="highlightKneeOut"></output></span>
+      <input id="highlightKnee" type="range" min="0" max="1" step="0.01"></label>
+    <label><span>Falloff start <output id="falloffStartOut"></output></span>
+      <input id="falloffStart" type="range" min="0.6" max="0.99" step="0.005"></label>
+    <label><span>Falloff softness <output id="falloffSoftnessOut"></output></span>
+      <input id="falloffSoftness" type="range" min="0.3" max="4" step="0.05"></label>
+    <button id="resetEdge" type="button">Reset to X1 classic</button>
+
     <div id="error"></div>
   </aside>
 

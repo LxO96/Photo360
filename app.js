@@ -188,6 +188,28 @@
     render();
   });
 
+  const EDGE_KEYS = ['edgeIntensity', 'ringWidth', 'dispersion', 'glowSpreadDeg',
+                     'highlightKnee', 'falloffStart', 'falloffSoftness'];
+
+  function applyEdgePreset() {
+    state.edge = Object.assign({}, Edge.PRESETS.x1classic);
+    for (const k of EDGE_KEYS) {
+      document.getElementById(k).value = state.edge[k];
+      document.getElementById(k + 'Out').textContent = state.edge[k];
+    }
+    render();
+  }
+
+  for (const k of EDGE_KEYS) {
+    document.getElementById(k).addEventListener('input', (e) => {
+      state.edge[k] = parseFloat(e.target.value);
+      document.getElementById(k + 'Out').textContent = e.target.value;
+      render();
+    });
+  }
+  document.getElementById('resetEdge').addEventListener('click', applyEdgePreset);
+  applyEdgePreset();
+
   dropEl.addEventListener('click', () => fileEl.click());
   fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));
   document.addEventListener('dragover', (e) => { e.preventDefault(); });

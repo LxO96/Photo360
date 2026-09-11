@@ -33,8 +33,33 @@
   uniform float uCircleRadius;  // output circle radius in pixels
   uniform float uCropFrac;      // crop radius as a fraction of the image circle
   uniform float uRoll;          // radians
+  uniform sampler2D uProfile;   // per-azimuth rim profile from the Task 7 passes
+  uniform float uBins;
+  uniform float uFalloffStart, uFalloffSoftness;
+  uniform float uEdgeIntensity, uRingWidth, uDispersion;
+  uniform float uHazeWidth, uHazeStrength;
+  uniform float uTerminatorDesaturate, uTerminatorCoolShift;
   out vec4 fragColor;
   ` + SAMPLE_LENS_GLSL + `
+
+  const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+  const vec3 COOL = vec3(0.82, 0.92, 1.12);   // cast the last of the image picks up
+
+  float terminator(float u) {
+    if (u <= uFalloffStart) return 1.0;
+    if (u >= 1.0) return 0.0;
+    float t = (u - uFalloffStart) / (1.0 - uFalloffStart);
+    float eased = t * t * (3.0 - 2.0 * t);
+    return pow(1.0 - eased, uFalloffSoftness);
+  }
+
+  float rimBell(float u, float peak, float width) {
+    // Mirrors edge.js rimBell's zero-width guard: width <= 0 degenerates to
+    // an impulse at the peak instead of a 0/0 NaN.
+    if (width <= 0.0) return u == peak ? 1.0 : 0.0;
+    float t = (u - peak) / width;
+    return exp(-t * t);
+  }
 
   void main() {
     // gl_FragCoord.xy is in absolute framebuffer pixels, not relative to the
@@ -44,9 +69,36 @@
     vec2 p = gl_FragCoord.xy - uCellOrigin - uCellSize * 0.5;
     float r = length(p);
     float u = r / uCircleRadius;
-    if (u > 1.0) { fragColor = vec4(0.0); return; }
     float theta = atan(p.y, p.x);
-    fragColor = vec4(sampleLensAt(uLens, u, theta, uCropFrac, uRoll), 1.0);
+
+    // --- image, with the terminator running it out at the lens edge ---
+    vec3 img = vec3(0.0);
+    if (u < 1.0) {
+      img = sampleLensAt(uLens, u, theta, uCropFrac, uRoll);
+      float term = terminator(u);
+      float fade = 1.0 - term;
+      img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);
+      img = mix(img, img * COOL, fade * uTerminatorCoolShift);
+      img *= term;
+    }
+
+    // --- rim glow, derived from the image next to it ---
+    float bin = mod(theta / 6.283185307179586, 1.0) * uBins;
+    vec4 prof = texture(uProfile, vec2((floor(bin) + 0.5) / uBins, 0.5));
+    float intensity = prof.r * uEdgeIntensity;
+    vec3 tint = prof.gba;
+    float tmax = max(max(tint.r, tint.g), tint.b);
+    tint = tmax > 0.0 ? tint / tmax : vec3(1.0);
+
+    vec3 glow = vec3(
+      rimBell(u, 1.0 - uDispersion, uRingWidth),
+      rimBell(u, 1.0,               uRingWidth),
+      rimBell(u, 1.0 + uDispersion, uRingWidth)
+    ) * intensity * tint;
+
+    float haze = rimBell(u, 1.0, uHazeWidth) * intensity * uHazeStrength;
+
+    fragColor = vec4(img + glow + vec3(haze) * tint, 1.0);
   }`;
 
   const PROFILE_BUILD_FS = `#version 300 es

@@ -235,6 +235,17 @@
       gl.uniform1f(u('uCircleRadius'), c.radius);
       gl.uniform1f(u('uCropFrac'), Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg));
       gl.uniform1f(u('uRoll'), rollRad);
+      gl.uniform1i(u('uProfile'), 1);
+      gl.uniform1f(u('uBins'), Edge.PROFILE_BINS);
+      gl.uniform1f(u('uFalloffStart'), state.edge.falloffStart);
+      gl.uniform1f(u('uFalloffSoftness'), state.edge.falloffSoftness);
+      gl.uniform1f(u('uEdgeIntensity'), state.edge.edgeIntensity);
+      gl.uniform1f(u('uRingWidth'), state.edge.ringWidth);
+      gl.uniform1f(u('uDispersion'), state.edge.dispersion);
+      gl.uniform1f(u('uHazeWidth'), state.edge.hazeWidth);
+      gl.uniform1f(u('uHazeStrength'), state.edge.hazeStrength);
+      gl.uniform1f(u('uTerminatorDesaturate'), state.edge.terminatorDesaturate);
+      gl.uniform1f(u('uTerminatorCoolShift'), state.edge.terminatorCoolShift);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.BLEND);
