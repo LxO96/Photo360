@@ -72,3 +72,72 @@ test('rimBell zero width returns are not NaN', () => {
   assert.ok(!isNaN(a), 'rimBell(1.0, 1.0, 0) must not be NaN');
   assert.ok(!isNaN(b), 'rimBell(1.02, 1.0, 0) must not be NaN');
 });
+
+function bandSampler(hiFrom, hiTo) {
+  // white inside the azimuth band [hiFrom, hiTo) radians, black elsewhere
+  return (theta) => {
+    const t = ((theta % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+    return t >= hiFrom && t < hiTo ? [1, 1, 1] : [0, 0, 0];
+  };
+}
+
+const PROFILE_OPTS = {
+  bins: 64, radialSamples: 4, uMin: 0.94, uMax: 1.0, knee: 0.5, exponent: 2,
+};
+
+test('the rim profile lights up only where the content is bright', () => {
+  const p = Edge.buildRimProfile(bandSampler(0, Math.PI), PROFILE_OPTS);
+  assert.strictEqual(p.length, 64 * 4);
+  const expected = Edge.highlightWeight(1, 0.5, 2);
+  assert.ok(Math.abs(p[0 * 4] - expected) < 1e-6, 'first bin should be lit');
+  assert.strictEqual(p[48 * 4], 0, 'a bin in the dark half must be zero');
+});
+
+test('the rim profile records the mean colour of its annulus', () => {
+  const p = Edge.buildRimProfile(() => [0.2, 0.4, 0.8], PROFILE_OPTS);
+  assert.ok(Math.abs(p[1] - 0.2) < 1e-6);
+  assert.ok(Math.abs(p[2] - 0.4) < 1e-6);
+  assert.ok(Math.abs(p[3] - 0.8) < 1e-6);
+});
+
+test('content below the knee produces a completely dark rim', () => {
+  const p = Edge.buildRimProfile(() => [0.3, 0.3, 0.3], PROFILE_OPTS);
+  for (let i = 0; i < 64; i++) assert.strictEqual(p[i * 4], 0);
+});
+
+test('the angular blur spreads an impulse into its neighbours', () => {
+  const bins = 64;
+  const p = new Float32Array(bins * 4);
+  p[0] = 1;
+  const b = Edge.blurProfileAngular(p, bins, 3);
+  assert.ok(b[0] < 1, 'the impulse must be reduced');
+  assert.ok(b[1 * 4] > 0, 'the next bin must receive energy');
+  assert.ok(b[1 * 4] < b[0], 'energy must fall off with distance');
+});
+
+test('the angular blur wraps around the circle', () => {
+  const bins = 64;
+  const p = new Float32Array(bins * 4);
+  p[0] = 1;
+  const b = Edge.blurProfileAngular(p, bins, 3);
+  assert.ok(b[63 * 4] > 0, 'the bin before zero must receive energy');
+  assert.ok(Math.abs(b[63 * 4] - b[1 * 4]) < 1e-6, 'the blur must be symmetric');
+});
+
+test('the angular blur conserves total energy', () => {
+  const bins = 64;
+  const p = new Float32Array(bins * 4);
+  for (let i = 0; i < bins; i++) p[i * 4] = Math.random();
+  const before = p.filter((_, i) => i % 4 === 0).reduce((a, b) => a + b, 0);
+  const b = Edge.blurProfileAngular(p, bins, 4);
+  const after = b.filter((_, i) => i % 4 === 0).reduce((a, b) => a + b, 0);
+  assert.ok(Math.abs(after - before) < 1e-4, `${after} vs ${before}`);
+});
+
+test('a zero spread leaves the profile untouched', () => {
+  const bins = 8;
+  const p = new Float32Array(bins * 4);
+  p[0] = 1; p[4] = 0.5;
+  const b = Edge.blurProfileAngular(p, bins, 0);
+  assert.deepStrictEqual(Array.from(b), Array.from(p));
+});
