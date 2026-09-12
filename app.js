@@ -9,6 +9,9 @@
   const fileEl = document.getElementById('file');
   const fovEl = document.getElementById('fov');
   const fovOut = document.getElementById('fovOut');
+  const thetaMaxEl = document.getElementById('thetaMax');
+  const thetaMaxOut = document.getElementById('thetaMaxOut');
+  const calibrationEl = document.getElementById('calibration');
   const sensorsEl = document.getElementById('sensors');
   const orientationEl = document.getElementById('orientation');
   const swapEl = document.getElementById('swap');
@@ -33,6 +36,10 @@
 
   const state = {
     fovDeg: 180, thetaMaxDeg: Lens.THETA_MAX_DEG,
+    // Describes the currently loaded file's camera, not a user preference --
+    // like sourceName/sourceLensSize, deliberately not persisted (see
+    // settings.js PERSISTED_KEYS). Null until a file has been loaded.
+    calibration: null,
     rollDeg: 0,
     nudgeDeg: { A: 0, B: 0 },
     sensors: 'A', swap: false,
@@ -88,6 +95,29 @@
 
   function fail(msg) { errorEl.textContent = msg; }
 
+  // Shows the camera and calibration the current file loaded with, right by
+  // the FOV readout. A provisional calibration (confident: false) must never
+  // read as measured fact -- see Lens.CALIBRATIONS' comment for why the ONE
+  // X figure is a single-file estimate. The advanced thetaMax slider stays
+  // visible regardless, so a provisional number can always be corrected by
+  // eye.
+  function updateCalibrationReadout() {
+    const c = state.calibration;
+    if (!c) { calibrationEl.textContent = ''; return; }
+    const fullFov = c.thetaMaxDeg * 2;
+    if (!c.model) {
+      calibrationEl.textContent =
+        `Unknown camera — using the default ${fullFov.toFixed(1)}° lens ` +
+        '(provisional calibration; adjust the slider below if the 180° crop looks wrong).';
+    } else if (c.confident) {
+      calibrationEl.textContent = `${c.model} — ${fullFov.toFixed(1)}° lens (measured calibration).`;
+    } else {
+      calibrationEl.textContent =
+        `${c.model} — ${fullFov.toFixed(1)}° lens ` +
+        '(provisional calibration; adjust the slider below if the 180° crop looks wrong).';
+    }
+  }
+
   // Read the frame dimensions without decoding pixel data: parse the JPEG
   // header directly, and only fall back to a full decode if that fails
   // (e.g. an unusual file whose SOF sits beyond the probed head).
@@ -109,7 +139,7 @@
       const size = await probeSize(blob, buf);
       const layout = Lens.detectLayout(size.width, size.height);
       if (layout.kind === 'unsupported') {
-        fail('Not a fisheye file: expected a 2:1 dual fisheye or a 1:1 single fisheye.');
+        fail('Not a fisheye file: expected a 2:1 or 1:2 dual fisheye or a 1:1 single fisheye.');
         return;
       }
       if (!ctx) ctx = GL.create(canvas);
@@ -137,12 +167,26 @@
           half.close();
         }
       }
+      const tags = Exif.readTags(new Uint8Array(buf));
+      // A freshly loaded file's own camera always wins over whatever
+      // thetaMaxDeg a previous session left in localStorage: loadSettings()
+      // only ever runs once, at page init, before any file is chosen, so by
+      // the time this runs it is safe to overwrite state.thetaMaxDeg
+      // unconditionally -- there is no later restore that could clobber it
+      // back to a stale value.
+      const calibration = Lens.calibrationFor(tags.model);
+      state.thetaMaxDeg = calibration.thetaMaxDeg;
+      state.calibration = calibration;
       state.sourceName = file.name;
-      state.sourceExif = Exif.buildApp1(Exif.readTags(new Uint8Array(buf)));
+      state.sourceExif = Exif.buildApp1(tags);
       state.sourceLensSize = layout.lensSize;
       state.uploadedLensSize = overLimit ? ctx.maxTextureSize : layout.lensSize;
       dropEl.classList.add('hidden');
+      thetaMaxEl.value = state.thetaMaxDeg;
+      thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
+      updateCalibrationReadout();
       render();
+      scheduleSave();
     } catch (e) {
       fail(e.message === 'WEBGL2_UNAVAILABLE'
         ? 'This browser has no WebGL2 support.'
@@ -370,6 +414,8 @@
   function syncControlsFromState() {
     fovEl.value = state.fovDeg;
     fovOut.textContent = state.fovDeg.toFixed(1) + '°';
+    thetaMaxEl.value = state.thetaMaxDeg;
+    thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
     swapEl.checked = state.swap;
@@ -396,6 +442,13 @@
   fovEl.addEventListener('input', () => {
     state.fovDeg = parseFloat(fovEl.value);
     fovOut.textContent = state.fovDeg.toFixed(1) + '°';
+    render();
+    scheduleSave();
+  });
+
+  thetaMaxEl.addEventListener('input', () => {
+    state.thetaMaxDeg = parseFloat(thetaMaxEl.value);
+    thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
     render();
     scheduleSave();
   });

@@ -186,6 +186,56 @@ test('single-lens export stays exactly 1:1 for any margin', () => {
   }
 });
 
+test('a stacked 1:2 file is detected as dual fisheye', () => {
+  const l = Lens.detectLayout(1520, 3040);
+  assert.strictEqual(l.kind, 'dual');
+  assert.strictEqual(l.lensSize, 1520);
+  assert.deepStrictEqual(l.lenses, [{ x: 0, y: 0 }, { x: 0, y: 1520 }]);
+});
+
+test('the full-size stacked reference is detected as dual fisheye', () => {
+  const l = Lens.detectLayout(3040, 6080);
+  assert.strictEqual(l.kind, 'dual');
+  assert.strictEqual(l.lensSize, 3040);
+  assert.deepStrictEqual(l.lenses, [{ x: 0, y: 0 }, { x: 0, y: 3040 }]);
+});
+
+test('side-by-side detection is unchanged by the stacked case', () => {
+  const l = Lens.detectLayout(11904, 5952);
+  assert.strictEqual(l.kind, 'dual');
+  assert.deepStrictEqual(l.lenses, [{ x: 0, y: 0 }, { x: 5952, y: 0 }]);
+});
+
+test('the X5 calibration is the measured 105 degrees', () => {
+  const c = Lens.calibrationFor('Insta360 X5');
+  assert.strictEqual(c.thetaMaxDeg, 105);
+  assert.strictEqual(c.confident, true);
+});
+
+test('the ONE X calibration is applied but flagged as provisional', () => {
+  const c = Lens.calibrationFor('Insta360 One2');
+  assert.strictEqual(c.thetaMaxDeg, 112.5);
+  assert.strictEqual(c.confident, false);
+});
+
+test('an unknown camera falls back to the X5 default, unconfidently', () => {
+  const c = Lens.calibrationFor('Some Other Camera');
+  assert.strictEqual(c.thetaMaxDeg, Lens.THETA_MAX_DEG);
+  assert.strictEqual(c.confident, false);
+});
+
+test('a missing model falls back the same way', () => {
+  assert.strictEqual(Lens.calibrationFor(null).thetaMaxDeg, Lens.THETA_MAX_DEG);
+});
+
+test('the two calibrations put 180 degrees at different crop radii', () => {
+  const x5 = Lens.radiusForFov(180, Lens.calibrationFor('Insta360 X5').thetaMaxDeg);
+  const one = Lens.radiusForFov(180, Lens.calibrationFor('Insta360 One2').thetaMaxDeg);
+  assert.ok(Math.abs(x5 - 90 / 105) < 1e-9);
+  assert.ok(Math.abs(one - 0.8) < 1e-9);
+  assert.ok(one < x5, 'the wider ONE X lens must crop deeper for the same FOV');
+});
+
 test('filenames record the source, lens and FOV', () => {
   assert.strictEqual(
     Lens.exportFilename('Sunscreen.insp', 'A', 180, 'jpg'),

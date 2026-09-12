@@ -40,13 +40,36 @@
 
   function detectLayout(width, height) {
     const aspect = width / height;
-    if (Math.abs(aspect - 2) < ASPECT_TOLERANCE) {
-      return { kind: 'dual', lensSize: height, lenses: [{ x: 0, y: 0 }, { x: height, y: 0 }] };
-    }
+    // The 1:1 check must come before either dual case: a square image's
+    // aspect is 1, not 2 or 0.5, so this ordering is not load-bearing for
+    // correctness here, but it is the guard the brief asks for against a
+    // square image ever falling into a dual branch.
     if (Math.abs(aspect - 1) < ASPECT_TOLERANCE) {
       return { kind: 'single', lensSize: height, lenses: [{ x: 0, y: 0 }] };
     }
+    if (Math.abs(aspect - 2) < ASPECT_TOLERANCE) {
+      return { kind: 'dual', lensSize: height, lenses: [{ x: 0, y: 0 }, { x: height, y: 0 }] };
+    }
+    if (Math.abs(aspect - 0.5) < ASPECT_TOLERANCE) {
+      return { kind: 'dual', lensSize: width, lenses: [{ x: 0, y: 0 }, { x: 0, y: width }] };
+    }
     return { kind: 'unsupported', lensSize: 0, lenses: [] };
+  }
+
+  // theta-max per camera body, measured by correlating the two lenses' overlap
+  // annuli. The X5 figure is corroborated by three files agreeing at
+  // 104-107 degrees; the ONE X figure comes from a single usable reference
+  // (peak correlation 0.60), so it is applied but flagged unconfident.
+  const CALIBRATIONS = {
+    'Insta360 X5': { thetaMaxDeg: 105, confident: true },
+    'Insta360 One2': { thetaMaxDeg: 112.5, confident: false },
+  };
+
+  function calibrationFor(model) {
+    const key = (model || '').replace(/\0+$/, '').trim();
+    const hit = CALIBRATIONS[key];
+    if (hit) return { thetaMaxDeg: hit.thetaMaxDeg, model: key, confident: hit.confident };
+    return { thetaMaxDeg: THETA_MAX_DEG, model: key, confident: false };
   }
 
   function exportLayout(opts) {
@@ -91,5 +114,8 @@
     return `${stem}_${lensLabel}_${fov}deg.${ext}`;
   }
 
-  return { THETA_MAX_DEG, radiusForFov, fovForRadius, coverage, detectLayout, exportLayout, exportFilename, rollFor };
+  return {
+    THETA_MAX_DEG, radiusForFov, fovForRadius, coverage, detectLayout, exportLayout,
+    exportFilename, rollFor, CALIBRATIONS, calibrationFor,
+  };
 });
