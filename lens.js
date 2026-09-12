@@ -38,6 +38,11 @@
 
   const ASPECT_TOLERANCE = 0.02;
 
+  // `arrangement` distinguishes the two physically different dual-fisheye
+  // shapes ('side' 2:1, 'stacked' 1:2) for callers -- like calibrationFor's
+  // layout-based inference below -- that need to know which one a file is
+  // without re-deriving it from width/height themselves. 'single' for a 1:1
+  // file, null when unsupported.
   function detectLayout(width, height) {
     const aspect = width / height;
     // The 1:1 check must come before either dual case: a square image's
@@ -45,15 +50,21 @@
     // correctness here, but it is the guard the brief asks for against a
     // square image ever falling into a dual branch.
     if (Math.abs(aspect - 1) < ASPECT_TOLERANCE) {
-      return { kind: 'single', lensSize: height, lenses: [{ x: 0, y: 0 }] };
+      return { kind: 'single', lensSize: height, lenses: [{ x: 0, y: 0 }], arrangement: 'single' };
     }
     if (Math.abs(aspect - 2) < ASPECT_TOLERANCE) {
-      return { kind: 'dual', lensSize: height, lenses: [{ x: 0, y: 0 }, { x: height, y: 0 }] };
+      return {
+        kind: 'dual', lensSize: height, lenses: [{ x: 0, y: 0 }, { x: height, y: 0 }],
+        arrangement: 'side',
+      };
     }
     if (Math.abs(aspect - 0.5) < ASPECT_TOLERANCE) {
-      return { kind: 'dual', lensSize: width, lenses: [{ x: 0, y: 0 }, { x: 0, y: width }] };
+      return {
+        kind: 'dual', lensSize: width, lenses: [{ x: 0, y: 0 }, { x: 0, y: width }],
+        arrangement: 'stacked',
+      };
     }
-    return { kind: 'unsupported', lensSize: 0, lenses: [] };
+    return { kind: 'unsupported', lensSize: 0, lenses: [], arrangement: null };
   }
 
   // theta-max per camera body, measured by correlating the two lenses' overlap
@@ -65,10 +76,25 @@
     'Insta360 One2': { thetaMaxDeg: 112.5, confident: false },
   };
 
-  function calibrationFor(model) {
+  // `arrangement` (from Lens.detectLayout) lets the fallback for a file with
+  // no usable EXIF model do better than always assuming the X5: a stacked
+  // 1:2 file cannot physically be an X5, which only ever writes 2:1
+  // side-by-side dual fisheye, so a ONE X-shaped guess is a strictly better
+  // default than the X5's narrower calibration for that shape. This is only
+  // ever a fallback -- a recognized model (`hit`) always wins over the
+  // layout guess, in either arrangement, including the deliberately
+  // contrary case of an X5 tag on a stacked file. A present-but-unrecognized
+  // model (some other camera name) still falls through to the plain X5
+  // default below, unaffected by arrangement, since the model in that case
+  // *is* known -- just not one this tool has measured.
+  function calibrationFor(model, arrangement) {
     const key = (model || '').replace(/\0+$/, '').trim();
     const hit = CALIBRATIONS[key];
     if (hit) return { thetaMaxDeg: hit.thetaMaxDeg, model: key, confident: hit.confident };
+    if (!key && arrangement === 'stacked') {
+      const guess = CALIBRATIONS['Insta360 One2'];
+      return { thetaMaxDeg: guess.thetaMaxDeg, model: key, confident: false };
+    }
     return { thetaMaxDeg: THETA_MAX_DEG, model: key, confident: false };
   }
 

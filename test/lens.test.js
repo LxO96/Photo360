@@ -236,6 +236,41 @@ test('the two calibrations put 180 degrees at different crop radii', () => {
   assert.ok(one < x5, 'the wider ONE X lens must crop deeper for the same FOV');
 });
 
+test('an unrecognized model in a stacked file still gets the plain X5 default', () => {
+  // "no usable model" (empty/null) is what triggers the layout guess below --
+  // a present-but-unrecognized model name is still a known model, just not
+  // one this tool has measured, so it must not be treated the same way.
+  const c = Lens.calibrationFor('Some Other Camera', 'stacked');
+  assert.strictEqual(c.thetaMaxDeg, Lens.THETA_MAX_DEG);
+  assert.strictEqual(c.confident, false);
+});
+
+test('an unknown model in a stacked file infers the ONE X calibration', () => {
+  const c = Lens.calibrationFor(null, 'stacked');
+  assert.strictEqual(c.thetaMaxDeg, 112.5);
+  assert.strictEqual(c.confident, false);
+});
+
+test('an unknown model in a side-by-side file keeps the X5 default', () => {
+  const c = Lens.calibrationFor(null, 'side');
+  assert.strictEqual(c.thetaMaxDeg, Lens.THETA_MAX_DEG);
+  assert.strictEqual(c.confident, false);
+});
+
+test('a known model overrides the layout inference in a stacked file', () => {
+  // The deliberately contrary case: an X5 tag on a stacked file (physically
+  // impossible for a real X5, but the model, once known, must still win).
+  const c = Lens.calibrationFor('Insta360 X5', 'stacked');
+  assert.strictEqual(c.thetaMaxDeg, 105);
+  assert.strictEqual(c.confident, true);
+});
+
+test('a known model overrides the layout inference in a side-by-side file', () => {
+  const c = Lens.calibrationFor('Insta360 One2', 'side');
+  assert.strictEqual(c.thetaMaxDeg, 112.5);
+  assert.strictEqual(c.confident, false);
+});
+
 test('filenames record the source, lens and FOV', () => {
   assert.strictEqual(
     Lens.exportFilename('Sunscreen.insp', 'A', 180, 'jpg'),

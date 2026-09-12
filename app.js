@@ -40,6 +40,12 @@
     // like sourceName/sourceLensSize, deliberately not persisted (see
     // settings.js PERSISTED_KEYS). Null until a file has been loaded.
     calibration: null,
+    // True only when calibration.thetaMaxDeg came from Lens.calibrationFor's
+    // layout-shape guess (no EXIF model at all, on a stacked file) rather
+    // than from a recognized model tag -- lets the UI say plainly that the
+    // camera was never identified and the number is inferred from the
+    // file's shape, not read off the file.
+    calibrationGuessedFromShape: false,
     rollDeg: 0,
     nudgeDeg: { A: 0, B: 0 },
     sensors: 'A', swap: false,
@@ -105,15 +111,20 @@
     const c = state.calibration;
     if (!c) { calibrationEl.textContent = ''; return; }
     const fullFov = c.thetaMaxDeg * 2;
-    if (!c.model) {
-      calibrationEl.textContent =
-        `Unknown camera — using the default ${fullFov.toFixed(1)}° lens ` +
-        '(provisional calibration; adjust the slider below if the 180° crop looks wrong).';
-    } else if (c.confident) {
+    if (c.confident) {
       calibrationEl.textContent = `${c.model} — ${fullFov.toFixed(1)}° lens (measured calibration).`;
-    } else {
+    } else if (c.model) {
       calibrationEl.textContent =
         `${c.model} — ${fullFov.toFixed(1)}° lens ` +
+        '(provisional calibration; adjust the slider below if the 180° crop looks wrong).';
+    } else if (state.calibrationGuessedFromShape) {
+      calibrationEl.textContent =
+        `Camera not identified — guessing a ${fullFov.toFixed(1)}° lens from the stacked 1:2 ` +
+        'layout (this shape is never written by the X5; adjust the slider below if the 180° ' +
+        'crop looks wrong).';
+    } else {
+      calibrationEl.textContent =
+        `Unknown camera — using the default ${fullFov.toFixed(1)}° lens ` +
         '(provisional calibration; adjust the slider below if the 180° crop looks wrong).';
     }
   }
@@ -174,9 +185,10 @@
       // the time this runs it is safe to overwrite state.thetaMaxDeg
       // unconditionally -- there is no later restore that could clobber it
       // back to a stale value.
-      const calibration = Lens.calibrationFor(tags.model);
+      const calibration = Lens.calibrationFor(tags.model, layout.arrangement);
       state.thetaMaxDeg = calibration.thetaMaxDeg;
       state.calibration = calibration;
+      state.calibrationGuessedFromShape = !calibration.model && layout.arrangement === 'stacked';
       state.sourceName = file.name;
       state.sourceExif = Exif.buildApp1(tags);
       state.sourceLensSize = layout.lensSize;
