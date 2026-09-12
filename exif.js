@@ -38,5 +38,11 @@
     return null;
   }
 
-  return { readJpegSize };
+  // Placeholder for Task 13, which will actually splice the source file's
+  // EXIF/orientation segment into the re-encoded bytes. Until then this is
+  // an identity function so app.js's export path has something real to
+  // call (not a stub living in app.js that would shadow this module).
+  function reattach(bytes) { return bytes; }
+
+  return { readJpegSize, reattach };
 });

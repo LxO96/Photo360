@@ -300,8 +300,41 @@
     };
   }
 
+  // Pixel geometry for the exported file -- same crop math the preview
+  // uses, but sized off the frame actually decoded onto the GPU
+  // (state.uploadedLensSize), not the source file's own lens size
+  // (state.sourceLensSize). The two differ when this GPU's MAX_TEXTURE_SIZE
+  // is below the file's lens size: app.js downscales the decoded bitmap at
+  // load time, but sourceLensSize still holds the pre-downscale value.
+  // Sizing exports off sourceLensSize in that case would silently request
+  // more pixels than the texture holds -- an invented-resolution upscale of
+  // exactly the kind this exporter otherwise refuses to do. uploadedLensSize
+  // falls back to sourceLensSize so this still works before any texture has
+  // been uploaded (e.g. a unit test constructing state by hand).
+  //
+  // Kept here, not in lens.js, because lens.js is the calibration-geometry
+  // module (radiusForFov, exportLayout) with no notion of "state" or of a
+  // GPU's texture limits; this function's job is combining that geometry
+  // with render-time facts (state, the actual uploaded size), which is
+  // exactly gl.js's role for compositionLayout above. It is pure (no gl
+  // calls) so it's unit-testable the same way as the rest of this file.
+  function exportGeometry(state) {
+    const lensSize = state.uploadedLensSize || state.sourceLensSize;
+    const cropFrac = Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg);
+    const nativeDiameter = Math.round(lensSize * cropFrac);
+    const diameter = state.padToSensorSquare ? lensSize : nativeDiameter;
+    return Lens.exportLayout({
+      circleDiameter: diameter,
+      sensors: state.sensors,
+      orientation: state.orientation,
+      gapPx: Math.round(state.gapFrac * diameter),
+      marginPx: Math.round(state.marginFrac * diameter),
+    });
+  }
+
   return {
     create, uploadLens, renderComposition, compositionLayout, lensTextureIndex,
     physicalLens, circleDraw, program, buildProfile, readProfile, makeProfileTarget,
+    exportGeometry,
   };
 });

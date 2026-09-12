@@ -24,6 +24,12 @@
   const nudgeBOut = document.getElementById('nudgeBOut');
   const readout = document.getElementById('readout');
   const errorEl = document.getElementById('error');
+  const formatEl = document.getElementById('format');
+  const qualityEl = document.getElementById('quality');
+  const qualityOut = document.getElementById('qualityOut');
+  const padToSensorSquareEl = document.getElementById('padToSensorSquare');
+  const exportSizeEl = document.getElementById('exportSize');
+  const exportBtn = document.getElementById('export');
 
   const state = {
     fovDeg: 180, thetaMaxDeg: Lens.THETA_MAX_DEG,
@@ -31,11 +37,34 @@
     nudgeDeg: { A: 0, B: 0 },
     sensors: 'A', swap: false,
     orientation: 'side',
-    gapFrac: 0, marginFrac: 0,
+    gapFrac: 0,
+    // Task 12: at marginFrac 0 the synthesized rim glow is cropped at the
+    // canvas boundary -- compositionLayout gives the circle the full
+    // canvas half-width, so the glow's headroom (GL.GLOW_HEADROOM, 8% of
+    // the circle radius each side) falls outside the framebuffer. That is
+    // real, faithful-to-the-hardware behaviour (the X1 reference photo is
+    // clipped the same way by its own sensor frame), but it should not be
+    // what a first-time export silently does. Default the margin to 8% --
+    // exactly GL's own glow headroom -- so the fitted edge this tool works
+    // hard to produce is visible out of the box. Anyone who wants the
+    // flush-to-frame look still has the Margin slider, down to 0%.
+    marginFrac: 0.08,
     background: [0, 0, 0],
     sourceName: '', sourceLensSize: 0,
+    // The size actually uploaded to the GPU for this file's lenses -- may
+    // be smaller than sourceLensSize if this GPU's MAX_TEXTURE_SIZE forced
+    // a downscale at load time (see loadFile). GL.exportGeometry sizes the
+    // export off this, not sourceLensSize, so export can never silently
+    // upscale past what the texture actually holds.
+    uploadedLensSize: 0,
     edge: { ...Edge.PRESETS.x1classic },
     tone: { exposureEv: 0, contrast: 0, saturation: 0 },
+    // Task 12 output options. Not part of Settings.PERSISTED_KEYS -- these
+    // describe how to write the next file, not a framing preference worth
+    // resurrecting across a reload the way fovDeg/edge/tone are.
+    padToSensorSquare: false,
+    format: 'jpeg',
+    quality: 95,
   };
   let ctx = null;
 
@@ -98,6 +127,7 @@
       }
       state.sourceName = file.name;
       state.sourceLensSize = layout.lensSize;
+      state.uploadedLensSize = overLimit ? ctx.maxTextureSize : layout.lensSize;
       dropEl.classList.add('hidden');
       render();
     } catch (e) {
@@ -139,6 +169,22 @@
           `${(c.duplicatedAreaFraction * 100).toFixed(0)}% of this image also appears in the other lens.`
         : `${(-c.overlapDeg).toFixed(1)}° short of the hemisphere — a gap between the two lenses.`;
     drawGuides();
+    updateExportSize();
+  }
+
+  // Reports the exact pixel dimensions the next export will write, so the
+  // native-sampling default (no invented resolution) is visible rather than
+  // implied. Recomputed from GL.exportGeometry -- the same geometry
+  // exportImage itself renders at -- so this text can never drift from what
+  // actually gets written.
+  function updateExportSize() {
+    if (!state.sourceLensSize) { exportSizeEl.textContent = ''; return; }
+    const g = GL.exportGeometry(state);
+    const downscaled = state.uploadedLensSize && state.uploadedLensSize < state.sourceLensSize;
+    const note = state.padToSensorSquare
+      ? (downscaled ? 'upscaled to this GPU’s capped texture size' : 'upscaled to sensor square')
+      : (downscaled ? 'native to this GPU’s capped texture size' : 'native, no invented resolution');
+    exportSizeEl.textContent = `Exports at ${g.width} × ${g.height} px (${note})`;
   }
 
   // Task 11: horizon guide overlay -- a plain 2D canvas laid exactly over
@@ -418,6 +464,88 @@
     });
   }
 
+  formatEl.addEventListener('input', () => {
+    state.format = formatEl.value;
+  });
+
+  qualityEl.addEventListener('input', () => {
+    state.quality = parseFloat(qualityEl.value);
+    qualityOut.textContent = qualityEl.value;
+  });
+
+  padToSensorSquareEl.addEventListener('input', () => {
+    state.padToSensorSquare = padToSensorSquareEl.checked;
+    updateExportSize();
+  });
+
+  // The single render entry point (GL.renderComposition) used by both the
+  // on-screen preview and this export -- there is no second rendering path
+  // to keep in sync with it.
+  async function exportImage(opts) {
+    state.format = opts.format;
+    state.quality = opts.quality;
+    state.padToSensorSquare = opts.padToSensorSquare;
+    const g = GL.exportGeometry(state);
+    const prevW = canvas.width, prevH = canvas.height;
+    const prevStyle = [canvas.style.width, canvas.style.height];
+    try {
+      canvas.width = g.width;
+      canvas.height = g.height;
+      GL.renderComposition(ctx, state, g.width, g.height);
+      // WebGL is allowed to silently allocate a smaller drawing buffer than
+      // requested when it can't honour the size (observed in practice on a
+      // preserveDrawingBuffer:true context well under this GPU's own
+      // MAX_TEXTURE_SIZE/MAX_RENDERBUFFER_SIZE limits -- a runtime memory
+      // budget, not a fixed cap those queries would catch). canvas.width
+      // still reads back as what we set even when this happens, but
+      // toBlob() encodes the actual (smaller) backing store, so without
+      // this check the file written would silently be smaller than
+      // #exportSize just promised.
+      if (ctx.gl.drawingBufferWidth !== g.width || ctx.gl.drawingBufferHeight !== g.height) {
+        throw new Error('DRAWING_BUFFER_CLAMPED');
+      }
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error('TOBLOB_FAILED'))),
+          opts.format === 'png' ? 'image/png' : 'image/jpeg',
+          opts.quality / 100
+        );
+      });
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const out = opts.format === 'jpeg' ? Exif.reattach(bytes, state.sourceExif) : bytes;
+      const label = state.sensors === 'both' ? (state.swap ? 'BA' : 'AB') : state.sensors;
+      download(new Blob([out], { type: blob.type }),
+        Lens.exportFilename(state.sourceName, label, state.fovDeg,
+          opts.format === 'png' ? 'png' : 'jpg'));
+    } catch (e) {
+      fail(e.message === 'TOBLOB_FAILED'
+        ? `The browser could not encode a ${g.width}x${g.height} image. ` +
+          'Try PNG, a smaller FOV, or exporting one lens at a time.'
+        : e.message === 'DRAWING_BUFFER_CLAMPED'
+          ? `This GPU/browser could not allocate a ${g.width}x${g.height} canvas ` +
+            `(it silently gave ${ctx.gl.drawingBufferWidth}x${ctx.gl.drawingBufferHeight} instead). ` +
+            'Try a smaller FOV, remove padding, or export one lens at a time.'
+          : 'Export failed: ' + e.message);
+    } finally {
+      canvas.width = prevW; canvas.height = prevH;
+      canvas.style.width = prevStyle[0]; canvas.style.height = prevStyle[1];
+      render();
+    }
+  }
+
+  function download(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  }
+
+  exportBtn.addEventListener('click', () => {
+    if (!ctx || !state.sourceLensSize) return;
+    exportImage({ format: state.format, quality: state.quality, padToSensorSquare: state.padToSensorSquare });
+  });
+
   loadSettings();
 
   dropEl.addEventListener('click', () => fileEl.click());
@@ -493,6 +621,6 @@
 
   window.App = {
     loadFile, state, render, rollFor: Lens.rollFor, checkParity,
-    saveSettings, loadSettings,
+    saveSettings, loadSettings, exportImage,
   };
 })();
