@@ -10,8 +10,9 @@
   body { margin:0; background:var(--bg); color:var(--fg);
          font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
          display:flex; height:100vh; overflow:hidden; }
-  #stage { flex:1; display:grid; place-items:center; position:relative; padding:24px; min-width:0; }
+  #stage { flex:1; display:grid; place-items:center; position:relative; padding:24px; min-width:0; touch-action:none; }
   #view { max-width:100%; max-height:100%; background:#000; }
+  #guides { position:absolute; pointer-events:none; }
   #drop { position:absolute; inset:24px; border:2px dashed var(--line); border-radius:8px;
           display:grid; place-items:center; color:var(--mut); text-align:center; }
   #drop.hidden { display:none; }
@@ -30,6 +31,7 @@
 <body>
   <div id="stage">
     <canvas id="view"></canvas>
+    <canvas id="guides"></canvas>
     <div id="drop">Drop an .insp or .jpg fisheye file here<br>(or click to choose)</div>
     <input id="file" type="file" accept=".insp,.jpg,.jpeg,image/jpeg" hidden>
   </div>
@@ -55,6 +57,7 @@
       <input id="margin" type="range" min="0" max="25" step="0.5" value="0"></label>
 
     <h2>Level</h2>
+    <label><span><input id="showGuides" type="checkbox" checked> Show horizon guides</span></label>
     <label><span>Camera roll <output id="rollOut">0.0°</output></span>
       <input id="roll" type="range" min="-180" max="180" step="0.1" value="0"></label>
     <label><span>Lens A nudge <output id="nudgeAOut">0.0°</output></span>
@@ -96,6 +99,7 @@
   <script src="exif.js"></script>
   <script src="shaders.js"></script>
   <script src="gl.js"></script>
+  <script src="settings.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

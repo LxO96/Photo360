@@ -2,6 +2,9 @@
   'use strict';
 
   const canvas = document.getElementById('view');
+  const guidesCanvas = document.getElementById('guides');
+  const stageEl = document.getElementById('stage');
+  const showGuidesEl = document.getElementById('showGuides');
   const dropEl = document.getElementById('drop');
   const fileEl = document.getElementById('file');
   const fovEl = document.getElementById('fov');
@@ -135,57 +138,246 @@
         ? `${c.overlapDeg.toFixed(1)}° past the hemisphere — ` +
           `${(c.duplicatedAreaFraction * 100).toFixed(0)}% of this image also appears in the other lens.`
         : `${(-c.overlapDeg).toFixed(1)}° short of the hemisphere — a gap between the two lenses.`;
+    drawGuides();
+  }
+
+  // Task 11: horizon guide overlay -- a plain 2D canvas laid exactly over
+  // #view, redrawn at the end of every render(). Positioned in CSS pixels
+  // from #view's own bounding box (rather than assumed to fill #stage) so
+  // it tracks whatever size/aspect the fit logic above just picked.
+  function positionGuides() {
+    const stageRect = stageEl.getBoundingClientRect();
+    const viewRect = canvas.getBoundingClientRect();
+    guidesCanvas.style.left = (viewRect.left - stageRect.left) + 'px';
+    guidesCanvas.style.top = (viewRect.top - stageRect.top) + 'px';
+    guidesCanvas.style.width = viewRect.width + 'px';
+    guidesCanvas.style.height = viewRect.height + 'px';
+    guidesCanvas.width = canvas.width;
+    guidesCanvas.height = canvas.height;
+  }
+
+  // The guide line for one circle is a straight line through its centre at
+  // that circle's own current roll -- correct because a horizon through the
+  // optical axis projects to a straight line in a fisheye. draw.rollDeg
+  // comes straight from GL.circleDraw, the same call renderComposition made
+  // to pick this pass's uRoll, so the line can never drift from what
+  // COMPOSITE_FS actually rendered. It can be drawn with cos/sin directly in
+  // canvas coordinates (x right, y down) with no sign flip: COMPOSITE_FS's
+  // theta is measured in a y-up frame, so screen-space clockwise there is
+  // the same direction as increasing atan2(dy, dx) here, in y-down canvas
+  // coordinates -- the two conventions are mirror images of each other in
+  // exactly the way that cancels out.
+  function drawGuides() {
+    if (!ctx || !state.sourceLensSize) return;
+    positionGuides();
+    const g = guidesCanvas.getContext('2d');
+    g.clearRect(0, 0, guidesCanvas.width, guidesCanvas.height);
+    if (!showGuidesEl.checked) return;
+    const layout = GL.compositionLayout(state, guidesCanvas.width, guidesCanvas.height);
+    for (const circ of layout.circles) {
+      const draw = GL.circleDraw(state, circ.lens);
+      const rollRad = draw.rollDeg * Math.PI / 180;
+      const dx = Math.cos(rollRad), dy = Math.sin(rollRad);
+
+      g.strokeStyle = 'rgba(255,255,255,0.35)';
+      g.lineWidth = 1;
+
+      // Crop-edge circle (u = 1).
+      g.beginPath();
+      g.arc(circ.cx, circ.cy, circ.radius, 0, Math.PI * 2);
+      g.stroke();
+
+      // Thirds grid, axis-aligned (a compositional aid, not tied to roll).
+      g.strokeStyle = 'rgba(255,255,255,0.15)';
+      g.beginPath();
+      for (let i = 1; i <= 2; i++) {
+        const fx = circ.cx - circ.radius + (circ.radius * 2) * (i / 3);
+        const fy = circ.cy - circ.radius + (circ.radius * 2) * (i / 3);
+        g.moveTo(fx, circ.cy - circ.radius); g.lineTo(fx, circ.cy + circ.radius);
+        g.moveTo(circ.cx - circ.radius, fy); g.lineTo(circ.cx + circ.radius, fy);
+      }
+      g.stroke();
+
+      // Horizon line -- through the centre, at this circle's own roll.
+      g.strokeStyle = 'rgba(255,80,80,0.85)';
+      g.beginPath();
+      g.moveTo(circ.cx - dx * circ.radius, circ.cy - dy * circ.radius);
+      g.lineTo(circ.cx + dx * circ.radius, circ.cy + dy * circ.radius);
+      g.stroke();
+    }
+  }
+
+  showGuidesEl.addEventListener('input', () => drawGuides());
+
+  // -- Drag-to-roll ----------------------------------------------------------
+  // Converts a pointer event's client coordinates into #view's own canvas
+  // pixel space (matching the targetW/targetH GL.compositionLayout was
+  // called with), independent of which overlapping element (view or guides)
+  // actually received the event.
+  function pointerToCanvas(e) {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / rect.width * canvas.width,
+      y: (e.clientY - rect.top) / rect.height * canvas.height,
+    };
+  }
+
+  let drag = null;
+
+  stageEl.addEventListener('pointerdown', (e) => {
+    if (!ctx || !state.sourceLensSize) return;
+    const p = pointerToCanvas(e);
+    const layout = GL.compositionLayout(state, canvas.width, canvas.height);
+    let best = null, bestDist = Infinity;
+    for (const c of layout.circles) {
+      const d = Math.hypot(p.x - c.cx, p.y - c.cy);
+      if (d < bestDist) { bestDist = d; best = c; }
+    }
+    if (!best || bestDist > best.radius * 1.15) return;
+    // The sign flip belongs to the *physical* lens being grabbed, not the
+    // slot label -- get it from GL.physicalLens, exactly as circleDraw does,
+    // so a drag under `swap` doesn't reintroduce the slot-vs-physical bug
+    // that circleDraw itself was created to prevent.
+    const physical = GL.physicalLens(state, best.lens);
+    drag = {
+      pointerId: e.pointerId,
+      cx: best.cx, cy: best.cy,
+      startAngleDeg: Math.atan2(p.y - best.cy, p.x - best.cx) * 180 / Math.PI,
+      startRollDeg: state.rollDeg,
+      sign: physical === 'B' ? -1 : 1,
+    };
+    e.target.setPointerCapture(e.pointerId);
+  });
+
+  stageEl.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    const p = pointerToCanvas(e);
+    const angleDeg = Math.atan2(p.y - drag.cy, p.x - drag.cx) * 180 / Math.PI;
+    state.rollDeg = Settings.rollForDrag(drag.startRollDeg, drag.sign, angleDeg - drag.startAngleDeg);
+    rollEl.value = state.rollDeg;
+    rollOut.textContent = state.rollDeg.toFixed(1) + '°';
+    render();
+    scheduleSave();
+  });
+
+  function endDrag(e) {
+    if (!drag || e.pointerId !== drag.pointerId) return;
+    drag = null;
+  }
+  stageEl.addEventListener('pointerup', endDrag);
+  stageEl.addEventListener('pointercancel', endDrag);
+
+  // -- Persistence -------------------------------------------------------
+  // Every control listener below calls scheduleSave() alongside render() so
+  // settings survive a reload; debounced so a dragged slider doesn't hit
+  // localStorage on every input event.
+  const SAVE_DEBOUNCE_MS = 250;
+  let saveTimer = null;
+  function scheduleSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => Settings.save(state, window.localStorage), SAVE_DEBOUNCE_MS);
+  }
+
+  function saveSettings() { Settings.save(state, window.localStorage); }
+
+  // Merges any stored settings over the current (default) state in place,
+  // then reflects the result in every control. Falls back silently to the
+  // defaults already on `state` if nothing usable is stored -- see
+  // settings.js for exactly what "usable" means.
+  function loadSettings() {
+    const loaded = Settings.load(state, window.localStorage);
+    Object.assign(state, loaded);
+    syncControlsFromState();
+  }
+
+  // Reflects `state` (whatever loadSettings just merged in, or the built-in
+  // defaults if there was nothing to load) into every control's value and
+  // its adjacent <output>. Mirrors applyEdgePreset's per-key loop below but
+  // covers every slider, not just the edge ones.
+  function syncControlsFromState() {
+    fovEl.value = state.fovDeg;
+    fovOut.textContent = state.fovDeg.toFixed(1) + '°';
+    sensorsEl.value = state.sensors;
+    orientationEl.value = state.orientation;
+    swapEl.checked = state.swap;
+    gapEl.value = state.gapFrac * 100;
+    gapOut.textContent = (state.gapFrac * 100).toFixed(1).replace(/\.0$/, '') + '%';
+    marginEl.value = state.marginFrac * 100;
+    marginOut.textContent = (state.marginFrac * 100).toFixed(1).replace(/\.0$/, '') + '%';
+    rollEl.value = state.rollDeg;
+    rollOut.textContent = state.rollDeg.toFixed(1) + '°';
+    nudgeAEl.value = state.nudgeDeg.A;
+    nudgeAOut.textContent = state.nudgeDeg.A.toFixed(1) + '°';
+    nudgeBEl.value = state.nudgeDeg.B;
+    nudgeBOut.textContent = state.nudgeDeg.B.toFixed(1) + '°';
+    for (const k of EDGE_KEYS) {
+      document.getElementById(k).value = state.edge[k];
+      document.getElementById(k + 'Out').textContent = state.edge[k];
+    }
+    for (const k of Object.keys(TONE_UNITS)) {
+      document.getElementById(k).value = state.tone[k];
+      document.getElementById(k + 'Out').textContent = state.tone[k].toFixed(2) + TONE_UNITS[k];
+    }
   }
 
   fovEl.addEventListener('input', () => {
     state.fovDeg = parseFloat(fovEl.value);
     fovOut.textContent = state.fovDeg.toFixed(1) + '°';
     render();
+    scheduleSave();
   });
 
   sensorsEl.addEventListener('input', () => {
     state.sensors = sensorsEl.value;
     render();
+    scheduleSave();
   });
 
   orientationEl.addEventListener('input', () => {
     state.orientation = orientationEl.value;
     render();
+    scheduleSave();
   });
 
   swapEl.addEventListener('input', () => {
     state.swap = swapEl.checked;
     render();
+    scheduleSave();
   });
 
   gapEl.addEventListener('input', () => {
     state.gapFrac = parseFloat(gapEl.value) / 100;
     gapOut.textContent = gapEl.value + '%';
     render();
+    scheduleSave();
   });
 
   marginEl.addEventListener('input', () => {
     state.marginFrac = parseFloat(marginEl.value) / 100;
     marginOut.textContent = marginEl.value + '%';
     render();
+    scheduleSave();
   });
 
   rollEl.addEventListener('input', () => {
     state.rollDeg = parseFloat(rollEl.value);
     rollOut.textContent = state.rollDeg.toFixed(1) + '°';
     render();
+    scheduleSave();
   });
 
   nudgeAEl.addEventListener('input', () => {
     state.nudgeDeg.A = parseFloat(nudgeAEl.value);
     nudgeAOut.textContent = state.nudgeDeg.A.toFixed(1) + '°';
     render();
+    scheduleSave();
   });
 
   nudgeBEl.addEventListener('input', () => {
     state.nudgeDeg.B = parseFloat(nudgeBEl.value);
     nudgeBOut.textContent = state.nudgeDeg.B.toFixed(1) + '°';
     render();
+    scheduleSave();
   });
 
   const EDGE_KEYS = ['edgeIntensity', 'ringWidth', 'dispersion', 'glowSpreadDeg',
@@ -198,6 +390,7 @@
       document.getElementById(k + 'Out').textContent = state.edge[k];
     }
     render();
+    scheduleSave();
   }
 
   for (const k of EDGE_KEYS) {
@@ -205,10 +398,10 @@
       state.edge[k] = parseFloat(e.target.value);
       document.getElementById(k + 'Out').textContent = e.target.value;
       render();
+      scheduleSave();
     });
   }
   document.getElementById('resetEdge').addEventListener('click', applyEdgePreset);
-  applyEdgePreset();
 
   // Task 10: exposure, contrast, saturation -- three global tone sliders,
   // wired the same generic way as EDGE_KEYS above.
@@ -219,8 +412,11 @@
       state.tone[k] = parseFloat(e.target.value);
       document.getElementById(k + 'Out').textContent = state.tone[k].toFixed(2) + TONE_UNITS[k];
       render();
+      scheduleSave();
     });
   }
+
+  loadSettings();
 
   dropEl.addEventListener('click', () => fileEl.click());
   fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));
@@ -293,5 +489,8 @@
     return maxDiff;
   }
 
-  window.App = { loadFile, state, render, rollFor: Lens.rollFor, checkParity };
+  window.App = {
+    loadFile, state, render, rollFor: Lens.rollFor, checkParity,
+    saveSettings, loadSettings,
+  };
 })();
