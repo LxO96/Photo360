@@ -2233,3 +2233,226 @@ Report the detected layout, lens size, calibration and duplication readout for e
 git add lens.js test/lens.test.js app.js
 git commit -m "feat: accept stacked 1:2 dual fisheye and calibrate per camera"
 ```
+
+---
+
+### Task 16: Uncompressed DNG input with per-lens white balance
+
+**Added 2026-09-12**, after the user supplied three Insta360 ONE X raw files and asked to be able
+to set white balance separately for them.
+
+**Files:**
+- Create: `dng.js`, `test/dng.test.js`
+- Modify: `shaders.js`, `gl.js`, `app.js`, `index.html`, `README.md`
+- Test: `test/dng.test.js`
+
+**Interfaces:**
+- Consumes: `Lens.detectLayout`, `Lens.calibrationFor`, `GL.renderComposition`.
+- Produces:
+  - `Dng.parse(bytes)` returning `{width, height, bitsPerSample, cfaPattern, blackLevel, whiteLevel, asShotNeutral, camToSrgb, stripOffset, stripByteCount, model, dateTimeOriginal}` or `null` when the file is not a DNG this decoder supports, so the caller can fall back to the JPEG path.
+  - `Dng.lastRejectionReason()` returning a human-readable explanation of the most recent `null`, for the UI.
+  - `GL.uploadBayer(ctx, index, plane, width, height)` uploading a raw CFA plane as a single-channel integer texture.
+  - `state.rawWhiteBalance` as `{A: [r, g, b], B: [r, g, b]}` or `null`, and `state.rawWbLinked` as a boolean.
+
+**Why this is tractable:** these files are the easy case, confirmed by direct inspection of all
+three. They are **uncompressed** (`Compression = 1`), so no lossless-JPEG decoder is needed — the
+Bayer plane is a plain strip whose byte count is exactly `width * height * 2`.
+
+| Property | Value (identical across all three files) |
+|---|---|
+| Dimensions | 3040 x 6080 — **1:2 stacked**, two 3040-square circles |
+| Model | `Insta360 One2` (the ONE X) |
+| Compression | `1` — uncompressed |
+| BitsPerSample / SamplesPerPixel | 16 / 1 |
+| PhotometricInterpretation | 32803 (CFA) |
+| CFAPattern | `(1, 0, 2, 1)` = GRBG |
+| BlackLevel / WhiteLevel | 1026 / 16383 |
+| AsShotNeutral | present, varies per shot (0.4995 / 0.5049 / 0.5032) |
+| StripByteCounts | 36966400 = 3040 x 6080 x 2 exactly |
+
+The stacked-1:2 geometry and the ONE X calibration already exist from Task 15, so this task adds
+**only** the decode and the white balance. The existing `state.thetaMaxDeg` path handles the rest.
+
+**User decisions (asked and answered):**
+- **Per-lens white balance, independent**, seeded from the file's `AsShotNeutral`, with a link
+  toggle to move both together. The motivating case is one lens in sun and the other in shade,
+  which a single white balance cannot fix.
+- **Neutral render, finish in Lightroom**: demosaic, white balance, the camera's colour matrix,
+  plain sRGB gamma. **No creative tone curve.**
+
+**Design constraint that makes white balance live:** upload the raw CFA plane to the GPU as a
+single-channel texture and do demosaic, white balance, colour matrix and gamma **in the shader**.
+White balance then costs nothing to change. Do not demosaic on the CPU and re-upload per change.
+
+- [ ] **Step 1: Write the failing parser tests**
+
+Create `test/dng.test.js`. These read the real files, which are git-ignored — note that in the
+file, as `test/exif.test.js` already does.
+
+```js
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const Dng = require('../dng.js');
+
+const DIR = path.join(__dirname, '..', 'Testfiles');
+const FILES = [
+  'IMG_20180101_044910_00_030.dng',
+  'IMG_20240825_174323_00_010.dng',
+  'IMG_20240825_174907_00_020.dng',
+];
+
+function load(name) {
+  return new Uint8Array(fs.readFileSync(path.join(DIR, name)));
+}
+
+test('it parses the geometry of every supplied ONE X raw', () => {
+  for (const name of FILES) {
+    const d = Dng.parse(load(name));
+    assert.ok(d, name + ' should parse');
+    assert.strictEqual(d.width, 3040);
+    assert.strictEqual(d.height, 6080);
+    assert.strictEqual(d.bitsPerSample, 16);
+  }
+});
+
+test('it reports the sensor calibration needed to linearise', () => {
+  const d = Dng.parse(load(FILES[1]));
+  assert.strictEqual(d.blackLevel, 1026);
+  assert.strictEqual(d.whiteLevel, 16383);
+  assert.deepStrictEqual(Array.from(d.cfaPattern), [1, 0, 2, 1]);
+});
+
+test('the strip is exactly an uncompressed 16-bit plane', () => {
+  const d = Dng.parse(load(FILES[1]));
+  assert.strictEqual(d.stripByteCount, d.width * d.height * 2);
+});
+
+test('it reads the as-shot white balance, which differs per shot', () => {
+  const a = Dng.parse(load(FILES[0])).asShotNeutral;
+  const b = Dng.parse(load(FILES[1])).asShotNeutral;
+  for (const wb of [a, b]) {
+    assert.strictEqual(wb.length, 3);
+    assert.ok(Math.abs(wb[1] - 1) < 1e-6, 'green is the reference channel and should be 1');
+    assert.ok(wb[0] > 0.3 && wb[0] < 0.8, 'red multiplier out of plausible range: ' + wb[0]);
+  }
+  assert.notDeepStrictEqual(a, b, 'these two shots have different as-shot white balance');
+});
+
+test('it identifies the camera so the ONE X calibration applies', () => {
+  assert.strictEqual(Dng.parse(load(FILES[1])).model, 'Insta360 One2');
+});
+
+test('a non-DNG returns null rather than throwing', () => {
+  assert.strictEqual(Dng.parse(new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0])), null);
+  assert.strictEqual(Dng.parse(new Uint8Array(0)), null);
+});
+```
+
+Add one more test of your own for the rejection path: build a minimal little-endian TIFF in the
+test whose `Compression` tag is 7 (JPEG), assert `Dng.parse` returns `null`, and assert
+`Dng.lastRejectionReason()` mentions compression. Write that header bytes-in-test rather than
+adding a test-only export to `dng.js`.
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `npm test`
+Expected: FAIL — `Cannot find module '../dng.js'`
+
+- [ ] **Step 3: Implement `dng.js`**
+
+Same UMD-ish wrapper as the other modules, attaching `root.Dng`. Pure bytes — no DOM, no WebGL,
+no file I/O.
+
+Parse the TIFF header (`II`/`MM`, honour both), walk IFD0, and read the tags in the table above.
+DNG puts the CFA data in IFD0 for these files, but real-world DNGs often use SubIFDs — follow tag
+330 when IFD0's `PhotometricInterpretation` is not 32803, and take the first SubIFD that is.
+Bound every read against the buffer length exactly as `exif.js` does; an earlier review fuzzed
+that parser with truncated and junk input and this must meet the same bar.
+
+**Reject rather than guess.** Return `null` and record a reason when: compression is anything but
+1, bits per sample is not 16, samples per pixel is not 1, the photometric interpretation is not
+CFA, or the strip byte count does not equal `width * height * 2`. Mis-decoding a raw file
+silently is far worse than declining it.
+
+Compute `camToSrgb` on the CPU here: DNG's `ColorMatrix1` maps **XYZ to camera**, so it must be
+inverted and chained with the XYZ-to-sRGB matrix. Do that once at parse time and expose the
+resulting 3x3 — never invert per fragment.
+
+- [ ] **Step 4: Run to verify they pass**
+
+Run: `npm test`
+Expected: PASS, count risen by 7.
+
+- [ ] **Step 5: Upload the CFA plane and demosaic in the shader**
+
+In `gl.js`, add `uploadBayer` creating an `R16UI` texture (`gl.R16UI` / `gl.RED_INTEGER` /
+`gl.UNSIGNED_SHORT`, `NEAREST` filtering — integer textures cannot be linearly filtered) from the
+lens's half of the plane. Split the stacked frame into two 3040-square planes, matching
+`Lens.detectLayout`'s stacked arrangement.
+
+In `shaders.js`, add a raw sampling path used in place of `sampleLensAt` when the source is raw:
+
+1. **Demosaic** with bilinear interpolation appropriate to the GRBG pattern, using `texelFetch`,
+   which needs no filtering.
+2. **Linearise**: `(value - blackLevel) / (whiteLevel - blackLevel)`, clamped at zero.
+3. **White balance**: divide by the per-lens neutral triple (green is 1, so this is a red and blue
+   gain). This is the control the user asked for and it must be a uniform, not baked in.
+4. **Colour matrix**: apply `camToSrgb` from `dng.js`.
+5. **Gamma**: plain sRGB transfer function. No creative curve.
+
+The existing tone controls, the terminator and the rim glow apply on top of this exactly as they
+do for JPEG sources — the raw path replaces only how a pixel is fetched and coloured, so the rim
+profile still measures the rendered image.
+
+- [ ] **Step 6: Wire the UI**
+
+`app.js`: when `Dng.parse` succeeds, take the geometry from it rather than `Exif.readJpegSize`,
+seed `state.rawWhiteBalance.A` and `.B` from `asShotNeutral`, and set the calibration from the
+parsed `model` through `Lens.calibrationFor`, falling back to the stacked-layout inference Task 15
+added. When `Dng.parse` returns `null` for a file whose name ends `.dng`, show
+`Dng.lastRejectionReason()` rather than a generic failure.
+
+`index.html`: a **White balance** group, shown only for raw sources, with per-lens red and blue
+multipliers (or temperature/tint derived from them — implementer's choice, but say which and
+why), a **Link A and B** checkbox defaulting to on, and a **Reset to as-shot** button. When
+linked, moving either lens's control moves both.
+
+Persist the white balance through `settings.js`'s existing mechanism, range-validated like every
+other numeric — but **`AsShotNeutral` from a freshly loaded file must win over a stored value**,
+the same precedence Task 15 established for `thetaMaxDeg`.
+
+- [ ] **Step 7: Default the output layout to the source's arrangement**
+
+A finding handed over from Task 14: the output Layout control is independent of the source file's
+own arrangement, so a stacked source exports side-by-side by default. With raw files also being
+stacked, fix the default: on load, set `state.orientation` to match the detected arrangement.
+The control stays free afterwards; this is a default, not a constraint.
+
+- [ ] **Step 8: Verify in the browser**
+
+Serve over HTTP and load each of the three `.dng` files plus one `.insp` and one ONE X `.jpg` to
+confirm nothing regressed. Report per file: parsed geometry, camera, calibration and confidence,
+the as-shot white balance, and the exported dimensions.
+
+Check specifically:
+- the demosaic produces no visible maze or zipper artefacts along high-contrast edges — sample a
+  region across the horizon and report the values;
+- changing a white-balance control visibly changes the render **without re-decoding** (time it);
+- the two lenses can be given genuinely different white balance, and the link toggle couples them;
+- a neutral subject renders neutral at the as-shot white balance — find a grey area and report R,
+  G and B;
+- an `.insp` file still renders identically to before this task.
+
+- [ ] **Step 9: Update the README and commit**
+
+Document raw support: which DNGs are accepted (uncompressed, 16-bit, CFA) and that others are
+declined with a reason rather than mis-decoded; that the render is deliberately neutral with no
+creative curve; and that white balance is per lens, seeded from the file and overridable.
+
+```bash
+git add dng.js test/dng.test.js shaders.js gl.js app.js index.html README.md
+git commit -m "feat: decode uncompressed DNG with per-lens white balance"
+```
