@@ -25,6 +25,108 @@
     return texture(lens, vec2(0.5) + off).rgb;
   }`;
 
+  // Shared by COMPOSITE_RAW_FS and PROFILE_BUILD_RAW_FS, exactly the way
+  // SAMPLE_LENS_GLSL is shared by the JPEG-source pair -- so the rim
+  // profile always measures the same rendered (demosaiced, white-balanced,
+  // colour-matrixed, gamma-encoded) pixels the viewer actually sees, never
+  // the raw Bayer values. `sampleRawLensAt` returns a gamma-encoded sRGB
+  // colour, matching what `sampleLensAt` returns when reading an ordinary
+  // RGBA8 texture -- so both composite/profile passes downstream (tone,
+  // terminator, glow) apply identically regardless of which sampler fed
+  // them.
+  //
+  // Demosaic: a plain bilinear reconstruction that works for any of the
+  // four standard 2x2 Bayer arrangements, not just GRBG, using one general
+  // property of every valid Bayer CFA: the orthogonal (up/down/left/right)
+  // neighbours of an R or B texel are always G, and the diagonal neighbours
+  // of an R texel are always B (and vice versa). uCfaPattern encodes which
+  // colour (0=R, 1=G, 2=B) sits at each of the 2x2 cell's four positions,
+  // read directly from the DNG's CFAPattern tag (dng.js).
+  const RAW_SAMPLE_GLSL = `
+  uniform highp usampler2D uLens;
+  uniform ivec2 uLensSize;
+  uniform ivec4 uCfaPattern;   // colour (0=R,1=G,2=B) at (0,0),(1,0),(0,1),(1,1)
+  uniform float uBlackLevel, uWhiteLevel;
+  uniform vec3  uWhiteBalance; // per-lens neutral triple; green is 1
+  uniform mat3  uCamToSrgb;
+
+  int cfaColorAt(ivec2 p) {
+    ivec2 m = ivec2(mod(vec2(p), 2.0));
+    int idx = m.y * 2 + m.x;
+    if (idx == 0) return uCfaPattern.x;
+    if (idx == 1) return uCfaPattern.y;
+    if (idx == 2) return uCfaPattern.z;
+    return uCfaPattern.w;
+  }
+
+  float fetchRaw(ivec2 p) {
+    ivec2 c = clamp(p, ivec2(0), uLensSize - ivec2(1));
+    return float(texelFetch(uLens, c, 0).r);
+  }
+
+  float linearizeRaw(float v) {
+    return clamp((v - uBlackLevel) / (uWhiteLevel - uBlackLevel), 0.0, 1.0);
+  }
+
+  vec3 srgbEncode(vec3 c) {
+    vec3 lo = c * 12.92;
+    vec3 hi = 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055;
+    return mix(hi, lo, step(c, vec3(0.0031308)));
+  }
+
+  vec3 demosaicAt(ivec2 p) {
+    int c = cfaColorAt(p);
+    float here = fetchRaw(p);
+    float rRaw, gRaw, bRaw;
+    if (c == 1) {
+      gRaw = here;
+      int leftColor = cfaColorAt(p + ivec2(-1, 0));
+      float horiz = (fetchRaw(p + ivec2(-1, 0)) + fetchRaw(p + ivec2(1, 0))) * 0.5;
+      float vert  = (fetchRaw(p + ivec2(0, -1)) + fetchRaw(p + ivec2(0, 1))) * 0.5;
+      if (leftColor == 0) { rRaw = horiz; bRaw = vert; } else { bRaw = horiz; rRaw = vert; }
+    } else {
+      float diag = (fetchRaw(p + ivec2(-1, -1)) + fetchRaw(p + ivec2(1, -1)) +
+                    fetchRaw(p + ivec2(-1, 1))  + fetchRaw(p + ivec2(1, 1))) * 0.25;
+      float orth = (fetchRaw(p + ivec2(-1, 0)) + fetchRaw(p + ivec2(1, 0)) +
+                    fetchRaw(p + ivec2(0, -1)) + fetchRaw(p + ivec2(0, 1))) * 0.25;
+      gRaw = orth;
+      if (c == 0) { rRaw = here; bRaw = diag; } else { bRaw = here; rRaw = diag; }
+    }
+    vec3 lin = vec3(linearizeRaw(rRaw), linearizeRaw(gRaw), linearizeRaw(bRaw));
+    // Clamp *before* the colour matrix, not just after: a channel that hit
+    // the sensor's white level is genuinely unknown past 1.0, and the white
+    // balance gain (up to ~2x on this camera's blue channel) pushes clipped
+    // highlights well past that. Feeding an ungrounded value that far out of
+    // range into a 3x3 whose rows aren't all positive (this one has large
+    // negative cross terms) doesn't recover detail -- it manufactures a
+    // colour that was never in the scene. Measured directly against a blown
+    // sky in these files: leaving the overshoot in produced a false magenta
+    // patch (high R and B, near-zero G) exactly where the sky clipped;
+    // clamping here first renders it a plausible white/pale blue instead.
+    lin = clamp(lin / uWhiteBalance, 0.0, 1.0);
+    vec3 srgbLinear = clamp(uCamToSrgb * lin, 0.0, 1.0);
+    return srgbEncode(srgbLinear);
+  }
+
+  // Raw planes are uploaded to the GPU exactly as they sit in the DNG file
+  // (row 0 = the top of the image, matching CFAPattern's own row order --
+  // see GL.uploadBayer), unlike the JPEG path's textures, which are decoded
+  // with imageOrientation:'flipY' so that texture v=0 already lands at the
+  // bottom (matching gl_FragCoord.y, which increases upward). Rather than
+  // flip the raw buffer itself on the CPU -- which would also require
+  // swapping the two rows of uCfaPattern to keep the colour phase correct,
+  // an easy way to get that subtly backwards -- flip only the vertical
+  // pixel-coordinate lookup here, leaving both the buffer and uCfaPattern
+  // exactly as the file provides them.
+  vec3 sampleRawLensAt(float u, float theta, float cropFrac, float roll) {
+    float a = theta + roll;
+    vec2 off = vec2(cos(a), sin(a)) * (u * cropFrac * 0.5);
+    vec2 uv = vec2(0.5) + off;
+    int px = int(floor(uv.x * float(uLensSize.x)));
+    int py = int(floor((1.0 - uv.y) * float(uLensSize.y)));
+    return demosaicAt(ivec2(px, py));
+  }`;
+
   const COMPOSITE_FS = `#version 300 es
   precision highp float;
   uniform sampler2D uLens;      // one square lens frame, S x S
@@ -205,5 +307,28 @@
     'float sv = 0.5 + 0.5 * sin(theta * 3.0); vec3 c = vec3(sv * u, sv * 0.5, 1.0 - sv);'
   );
 
-  return { FULLSCREEN_VS, COMPOSITE_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS };
+  // Builds the raw-source variant of a COMPOSITE_FS/PROFILE_BUILD_FS-shaped
+  // shader: swap the shared RGBA sampling snippet for RAW_SAMPLE_GLSL (see
+  // its own comment above for why this keeps the rim profile measuring the
+  // rendered image), drop the plain `sampler2D uLens` declaration those
+  // shaders open with (RAW_SAMPLE_GLSL declares its own `usampler2D`
+  // instead), and repoint the one `sampleLensAt(uLens, ...)` call each
+  // shader makes at `sampleRawLensAt(...)`, which needs no texture argument
+  // of its own -- it reads uLens itself, declared alongside it.
+  function toRawVariant(source) {
+    let s = replaceOrThrow(source, SAMPLE_LENS_GLSL, RAW_SAMPLE_GLSL);
+    s = replaceOrThrow(s, 'uniform sampler2D uLens;',
+      '// uLens (usampler2D) is declared by RAW_SAMPLE_GLSL above');
+    s = replaceOrThrow(s, 'sampleLensAt(uLens, u, theta, uCropFrac, uRoll)',
+      'sampleRawLensAt(u, theta, uCropFrac, uRoll)');
+    return s;
+  }
+
+  const COMPOSITE_RAW_FS = toRawVariant(COMPOSITE_FS);
+  const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS);
+
+  return {
+    FULLSCREEN_VS, COMPOSITE_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
+    COMPOSITE_RAW_FS, PROFILE_BUILD_RAW_FS,
+  };
 });

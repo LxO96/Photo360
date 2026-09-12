@@ -45,8 +45,8 @@ browser.
   `python -m http.server 8765` from the project root, then open
   `http://localhost:8765/index.html`.
 
-Drop an `.insp` or `.jpg` dual-fisheye file onto the page (or click to
-choose one) to get started.
+Drop an `.insp`, `.jpg`, or `.dng` dual-fisheye file onto the page (or click
+to choose one) to get started.
 
 ### Browser requirement
 
@@ -117,6 +117,33 @@ classic** restores the shipped values if you've been experimenting.
   brightness falloff itself: where in the source image a highlight starts
   counting toward the glow, and where and how abruptly the image fades to
   black at the true edge of the lens's field of view.
+
+### White balance (raw sources only)
+
+Shown only when the loaded file is a raw `.dng` — a JPEG/`.insp` has already
+been demosaiced and white balanced by the camera, so the panel has nothing
+to do there.
+
+- **Lens A/B red, Lens A/B blue** — each lens's own white balance,
+  independent of the other. The motivating case is one lens in sun and the
+  other in shade, which a single white-balance value can't fix. Each slider
+  directly edits one channel of that lens's neutral triple — the same
+  convention the file's own `AsShotNeutral` tag uses (green fixed at 1: the
+  renderer divides the demosaiced pixel by this triple, so a *lower* value
+  makes that channel *stronger* in the image). A slider was chosen over a
+  derived temperature/tint pair so the exposed control is mathematically
+  identical to what the shader consumes, with no separate conversion layer
+  to get subtly wrong.
+- **Link A and B** (on by default) — moving either lens's sliders moves
+  both, for the common case where you just want one overall white balance.
+  Turn it off to give the two lenses genuinely different white balance.
+- **Reset to as-shot** — returns both lenses to the file's own
+  `AsShotNeutral`, discarding any adjustment.
+
+Because white balance is applied in the fragment shader (demosaic, white
+balance, colour matrix and gamma all happen live, every frame, from the
+raw sensor data uploaded once at load time), moving these sliders costs
+nothing and never re-decodes the file.
 
 ### Tone
 
@@ -191,6 +218,72 @@ upscaled to some invented target resolution:
   on-screen size readout always shows the ratio you'll actually get, e.g.
   "1.86:1", so a departure from 2:1 is visible rather than silent.
 
+## Raw (DNG) input
+
+The page also accepts Insta360 ONE X raw files (`.dng`), decoded entirely by
+`dng.js` — pure byte parsing, no dependency, working the same from `file://`
+as over HTTP.
+
+**Only uncompressed 16-bit CFA (Bayer) DNGs are accepted.** Specifically:
+`Compression = 1` (uncompressed), 16 bits per sample, one sample per pixel,
+`PhotometricInterpretation = 32803` (CFA), and a single strip whose byte
+count matches `width × height × 2` exactly. A DNG that uses lossless-JPEG
+compression, is 12/14-bit, or is already demosaiced is **declined with a
+specific, human-readable reason** (shown in the same error area as any other
+load failure) rather than silently mis-decoded — mis-reading a raw file's
+sensor data one bit wrong produces a *plausible-looking wrong image*, which
+is worse than refusing it outright. `Dng.parse` returns `null` and
+`Dng.lastRejectionReason()` explains why; the page falls back to trying the
+JPEG path only if the file's extension isn't `.dng`.
+
+**The render is deliberately neutral: demosaic, white balance, the camera's
+own colour matrix, and a plain sRGB gamma curve — no creative tone curve.**
+The intent is a clean base to finish grading in Lightroom or similar, not a
+finished look. (The existing Tone and Edge controls still apply on top, the
+same as for a JPEG source, if you do want a look baked in before export.)
+
+Everything past the raw strip itself (demosaic, linearize, white balance,
+colour matrix, gamma) happens **in the fragment shader**, from a raw CFA
+plane uploaded once to the GPU as a 16-bit integer texture
+(`GL.uploadBayer`) — never re-decoded or re-uploaded when you move a
+white-balance slider, which is what makes that control free to use live.
+The demosaic is a plain bilinear reconstruction (no edge-aware
+sharpening) driven by the file's own `CFAPattern` tag, so it isn't limited
+to this camera's GRBG arrangement.
+
+**Colour matrix, and why it's not just `invert(ColorMatrix1)`.** A DNG's
+`ColorMatrix1` maps CIE XYZ to camera-native RGB — the opposite of what a
+renderer needs — so it's inverted once per file, on the CPU, at parse time
+(never per fragment). But inverting it and chaining straight into a fixed
+D50→sRGB matrix is *not* enough on its own to guarantee a neutral subject
+renders neutral: these files carry no `ForwardMatrix`/`CameraCalibration`/
+`AnalogBalance` tags, so nothing pins the calibration illuminant's white to
+the D50 the fixed matrix assumes. Measured directly against the three
+supplied files, that naive chain puts a perfectly white-balanced neutral at
+roughly `(2.03, 0.54, 1.46)` in linear sRGB — nowhere near grey. `dng.js`
+additionally normalizes the matrix so its own neutral point (its row sums)
+lands at exactly `(1, 1, 1)`, folded into the same 3×3 so nothing extra runs
+per fragment. Verified against a real, visually neutral patch in one of the
+supplied files: R, G, B come out within 0.003 of each other before gamma.
+This is a one-time per-channel correction, not a full chromatic adaptation,
+so it isn't colorimetrically perfect for strongly saturated colors — an
+acceptable trade given the stated goal is a neutral base to finish
+elsewhere, not absolute colour accuracy.
+
+**Blown highlights are clamped before the colour matrix, not after.** A
+channel that hit the sensor's white level is genuinely unknown past that
+point, and a per-lens white-balance gain (up to roughly 2× on this camera's
+blue channel) pushes a clipped channel well past 1.0 before white balance
+even finishes. Feeding that far-out-of-range value into a matrix with large
+negative cross terms doesn't recover detail — it manufactures a colour that
+was never in the scene (a blown sky rendered a stark, saturated magenta was
+the first symptom found while building this). Clamping the white-balanced
+value to `[0, 1]` before the matrix, rather than only clamping its output,
+renders the same clipped sky a plausible pale white/blue instead.
+
+**Per-lens white balance, not a single global one.** See "White balance" in
+"The controls" above.
+
 ## The edge preset and its known limits
 
 The rim-glow shape shipped as `Edge.PRESETS.x1classic` (`edge.js`) was
@@ -240,18 +333,18 @@ comment above `PRESETS` in `edge.js`, and reproduced in detail by running
 npm test
 ```
 
-runs the whole suite (`node test/run.js`, currently 141 assertions) headlessly
+runs the whole suite (`node test/run.js`, currently 148 assertions) headlessly
 in Node — no browser needed for this. It covers the lens math, edge/rim
-math, EXIF handling, roll/nudge geometry, settings persistence, and a
-JS/GLSL parity fixture for the rim-profile shaders.
+math, EXIF and DNG header parsing, roll/nudge geometry, settings persistence,
+and a JS/GLSL parity fixture for the rim-profile shaders.
 
 **`Testfiles/` is git-ignored** (it holds ~85 MB of real camera output) —
-a fresh clone of this repository does not have it. `test/exif.test.js`
-reads specific files from `Testfiles/` directly (by filename, e.g.
-`Sunscreen.insp`) and will fail with a file-not-found error on a fresh
-clone until you supply your own copies of those files at the same paths.
-The rest of the suite does not depend on `Testfiles/` and passes on a bare
-clone.
+a fresh clone of this repository does not have it. `test/exif.test.js` and
+`test/dng.test.js` read specific files from `Testfiles/` directly (by
+filename, e.g. `Sunscreen.insp`, or the three `.dng` raw files) and will fail
+with a file-not-found error on a fresh clone until you supply your own
+copies of those files at the same paths. The rest of the suite does not
+depend on `Testfiles/` and passes on a bare clone.
 
 `tools/fit-x1-edge.py` and `tools/verify-rim.py` are developer tools, not
 part of the test suite — they need Python 3 with `numpy`, `Pillow`, and (for

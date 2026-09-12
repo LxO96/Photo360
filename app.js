@@ -33,6 +33,18 @@
   const padToSensorSquareEl = document.getElementById('padToSensorSquare');
   const exportSizeEl = document.getElementById('exportSize');
   const exportBtn = document.getElementById('export');
+  const whiteBalanceHeadingEl = document.getElementById('whiteBalanceHeading');
+  const whiteBalanceGroupEl = document.getElementById('whiteBalanceGroup');
+  const wbRedAEl = document.getElementById('wbRedA');
+  const wbRedAOut = document.getElementById('wbRedAOut');
+  const wbBlueAEl = document.getElementById('wbBlueA');
+  const wbBlueAOut = document.getElementById('wbBlueAOut');
+  const wbRedBEl = document.getElementById('wbRedB');
+  const wbRedBOut = document.getElementById('wbRedBOut');
+  const wbBlueBEl = document.getElementById('wbBlueB');
+  const wbBlueBOut = document.getElementById('wbBlueBOut');
+  const wbLinkEl = document.getElementById('wbLink');
+  const wbResetEl = document.getElementById('wbReset');
 
   const state = {
     fovDeg: 180, thetaMaxDeg: Lens.THETA_MAX_DEG,
@@ -90,6 +102,33 @@
     padToSensorSquare: false,
     format: 'jpeg',
     quality: 95,
+    // -- Raw (DNG) source state (Task 16) -----------------------------
+    // True only while the currently loaded file is an uncompressed DNG.
+    // Drives which shader program renderComposition/buildProfile pick
+    // (GL.js) and whether the White balance panel is shown at all.
+    isRaw: false,
+    // The loaded raw file's own fixed calibration -- describes the file,
+    // like calibration/sourceName above, so deliberately not persisted.
+    // {cfaPattern, blackLevel, whiteLevel, camToSrgb} or null.
+    rawMeta: null,
+    // The file's own AsShotNeutral, kept aside (untouched by the sliders)
+    // so "Reset to as-shot" always has something to return to even after
+    // both lenses have been pulled apart. Not persisted, describes the file.
+    rawAsShotNeutral: null,
+    // Per-lens white balance the user can adjust independently -- keyed by
+    // *physical* lens (A/B), exactly like nudgeDeg above, and looked up
+    // through GL.physicalLens at render time so `swap` can never cross the
+    // texture/white-balance pairing the way it once could for roll (see
+    // GL.circleDraw's own comment). {A: [r,g,b], B: [r,g,b]} or null.
+    // Seeded from rawAsShotNeutral on every raw load -- Task 15 established
+    // that a freshly loaded file's own calibration beats a stored value,
+    // and the same precedence applies here.
+    rawWhiteBalance: null,
+    // Whether moving one lens's white-balance sliders moves both. A plain
+    // user preference (not per-file data), so -- unlike rawMeta/
+    // rawWhiteBalance -- this is worth persisting; see loadRawWbPrefs below
+    // for why that persistence lives outside settings.js.
+    rawWbLinked: true,
   };
   let ctx = null;
 
@@ -142,10 +181,124 @@
     return fallback;
   }
 
+  // Extracts one lens's square Bayer plane out of a DNG's single strip as a
+  // Uint16Array, honouring the file's own byte order (`d.littleEndian`).
+  // `o` is the lens's {x, y} offset within the full stacked frame (from
+  // Lens.detectLayout), in the same pixel-row/column space CFAPattern's own
+  // phase is defined in -- both `o.x` and `o.y` are exact multiples of the
+  // lens size (3040 for these files), which is itself even, so slicing here
+  // never shifts the CFA phase relative to the tag dng.js already read.
+  function extractBayerPlane(bytes, d, o, size) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const plane = new Uint16Array(size * size);
+    const rowBytes = d.width * 2;
+    for (let row = 0; row < size; row++) {
+      const srcRowStart = d.stripOffset + (o.y + row) * rowBytes + o.x * 2;
+      let p = row * size;
+      for (let col = 0; col < size; col++) {
+        plane[p++] = dv.getUint16(srcRowStart + col * 2, d.littleEndian);
+      }
+    }
+    return plane;
+  }
+
+  // Applies the arrangement Lens.detectLayout found to state.orientation --
+  // the output Layout control otherwise defaults to 'side' regardless of
+  // the source file's own shape (a stacked 1:2 source used to export
+  // side-by-side by default; Task 14 finding, Task 16 brief Step 7). This
+  // is only ever a default: the control stays free to change afterward.
+  function defaultOrientationToArrangement(arrangement) {
+    if (arrangement !== 'stacked' && arrangement !== 'side') return;
+    state.orientation = arrangement;
+    orientationEl.value = state.orientation;
+  }
+
+  // Shows/hides the White balance panel -- it only makes sense for a raw
+  // source, since a JPEG/.insp file has already been demosaiced and white
+  // balanced by the camera.
+  function updateWbVisibility() {
+    whiteBalanceHeadingEl.classList.toggle('hidden', !state.isRaw);
+    whiteBalanceGroupEl.classList.toggle('hidden', !state.isRaw);
+  }
+
+  // Reflects state.rawWhiteBalance into the four sliders/outputs.
+  function syncWbControls() {
+    if (!state.rawWhiteBalance) return;
+    wbRedAEl.value = state.rawWhiteBalance.A[0];
+    wbRedAOut.textContent = state.rawWhiteBalance.A[0].toFixed(3);
+    wbBlueAEl.value = state.rawWhiteBalance.A[2];
+    wbBlueAOut.textContent = state.rawWhiteBalance.A[2].toFixed(3);
+    wbRedBEl.value = state.rawWhiteBalance.B[0];
+    wbRedBOut.textContent = state.rawWhiteBalance.B[0].toFixed(3);
+    wbBlueBEl.value = state.rawWhiteBalance.B[2];
+    wbBlueBOut.textContent = state.rawWhiteBalance.B[2].toFixed(3);
+    wbLinkEl.checked = state.rawWbLinked;
+  }
+
+  // Loads an uncompressed DNG: parses it with Dng.parse (pure bytes, no
+  // decode), slices its single Bayer strip into one Uint16Array per lens,
+  // and uploads those as integer textures (GL.uploadBayer) instead of the
+  // JPEG path's createImageBitmap + GL.uploadLens. The rest of the pipeline
+  // (calibration, orientation default, layout) is shared with loadFile
+  // below via the helpers above.
+  async function loadDngFile(file, buf) {
+    const bytes = new Uint8Array(buf);
+    const d = Dng.parse(bytes);
+    if (!d) {
+      fail(Dng.lastRejectionReason());
+      return;
+    }
+    const layout = Lens.detectLayout(d.width, d.height);
+    if (layout.kind === 'unsupported') {
+      fail('Not a fisheye file: expected a 2:1 or 1:2 dual fisheye or a 1:1 single fisheye.');
+      return;
+    }
+    if (!ctx) ctx = GL.create(canvas);
+    if (layout.lensSize > ctx.maxTextureSize) {
+      fail('This GPU caps textures at ' + ctx.maxTextureSize + ' px; this raw file\'s ' +
+        layout.lensSize + 'px lenses cannot be downscaled without corrupting the sensor ' +
+        'pattern, so this raw file cannot be loaded on this GPU.');
+      return;
+    }
+    for (let i = 0; i < layout.lenses.length; i++) {
+      const plane = extractBayerPlane(bytes, d, layout.lenses[i], layout.lensSize);
+      GL.uploadBayer(ctx, i, plane, layout.lensSize, layout.lensSize);
+    }
+    state.isRaw = true;
+    state.rawMeta = { cfaPattern: d.cfaPattern, blackLevel: d.blackLevel, whiteLevel: d.whiteLevel, camToSrgb: d.camToSrgb };
+    state.rawAsShotNeutral = d.asShotNeutral.slice();
+    // A freshly loaded file's own AsShotNeutral always wins over whatever
+    // white balance a previous file (or session) left behind -- the same
+    // precedence Task 15 established for thetaMaxDeg (see the comment on
+    // that assignment in loadFile below).
+    state.rawWhiteBalance = { A: d.asShotNeutral.slice(), B: d.asShotNeutral.slice() };
+    const calibration = Lens.calibrationFor(d.model, layout.arrangement);
+    state.thetaMaxDeg = calibration.thetaMaxDeg;
+    state.calibration = calibration;
+    state.calibrationGuessedFromShape = !calibration.model && layout.arrangement === 'stacked';
+    state.sourceName = file.name;
+    state.sourceExif = Exif.buildApp1({ make: '', model: d.model, dateTimeOriginal: d.dateTimeOriginal });
+    state.sourceLensSize = layout.lensSize;
+    state.uploadedLensSize = layout.lensSize;
+    defaultOrientationToArrangement(layout.arrangement);
+    dropEl.classList.add('hidden');
+    thetaMaxEl.value = state.thetaMaxDeg;
+    thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
+    updateCalibrationReadout();
+    updateWbVisibility();
+    syncWbControls();
+    render();
+    scheduleSave();
+  }
+
   async function loadFile(file) {
     errorEl.textContent = '';
     try {
       const buf = await file.arrayBuffer();
+      if (/\.dng$/i.test(file.name)) {
+        await loadDngFile(file, buf);
+        return;
+      }
       const blob = new Blob([buf], { type: 'image/jpeg' });  // .insp has no MIME type
       const size = await probeSize(blob, buf);
       const layout = Lens.detectLayout(size.width, size.height);
@@ -189,14 +342,20 @@
       state.thetaMaxDeg = calibration.thetaMaxDeg;
       state.calibration = calibration;
       state.calibrationGuessedFromShape = !calibration.model && layout.arrangement === 'stacked';
+      state.isRaw = false;
+      state.rawMeta = null;
+      state.rawAsShotNeutral = null;
+      state.rawWhiteBalance = null;
       state.sourceName = file.name;
       state.sourceExif = Exif.buildApp1(tags);
       state.sourceLensSize = layout.lensSize;
       state.uploadedLensSize = overLimit ? ctx.maxTextureSize : layout.lensSize;
+      defaultOrientationToArrangement(layout.arrangement);
       dropEl.classList.add('hidden');
       thetaMaxEl.value = state.thetaMaxDeg;
       thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
       updateCalibrationReadout();
+      updateWbVisibility();
       render();
       scheduleSave();
     } catch (e) {
@@ -518,6 +677,76 @@
     scheduleSave();
   });
 
+  // -- White balance (Task 16) ---------------------------------------
+  // Each control edits one channel of one physical lens's neutral triple
+  // (see the White balance panel's own note in index.html for why lower
+  // means stronger). When linked, editing either lens's slider moves both,
+  // since the motivating case (one lens in sun, the other in shade) needs
+  // them independent only when the user deliberately pulls them apart.
+  function setWbChannel(lens, channelIndex, value) {
+    if (!state.rawWhiteBalance) return;
+    state.rawWhiteBalance[lens][channelIndex] = value;
+    if (state.rawWbLinked) {
+      const other = lens === 'A' ? 'B' : 'A';
+      state.rawWhiteBalance[other][channelIndex] = value;
+    }
+    syncWbControls();
+    render();
+    scheduleSave();
+  }
+
+  wbRedAEl.addEventListener('input', () => setWbChannel('A', 0, parseFloat(wbRedAEl.value)));
+  wbBlueAEl.addEventListener('input', () => setWbChannel('A', 2, parseFloat(wbBlueAEl.value)));
+  wbRedBEl.addEventListener('input', () => setWbChannel('B', 0, parseFloat(wbRedBEl.value)));
+  wbBlueBEl.addEventListener('input', () => setWbChannel('B', 2, parseFloat(wbBlueBEl.value)));
+
+  wbLinkEl.addEventListener('input', () => {
+    state.rawWbLinked = wbLinkEl.checked;
+    // Turning the link on snaps B to A immediately, rather than leaving
+    // them apart until the next slider move -- "linked" should mean linked
+    // the instant it's turned on.
+    if (state.rawWbLinked && state.rawWhiteBalance) {
+      state.rawWhiteBalance.B = state.rawWhiteBalance.A.slice();
+    }
+    syncWbControls();
+    render();
+    scheduleSave();
+    saveRawWbPrefs();
+  });
+
+  wbResetEl.addEventListener('click', () => {
+    if (!state.rawAsShotNeutral) return;
+    state.rawWhiteBalance = {
+      A: state.rawAsShotNeutral.slice(),
+      B: state.rawAsShotNeutral.slice(),
+    };
+    syncWbControls();
+    render();
+    scheduleSave();
+  });
+
+  // rawWbLinked is a plain user preference (not per-file data, unlike
+  // rawWhiteBalance itself, which is always re-seeded from the loaded
+  // file's AsShotNeutral) -- worth persisting across reloads the same way
+  // every other control in EDGE_KEYS/TONE_UNITS is, via Settings.save.
+  // Settings.PERSISTED_KEYS is a fixed list inside settings.js, which this
+  // task does not modify, so this one boolean is persisted through a
+  // second, dedicated localStorage key instead of extending that list.
+  const RAW_WB_PREFS_KEY = 'photo360.rawwb-prefs.v1';
+  function saveRawWbPrefs() {
+    try {
+      window.localStorage.setItem(RAW_WB_PREFS_KEY, JSON.stringify({ linked: state.rawWbLinked }));
+    } catch (e) { /* storage disabled/full -- ignore, same as Settings.save */ }
+  }
+  function loadRawWbPrefs() {
+    try {
+      const raw = window.localStorage.getItem(RAW_WB_PREFS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.linked === 'boolean') state.rawWbLinked = parsed.linked;
+    } catch (e) { /* corrupt/inaccessible -- keep the default */ }
+  }
+
   const EDGE_KEYS = ['edgeIntensity', 'ringWidth', 'dispersion', 'glowSpreadDeg',
                      'highlightKnee', 'falloffStart', 'falloffSoftness'];
 
@@ -665,6 +894,8 @@
   });
 
   loadSettings();
+  loadRawWbPrefs();
+  wbLinkEl.checked = state.rawWbLinked;
 
   dropEl.addEventListener('click', () => fileEl.click());
   fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));

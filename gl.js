@@ -45,8 +45,14 @@
       maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
       maxRenderbufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE),
       textures: [null, null],
+      // Per-texture size, populated by uploadBayer (uploadLens doesn't need
+      // it -- the JPEG path samples with normalized UVs via `texture()`,
+      // not `texelFetch`, so it never needs to know pixel dimensions).
+      textureSize: [null, null],
       composite: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_FS),
+      compositeRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_RAW_FS),
       profileBuild: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_FS),
+      profileBuildRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_RAW_FS),
       profileBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BLUR_FS),
       vao: gl.createVertexArray(),
       profileTargets: [null, null],  // lazily allocated ping-pong RGBA16F targets
@@ -98,16 +104,41 @@
   const U_MIN = 0.94;
   const U_MAX = 1.0;
 
+  // Sets the raw-path-only uniforms (demosaic/linearise/white-balance/
+  // colour-matrix inputs) shared by COMPOSITE_RAW_FS and PROFILE_BUILD_RAW_FS
+  // -- one place for both, so they can never disagree about which lens's
+  // white balance or which camera's calibration is in effect, the same
+  // reasoning as GL.circleDraw for texture/roll. `physicalLens` must be the
+  // *physical* lens ('A'/'B'), not the output slot label -- see circleDraw's
+  // own comment for why that distinction matters under `swap`.
+  function setRawUniforms(gl, program, ctx, texIndex, state, physicalLens) {
+    const meta = state.rawMeta;
+    const size = ctx.textureSize[texIndex];
+    const wb = (state.rawWhiteBalance && state.rawWhiteBalance[physicalLens]) || [1, 1, 1];
+    const u = (n) => gl.getUniformLocation(program, n);
+    gl.uniform2i(u('uLensSize'), size ? size.width : 1, size ? size.height : 1);
+    gl.uniform4i(u('uCfaPattern'), meta.cfaPattern[0], meta.cfaPattern[1], meta.cfaPattern[2], meta.cfaPattern[3]);
+    gl.uniform1f(u('uBlackLevel'), meta.blackLevel);
+    gl.uniform1f(u('uWhiteLevel'), meta.whiteLevel);
+    gl.uniform3f(u('uWhiteBalance'), wb[0], wb[1], wb[2]);
+    // uCamToSrgb is row-major (dng.js); WebGL2 allows `transpose: true` on
+    // uniformMatrix3fv (unlike WebGL1), so it can be uploaded as-is instead
+    // of being transposed into GLSL's column-major convention by hand.
+    gl.uniformMatrix3fv(u('uCamToSrgb'), true, meta.camToSrgb);
+  }
+
   // Renders the two rim-profile passes (build, then angular blur) for one
   // lens circle into a bins x 1 RGBA16F texture and returns it. The
   // returned texture belongs to ctx's ping-pong pair and is reused on the
   // next call -- callers must finish using it (e.g. bind it for the
-  // composite draw) before calling buildProfile again.
-  function buildProfile(ctx, state, texIndex, rollRad) {
+  // composite draw) before calling buildProfile again. `physicalLens` is
+  // only used (and only required) when state.isRaw -- see setRawUniforms.
+  function buildProfile(ctx, state, texIndex, rollRad, physicalLens) {
     const gl = ctx.gl;
     const bins = Edge.PROFILE_BINS;
     ensureProfileTargets(ctx, bins);
     const [a, b] = ctx.profileTargets;
+    const profileProgram = state.isRaw ? ctx.profileBuildRaw : ctx.profileBuild;
 
     gl.bindVertexArray(ctx.vao);
     gl.disable(gl.BLEND);
@@ -118,10 +149,10 @@
     // convention) so the glow this drives lines up with the image it came
     // from -- see PROFILE_BUILD_FS / sampleLens in shaders.js.
     gl.bindFramebuffer(gl.FRAMEBUFFER, a.fbo);
-    gl.useProgram(ctx.profileBuild);
+    gl.useProgram(profileProgram);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, ctx.textures[texIndex]);
-    const ub = (n) => gl.getUniformLocation(ctx.profileBuild, n);
+    const ub = (n) => gl.getUniformLocation(profileProgram, n);
     gl.uniform1i(ub('uLens'), 0);
     gl.uniform1f(ub('uBins'), bins);
     gl.uniform1i(ub('uRadialSamples'), RADIAL_SAMPLES);
@@ -131,6 +162,7 @@
     gl.uniform1f(ub('uExponent'), state.edge.highlightExponent);
     gl.uniform1f(ub('uCropFrac'), Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg));
     gl.uniform1f(ub('uRoll'), rollRad);
+    if (state.isRaw) setRawUniforms(gl, profileProgram, ctx, texIndex, state, physicalLens);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     // Pass 2: blur the raw profile angularly, wrapping around the circle.
@@ -186,6 +218,32 @@
     // engine -- verified empirically with an isolated 2x2-texel texture.
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
     ctx.textures[index] = t;
+    ctx.textureSize[index] = null;
+  }
+
+  // Uploads one lens's raw CFA (Bayer) plane -- a Uint16Array of width*height
+  // sensor readings, one integer per pixel, no colour of its own yet -- as a
+  // single-channel 16-bit *integer* texture. R16UI/RED_INTEGER/UNSIGNED_SHORT
+  // is the only combination WebGL2 allows for an integer texture; such
+  // textures cannot be linearly filtered by the hardware at all (only
+  // NEAREST is legal), which is exactly what the raw shader path wants
+  // anyway -- it demosaics with its own explicit neighbour sampling
+  // (texelFetch), not GPU bilinear filtering. `plane` is uploaded exactly as
+  // given, in the DNG's own row order (row 0 = the top of the image) --
+  // see shaders.js's sampleRawLensAt for why the vertical flip the JPEG path
+  // needs is handled in the sampling math instead of here.
+  function uploadBayer(ctx, index, plane, width, height) {
+    const gl = ctx.gl;
+    if (ctx.textures[index]) gl.deleteTexture(ctx.textures[index]);
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16UI, width, height, 0, gl.RED_INTEGER, gl.UNSIGNED_SHORT, plane);
+    ctx.textures[index] = t;
+    ctx.textureSize[index] = { width, height };
   }
 
   const GLOW_HEADROOM = 0.08;   // fraction of the circle radius reserved outside the edge
@@ -201,9 +259,10 @@
   function renderComposition(ctx, state, targetW, targetH, targetFbo) {
     const gl = ctx.gl;
     const layout = compositionLayout(state, targetW, targetH);
+    const compositeProgram = state.isRaw ? ctx.compositeRaw : ctx.composite;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
     gl.bindVertexArray(ctx.vao);
-    gl.useProgram(ctx.composite);
+    gl.useProgram(compositeProgram);
     gl.clearColor(state.background[0], state.background[1], state.background[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.enable(gl.BLEND);
@@ -212,6 +271,7 @@
     for (const c of layout.circles) {
       const draw = circleDraw(state, c.lens);
       if (!ctx.textures[draw.texIndex]) continue;
+      const physical = physicalLens(state, c.lens);
       const rollRad = draw.rollDeg * Math.PI / 180;
       // buildProfile renders into ctx's own bins x 1 framebuffer (its own
       // coordinate frame, unrelated to this viewport) before the composite
@@ -219,7 +279,7 @@
       // It always ends by unbinding to the default framebuffer, so this
       // draw's own target -- the canvas by default, or targetFbo for an
       // export -- has to be re-bound afterward, every time round this loop.
-      const profileTex = buildProfile(ctx, state, draw.texIndex, rollRad);
+      const profileTex = buildProfile(ctx, state, draw.texIndex, rollRad, physical);
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
       // Cell reaches diameter * (1 + 2*GLOW_HEADROOM) so a later task's rim
       // glow, which extends past the crop edge, has room to render.
@@ -227,7 +287,7 @@
       const vx = Math.round(c.cx - cell / 2);
       const vy = Math.round(targetH - c.cy - cell / 2);
       gl.bindVertexArray(ctx.vao);
-      gl.useProgram(ctx.composite);
+      gl.useProgram(compositeProgram);
       // buildProfile disables blending for its own passes; the composite
       // draw below needs it back on (additive, so overlapping cells don't
       // clobber each other's background-filled corners).
@@ -238,8 +298,9 @@
       gl.bindTexture(gl.TEXTURE_2D, ctx.textures[draw.texIndex]);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, profileTex);
-      const u = (n) => gl.getUniformLocation(ctx.composite, n);
+      const u = (n) => gl.getUniformLocation(compositeProgram, n);
       gl.uniform1i(u('uLens'), 0);
+      if (state.isRaw) setRawUniforms(gl, compositeProgram, ctx, draw.texIndex, state, physical);
       // gl_FragCoord is in absolute framebuffer pixels (see shaders.js), so
       // the shader needs this cell's viewport origin to recover local
       // center-relative coordinates. Use the same rounded values as the
@@ -413,7 +474,7 @@
   }
 
   return {
-    create, uploadLens, renderComposition, compositionLayout, lensTextureIndex,
+    create, uploadLens, uploadBayer, renderComposition, compositionLayout, lensTextureIndex,
     physicalLens, circleDraw, program, buildProfile, readProfile, makeProfileTarget,
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
   };
