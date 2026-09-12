@@ -37,7 +37,6 @@
     nudgeDeg: { A: 0, B: 0 },
     sensors: 'A', swap: false,
     orientation: 'side',
-    gapFrac: 0,
     // Task 12: at marginFrac 0 the synthesized rim glow is cropped at the
     // canvas boundary -- compositionLayout gives the circle the full
     // canvas half-width, so the glow's headroom (GL.GLOW_HEADROOM, 8% of
@@ -48,6 +47,19 @@
     // exactly GL's own glow headroom -- so the fitted edge this tool works
     // hard to produce is visible out of the box. Anyone who wants the
     // flush-to-frame look still has the Margin slider, down to 0%.
+    //
+    // The stated output requirement is a circle on a black square, either
+    // 1:1 (one lens) or exactly 2:1/1:2 (both). A single lens stays square
+    // under any margin, but the two-up layout is
+    // width = 2*diameter + gap + 2*margin, height = diameter + 2*margin --
+    // exactly 2:1 only when gap == 2*margin (see Lens.exportLayout and
+    // test/lens.test.js). Defaulting gapFrac to twice marginFrac keeps the
+    // shipped defaults on the required 2:1/1:2 while still showing the
+    // fitted rim; the two sliders stay fully independent otherwise -- a
+    // user who moves one away from this relationship gets a different
+    // aspect ratio on purpose, which #exportSize's ratio suffix makes
+    // visible rather than silent.
+    gapFrac: 0.16,
     marginFrac: 0.08,
     background: [0, 0, 0],
     sourceName: '', sourceLensSize: 0,
@@ -184,7 +196,19 @@
     const note = state.padToSensorSquare
       ? (downscaled ? 'upscaled to this GPU’s capped texture size' : 'upscaled to sensor square')
       : (downscaled ? 'native to this GPU’s capped texture size' : 'native, no invented resolution');
-    exportSizeEl.textContent = `Exports at ${g.width} × ${g.height} px (${note})`;
+    exportSizeEl.textContent =
+      `Exports at ${g.width} × ${g.height} px (${note}) — ${aspectRatioLabel(g.width, g.height)}`;
+  }
+
+  // A terse "W:H" label (e.g. "2:1", "1:2", "1.86:1") so the shipped
+  // defaults' exact 2:1/1:2 requirement -- which depends on gapFrac and
+  // marginFrac agreeing (gapFrac == 2*marginFrac, see the state comment
+  // above and test/lens.test.js) -- stays visible the moment either slider
+  // moves away from that relationship, instead of only showing up as a
+  // slightly-off pixel count someone has to do the division on themselves.
+  function aspectRatioLabel(w, h) {
+    const trim = (n) => n.toFixed(2).replace(/\.?0+$/, '');
+    return w >= h ? `${trim(w / h)}:1` : `1:${trim(h / w)}`;
   }
 
   // Task 11: horizon guide overlay -- a plain 2D canvas laid exactly over

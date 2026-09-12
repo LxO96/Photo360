@@ -121,6 +121,71 @@ test('exporting lens B alone still yields one centred circle labelled B', () => 
   assert.deepStrictEqual(g.circles, [{ cx: 2000, cy: 2000, lens: 'B' }]);
 });
 
+// -- Task 12 follow-up: the stated output requirement is a circle on a
+// black square, either 1:1 (one lens) or exactly 2:1 (side by side) /
+// 1:2 (stacked). A single lens is square under any margin (equal on all
+// four sides), but the two-up layout is
+// width = 2*diameter + gap + 2*margin, height = diameter + 2*margin, which
+// is exactly 2:1 only when gap == 2*margin. app.js's shipped defaults
+// (gapFrac 0.16, marginFrac 0.08) rely on exactly this relationship to stay
+// on 2:1/1:2 while still leaving room for the rim glow -- these tests pin
+// it so a future change to either default can't quietly break it again.
+test('side-by-side is exactly 2:1 whenever gap equals twice the margin', () => {
+  for (const [diameter, marginPx] of [[5100, 0], [5100, 408], [4000, 250], [2000, 500]]) {
+    const gapPx = 2 * marginPx;
+    const g = Lens.exportLayout({
+      circleDiameter: diameter, sensors: 'both', orientation: 'side', gapPx, marginPx,
+    });
+    assert.strictEqual(g.width, g.height * 2,
+      `diameter=${diameter} margin=${marginPx}: expected exactly 2:1, got ${g.width}x${g.height}`);
+  }
+});
+
+test('stacked is exactly 1:2 whenever gap equals twice the margin', () => {
+  for (const [diameter, marginPx] of [[5100, 0], [5100, 408], [4000, 250], [2000, 500]]) {
+    const gapPx = 2 * marginPx;
+    const g = Lens.exportLayout({
+      circleDiameter: diameter, sensors: 'both', orientation: 'stacked', gapPx, marginPx,
+    });
+    assert.strictEqual(g.height, g.width * 2,
+      `diameter=${diameter} margin=${marginPx}: expected exactly 1:2, got ${g.width}x${g.height}`);
+  }
+});
+
+test('the shipped defaults (gapFrac 0.16, marginFrac 0.08) land on exactly 2:1 / 1:2', () => {
+  const diameter = 5100; // an arbitrary but representative circle size
+  const marginPx = Math.round(0.08 * diameter);
+  const gapPx = Math.round(0.16 * diameter);
+  const side = Lens.exportLayout({
+    circleDiameter: diameter, sensors: 'both', orientation: 'side', gapPx, marginPx,
+  });
+  assert.strictEqual(side.width, side.height * 2);
+  const stacked = Lens.exportLayout({
+    circleDiameter: diameter, sensors: 'both', orientation: 'stacked', gapPx, marginPx,
+  });
+  assert.strictEqual(stacked.height, stacked.width * 2);
+});
+
+test('a two-up export is NOT exactly 2:1 when gap does not equal twice the margin', () => {
+  // Confirms the assertions above are actually testing something -- gap and
+  // margin chosen away from the 2*margin relationship must not coincide
+  // with 2:1 by accident.
+  const g = Lens.exportLayout({
+    circleDiameter: 5100, sensors: 'both', orientation: 'side', gapPx: 0, marginPx: 408,
+  });
+  assert.notStrictEqual(g.width, g.height * 2);
+});
+
+test('single-lens export stays exactly 1:1 for any margin', () => {
+  for (const marginPx of [0, 1, 100, 408, 1000, 2500]) {
+    const g = Lens.exportLayout({
+      circleDiameter: 5100, sensors: 'A', orientation: 'side', gapPx: 999, marginPx,
+    });
+    assert.strictEqual(g.width, g.height,
+      `marginPx=${marginPx}: expected square, got ${g.width}x${g.height}`);
+  }
+});
+
 test('filenames record the source, lens and FOV', () => {
   assert.strictEqual(
     Lens.exportFilename('Sunscreen.insp', 'A', 180, 'jpg'),
