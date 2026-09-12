@@ -125,6 +125,16 @@
   // axis its run-out is about twice as wide as any ONE X circle's. One
   // terminator cannot be both, and averaging them fits neither.
   //
+  // SHADOW-BAND OPTIMIZATION: The fit was constrained to the sky band only
+  // (BAND_WEIGHT = [1.0, 0.0] in tools/fit-x1-edge.py). The shadow bands are
+  // measured and stored but deliberately excluded from the fit objective.
+  // Their out-of-circle content is sun-positioned veiling glare, which the
+  // model's content-driven glow cannot reproduce, so including them would only
+  // corrupt the fitted parameters. The resulting shadow-band RMS per circle
+  // ranges from 0.0359 to 0.0709, exceeding the brief's stated 0.06 bar:
+  // onex1_top=0.0359, onex1_bot=0.0408, onex2_top=0.0553, onex2_bot=0.0709.
+  // This is a known intentional deviation from the brief's requirement.
+  //
   // KNOWN LIMITATION -- the rendered ring is less saturated than the
   // references. `dispersion` and `ringWidth` are only weakly constrained: the
   // radial objective is luminance-dominated and cannot see a thin chromatic

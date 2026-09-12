@@ -364,3 +364,25 @@ test('the X1 preset produces a rim that is actually visible, and brighter where 
       `shadow rim ${shadow.toFixed(5)} -- the glow is not tracking content`);
   }
 });
+
+test('the unfitted shadow band stays within its observed range (regression guard, not a quality target)', () => {
+  // The fit was constrained to the sky band only (BAND_WEIGHT=[1.0, 0.0] in
+  // tools/fit-x1-edge.py). The shadow bands' out-of-circle content is
+  // sun-positioned veiling glare that the model cannot reproduce, so they were
+  // deliberately excluded from the objective to avoid corrupting the sky-fitted
+  // parameters. This test is a regression guard: it pins the shadow RMS to the
+  // values actually observed in the fit, so any future preset drift is caught.
+  // The values are NOT a quality target and do NOT meet the brief's 0.06 bar.
+  // Observed per-circle shadow RMS when fit: onex1_top=0.0359, onex1_bot=0.0408,
+  // onex2_top=0.0553, onex2_bot=0.0709. Threshold set to 0.072 (just above worst).
+  const p = Edge.PRESETS.x1classic;
+  const SHADOW_THRESHOLD = 0.072;
+  const perCircle = fittedCircles.map((c) => ({ id: c.id, rms: bandRms(p, x1Fixture, c, 'shadow') }));
+  const detail = perCircle.map((c) => `${c.id}=${c.rms.toFixed(4)}`).join(', ');
+
+  for (const c of perCircle) {
+    assert.ok(c.rms < SHADOW_THRESHOLD,
+      `circle "${c.id}" shadow RMS ${c.rms.toFixed(4)} exceeds the regression guard ${SHADOW_THRESHOLD}; ` +
+      `per-circle: ${detail}`);
+  }
+});

@@ -177,7 +177,10 @@ UNCONSTRAINED_DEFAULTS = {
 # measured, stored and reported, but carry zero weight: what they contain
 # outside the image circle is sun-positioned veiling glare, which the shader's
 # content-driven glow does not model and cannot be asked to reproduce. Fitting
-# them would bend the terminator to chase it.
+# them would bend the terminator to chase it. NOTE: This is a deviation from the
+# brief's stated requirement to hold the shadow band within the 0.06 RMS
+# tolerance; this choice prioritizes sky-band accuracy over an unattainable
+# shadow-band constraint.
 BAND_WEIGHT = np.array([1.0, 0.0])
 
 # rimBell's width and hazeWidth both centre on u = 1, so the RMS objective
