@@ -221,8 +221,26 @@
     },
   };
 
+  // Task 10: global tone -- exposure, contrast, saturation. Applied to the
+  // photograph itself (COMPOSITE_FS, right after sampling, before the
+  // terminator); this is the JS reference the GLSL mirrors.
+  function applyTone(rgb, tone) {
+    if (tone.exposureEv === 0 && tone.contrast === 0 && tone.saturation === 0) {
+      return rgb.slice ? rgb.slice() : [rgb[0], rgb[1], rgb[2]];
+    }
+    const gain = Math.pow(2, tone.exposureEv);
+    const k = 1 + tone.contrast;
+    const out = [];
+    for (let i = 0; i < 3; i++) out[i] = (rgb[i] * gain - 0.5) * k + 0.5;
+    const luma = LUMA.r * out[0] + LUMA.g * out[1] + LUMA.b * out[2];
+    const s = 1 + tone.saturation;
+    for (let i = 0; i < 3; i++) out[i] = luma + (out[i] - luma) * s;
+    return out;
+  }
+
   return {
     DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight,
     PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS,
+    applyTone,
   };
 });

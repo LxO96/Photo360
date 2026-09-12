@@ -210,6 +210,18 @@
   document.getElementById('resetEdge').addEventListener('click', applyEdgePreset);
   applyEdgePreset();
 
+  // Task 10: exposure, contrast, saturation -- three global tone sliders,
+  // wired the same generic way as EDGE_KEYS above.
+  const TONE_UNITS = { exposureEv: ' EV', contrast: '', saturation: '' };
+
+  for (const k of Object.keys(TONE_UNITS)) {
+    document.getElementById(k).addEventListener('input', (e) => {
+      state.tone[k] = parseFloat(e.target.value);
+      document.getElementById(k + 'Out').textContent = state.tone[k].toFixed(2) + TONE_UNITS[k];
+      render();
+    });
+  }
+
   dropEl.addEventListener('click', () => fileEl.click());
   fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));
   document.addEventListener('dragover', (e) => { e.preventDefault(); });

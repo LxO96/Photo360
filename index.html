@@ -80,6 +80,14 @@
       <input id="falloffSoftness" type="range" min="0.3" max="4" step="0.05"></label>
     <button id="resetEdge" type="button">Reset to X1 classic</button>
 
+    <h2>Tone</h2>
+    <label><span>Exposure <output id="exposureEvOut">0.00 EV</output></span>
+      <input id="exposureEv" type="range" min="-3" max="3" step="0.01" value="0"></label>
+    <label><span>Contrast <output id="contrastOut">0.00</output></span>
+      <input id="contrast" type="range" min="-1" max="1" step="0.01" value="0"></label>
+    <label><span>Saturation <output id="saturationOut">0.00</output></span>
+      <input id="saturation" type="range" min="-1" max="1" step="0.01" value="0"></label>
+
     <div id="error"></div>
   </aside>
 

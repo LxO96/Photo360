@@ -39,11 +39,24 @@
   uniform float uEdgeIntensity, uRingWidth, uDispersion;
   uniform float uHazeWidth, uHazeStrength;
   uniform float uTerminatorDesaturate, uTerminatorCoolShift;
+  uniform vec3  uTone;          // exposureEv, contrast, saturation
   out vec4 fragColor;
   ` + SAMPLE_LENS_GLSL + `
 
   const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
   const vec3 COOL = vec3(0.82, 0.92, 1.12);   // cast the last of the image picks up
+
+  // Mirrors edge.js applyTone exactly, including its pass-through guard, so
+  // uTone = vec3(0.0) is bit-identical to tone being absent.
+  vec3 applyTone(vec3 rgb, vec3 tone) {
+    if (tone.x == 0.0 && tone.y == 0.0 && tone.z == 0.0) return rgb;
+    float gain = pow(2.0, tone.x);
+    float k = 1.0 + tone.y;
+    vec3 toned = (rgb * gain - vec3(0.5)) * k + vec3(0.5);
+    float luma = dot(toned, LUMA);
+    float s = 1.0 + tone.z;
+    return luma + (toned - luma) * s;
+  }
 
   float terminator(float u) {
     if (u <= uFalloffStart) return 1.0;
@@ -75,6 +88,7 @@
     vec3 img = vec3(0.0);
     if (u < 1.0) {
       img = sampleLensAt(uLens, u, theta, uCropFrac, uRoll);
+      img = applyTone(img, uTone);
       float term = terminator(u);
       float fade = 1.0 - term;
       img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);
