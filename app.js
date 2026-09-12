@@ -138,6 +138,7 @@
         }
       }
       state.sourceName = file.name;
+      state.sourceExif = Exif.buildApp1(Exif.readTags(new Uint8Array(buf)));
       state.sourceLensSize = layout.lensSize;
       state.uploadedLensSize = overLimit ? ctx.maxTextureSize : layout.lensSize;
       dropEl.classList.add('hidden');
