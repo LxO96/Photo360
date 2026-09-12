@@ -478,34 +478,68 @@
     updateExportSize();
   });
 
+  // Rows read back from the export target per readPixels/putImageData call
+  // (see GL.readCompositionStrips). Chosen so one strip's buffer stays a
+  // small fraction of the full image even at the widest layout this tool
+  // produces (two lenses side by side, ~11900px wide): 256 rows there is
+  // 11900*256*4 =~ 12.2MB, versus ~283MB for the whole two-lens frame in one
+  // shot. Also keeps the call count reasonable -- about 23 strips for one
+  // 5952px-tall lens, not 5952 single-row calls.
+  const EXPORT_STRIP_ROWS = 256;
+
   // The single render entry point (GL.renderComposition) used by both the
-  // on-screen preview and this export -- there is no second rendering path
-  // to keep in sync with it.
+  // on-screen preview and this export -- export just points it at an
+  // offscreen framebuffer instead of the canvas, so the preview is never
+  // touched (no resize, no restore) and the export is never subject to
+  // whatever drawing-buffer allocation limit the visible canvas has (this
+  // GPU/browser clamps that well below MAX_TEXTURE_SIZE; an offscreen FBO
+  // is not -- see the task report for how that was found and confirmed).
   async function exportImage(opts) {
     state.format = opts.format;
     state.quality = opts.quality;
     state.padToSensorSquare = opts.padToSensorSquare;
     const g = GL.exportGeometry(state);
-    const prevW = canvas.width, prevH = canvas.height;
-    const prevStyle = [canvas.style.width, canvas.style.height];
+    const gl = ctx.gl;
+    let target = null;
     try {
-      canvas.width = g.width;
-      canvas.height = g.height;
-      GL.renderComposition(ctx, state, g.width, g.height);
-      // WebGL is allowed to silently allocate a smaller drawing buffer than
-      // requested when it can't honour the size (observed in practice on a
-      // preserveDrawingBuffer:true context well under this GPU's own
-      // MAX_TEXTURE_SIZE/MAX_RENDERBUFFER_SIZE limits -- a runtime memory
-      // budget, not a fixed cap those queries would catch). canvas.width
-      // still reads back as what we set even when this happens, but
-      // toBlob() encodes the actual (smaller) backing store, so without
-      // this check the file written would silently be smaller than
-      // #exportSize just promised.
-      if (ctx.gl.drawingBufferWidth !== g.width || ctx.gl.drawingBufferHeight !== g.height) {
-        throw new Error('DRAWING_BUFFER_CLAMPED');
+      const limit = Math.min(ctx.maxTextureSize, ctx.maxRenderbufferSize);
+      if (g.width > limit || g.height > limit) {
+        fail(`This GPU caps render targets at ${limit}px; the requested export ` +
+          `(${g.width}x${g.height}) exceeds it. Try a smaller FOV, remove padding, ` +
+          'or export one lens at a time.');
+        return;
       }
+      target = GL.makeExportTarget(gl, g.width, g.height);
+      if (!target.complete) {
+        fail(`This GPU could not allocate a ${g.width}x${g.height} render target ` +
+          `(framebuffer status ${target.status}). Try a smaller FOV, remove padding, ` +
+          'or export one lens at a time.');
+        return;
+      }
+      GL.renderComposition(ctx, state, g.width, g.height, target.fbo);
+
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = g.width;
+      outCanvas.height = g.height;
+      // A 2D canvas has its own (browser-specific, but generous) area
+      // limit, distinct from the WebGL drawing-buffer clamp this replaces;
+      // if it silently shrank the request the same way, that would show up
+      // here exactly as it did on the WebGL canvas.
+      if (outCanvas.width !== g.width || outCanvas.height !== g.height) {
+        fail(`This browser's 2D canvas cannot hold a ${g.width}x${g.height} image ` +
+          `(it gave ${outCanvas.width}x${outCanvas.height} instead). Try a smaller FOV, ` +
+          'remove padding, or export one lens at a time.');
+        return;
+      }
+      const c2d = outCanvas.getContext('2d');
+      GL.readCompositionStrips(gl, target.fbo, g.width, g.height, EXPORT_STRIP_ROWS,
+        (rowsRGBA, outY, rows) => {
+          const clamped = new Uint8ClampedArray(rowsRGBA.buffer, rowsRGBA.byteOffset, rowsRGBA.length);
+          c2d.putImageData(new ImageData(clamped, g.width, rows), 0, outY);
+        });
+
       const blob = await new Promise((resolve, reject) => {
-        canvas.toBlob(
+        outCanvas.toBlob(
           (b) => (b ? resolve(b) : reject(new Error('TOBLOB_FAILED'))),
           opts.format === 'png' ? 'image/png' : 'image/jpeg',
           opts.quality / 100
@@ -521,15 +555,9 @@
       fail(e.message === 'TOBLOB_FAILED'
         ? `The browser could not encode a ${g.width}x${g.height} image. ` +
           'Try PNG, a smaller FOV, or exporting one lens at a time.'
-        : e.message === 'DRAWING_BUFFER_CLAMPED'
-          ? `This GPU/browser could not allocate a ${g.width}x${g.height} canvas ` +
-            `(it silently gave ${ctx.gl.drawingBufferWidth}x${ctx.gl.drawingBufferHeight} instead). ` +
-            'Try a smaller FOV, remove padding, or export one lens at a time.'
-          : 'Export failed: ' + e.message);
+        : 'Export failed: ' + e.message);
     } finally {
-      canvas.width = prevW; canvas.height = prevH;
-      canvas.style.width = prevStyle[0]; canvas.style.height = prevStyle[1];
-      render();
+      if (target) GL.deleteExportTarget(gl, target);
     }
   }
 

@@ -66,3 +66,84 @@ test('margin and gap scale off the export diameter, not a fixed reference', () =
   const margin = Math.round(0.08 * diameter);
   assert.strictEqual(g.width, diameter + 2 * margin);
 });
+
+// -- readCompositionStrips: the vertical-flip / strip-boundary logic ------
+// gl.readPixels fills bottom-up (GL y=0 is the bottom of the framebuffer);
+// ImageData/canvas is top-down. Getting this backwards exports every image
+// upside down -- exactly the kind of defect an earlier task already found
+// once in this codebase (the texture y-flip at decode time), so this is
+// tested directly against a fake `gl` whose readPixels fills each texel
+// with its own GL row/column, independent of any real WebGL context.
+function fakeGl(overrides) {
+  return Object.assign({
+    FRAMEBUFFER: 'FRAMEBUFFER', RGBA: 'RGBA', UNSIGNED_BYTE: 'UNSIGNED_BYTE',
+    boundFbo: undefined,
+    bindFramebuffer(target, fbo) { this.boundFbo = fbo; },
+    readPixels(x, y, w, h, format, type, out) {
+      // Encode each texel's own GL-space row (y+row) and column (x+col) so
+      // the test can check exactly which source pixel ends up where.
+      for (let row = 0; row < h; row++) {
+        for (let col = 0; col < w; col++) {
+          const i = (row * w + col) * 4;
+          out[i] = (y + row) & 0xff;
+          out[i + 1] = (x + col) & 0xff;
+          out[i + 2] = 0;
+          out[i + 3] = 255;
+        }
+      }
+    },
+  }, overrides);
+}
+
+test('readCompositionStrips flips GL bottom-up rows into top-down output order', () => {
+  const gl = fakeGl();
+  const w = 4, h = 10, stripRows = 3;
+  const rowsSeen = [];
+  GL.readCompositionStrips(gl, 'fbo', w, h, stripRows, (buf, outY, rows) => {
+    for (let r = 0; r < rows; r++) {
+      // Column 0's red channel carries the GL row that landed at this
+      // output row -- read it back out to check the flip, per output row.
+      rowsSeen[outY + r] = buf[r * w * 4];
+    }
+  });
+  assert.strictEqual(rowsSeen.length, h);
+  // Output row 0 (top of the final image) must be GL row h-1 (top of the
+  // framebuffer in GL's y-up space); output row h-1 (bottom) must be GL
+  // row 0. Every row in between mirrors the same relationship.
+  for (let outY = 0; outY < h; outY++) {
+    assert.strictEqual(rowsSeen[outY], h - 1 - outY,
+      `output row ${outY} should be GL row ${h - 1 - outY}, got ${rowsSeen[outY]}`);
+  }
+});
+
+test('readCompositionStrips preserves column order (only rows flip, not columns)', () => {
+  const gl = fakeGl();
+  const w = 5, h = 4, stripRows = 4;
+  let firstStripCols = null;
+  GL.readCompositionStrips(gl, 'fbo', w, h, stripRows, (buf, outY, rows) => {
+    if (outY === 0) {
+      firstStripCols = [];
+      for (let c = 0; c < w; c++) firstStripCols.push(buf[c * 4 + 1]); // green = column
+    }
+  });
+  assert.deepStrictEqual(firstStripCols, [0, 1, 2, 3, 4]);
+});
+
+test('readCompositionStrips handles a final partial strip shorter than stripRows', () => {
+  const gl = fakeGl();
+  const w = 2, h = 7, stripRows = 3; // strips of 3, 3, 1
+  const strips = [];
+  GL.readCompositionStrips(gl, 'fbo', w, h, stripRows, (buf, outY, rows) => {
+    strips.push({ outY, rows });
+  });
+  assert.deepStrictEqual(strips, [{ outY: 0, rows: 3 }, { outY: 3, rows: 3 }, { outY: 6, rows: 1 }]);
+});
+
+test('readCompositionStrips binds the given fbo and restores the default framebuffer', () => {
+  const gl = fakeGl();
+  const seen = [];
+  gl.bindFramebuffer = function (target, fbo) { seen.push(fbo); };
+  GL.readCompositionStrips(gl, 'my-fbo', 2, 2, 2, () => {});
+  assert.strictEqual(seen[0], 'my-fbo');
+  assert.strictEqual(seen[seen.length - 1], null);
+});

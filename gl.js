@@ -43,6 +43,7 @@
       gl,
       canvas,
       maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+      maxRenderbufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE),
       textures: [null, null],
       composite: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_FS),
       profileBuild: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_FS),
@@ -189,9 +190,18 @@
 
   const GLOW_HEADROOM = 0.08;   // fraction of the circle radius reserved outside the edge
 
-  function renderComposition(ctx, state, targetW, targetH) {
+  // `targetFbo` is optional: omitted (or null/undefined), this renders to
+  // the default framebuffer -- the canvas -- exactly as before. Passed a
+  // framebuffer (see makeExportTarget below), it renders there instead, at
+  // whatever size targetW/targetH describe, independent of the canvas's own
+  // size or of any drawing-buffer limit the canvas is subject to. This is
+  // still the single render path for both preview and export -- export just
+  // supplies a different destination framebuffer, not a second
+  // implementation of any of the logic below.
+  function renderComposition(ctx, state, targetW, targetH, targetFbo) {
     const gl = ctx.gl;
     const layout = compositionLayout(state, targetW, targetH);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
     gl.bindVertexArray(ctx.vao);
     gl.useProgram(ctx.composite);
     gl.clearColor(state.background[0], state.background[1], state.background[2], 1);
@@ -206,7 +216,11 @@
       // buildProfile renders into ctx's own bins x 1 framebuffer (its own
       // coordinate frame, unrelated to this viewport) before the composite
       // draw below reclaims the GL state (program, viewport, vao) it needs.
+      // It always ends by unbinding to the default framebuffer, so this
+      // draw's own target -- the canvas by default, or targetFbo for an
+      // export -- has to be re-bound afterward, every time round this loop.
       const profileTex = buildProfile(ctx, state, draw.texIndex, rollRad);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
       // Cell reaches diameter * (1 + 2*GLOW_HEADROOM) so a later task's rim
       // glow, which extends past the crop edge, has room to render.
       const cell = Math.round(c.radius * 2 * (1 + 2 * GLOW_HEADROOM));
@@ -250,6 +264,7 @@
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.BLEND);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
   // Which uploaded texture backs a given output slot, honouring the swap.
@@ -300,6 +315,71 @@
     };
   }
 
+  // A texture-backed offscreen framebuffer at the export's full pixel size.
+  // Unlike the visible canvas, an offscreen FBO's colour attachment is not
+  // subject to whatever drawing-buffer allocation limit the browser/driver
+  // imposes on the canvas itself -- only to MAX_TEXTURE_SIZE /
+  // MAX_RENDERBUFFER_SIZE (checked by the caller before this is created)
+  // and to the GPU's actual available memory (checked here, via
+  // checkFramebufferStatus, since that's the only way to find out).
+  // NEAREST filtering: this texture is only ever written once by
+  // renderComposition and then read back pixel-for-pixel, never resampled.
+  function makeExportTarget(gl, w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, width: w, height: h, complete: status === gl.FRAMEBUFFER_COMPLETE, status };
+  }
+
+  function deleteExportTarget(gl, target) {
+    gl.deleteTexture(target.tex);
+    gl.deleteFramebuffer(target.fbo);
+  }
+
+  // Reads an export target back top-down, in horizontal strips of at most
+  // `stripRows` rows, calling `onStrip(rowsRGBA, outY, rows)` for each --
+  // `rowsRGBA` is a Uint8Array of `w * rows * 4` bytes, already flipped into
+  // top-down (ImageData) row order, `outY` is that strip's first row in the
+  // final top-down image. Bounds peak memory to one strip (plus whatever the
+  // caller does with it) instead of the whole image: a two-lens side-by-side
+  // export can be ~11900px wide, and a naive single readPixels there would
+  // be ~283MB for the raw bytes alone, then as much again once copied into
+  // an ImageData. gl.readPixels fills the framebuffer's own bottom-up row
+  // order (GL y=0 is the bottom), the opposite of ImageData/canvas's
+  // top-down order, so each strip is read from the matching bottom-up
+  // y-range and then has its rows reversed in place before the callback
+  // sees it -- getting this flip backwards would export every image upside
+  // down, so callers must not skip it and should verify against a known
+  // pixel (see test/export.test.js and the live check in the task report).
+  function readCompositionStrips(gl, fbo, w, h, stripRows, onStrip) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    const buf = new Uint8Array(w * stripRows * 4);
+    for (let outY = 0; outY < h; outY += stripRows) {
+      const rows = Math.min(stripRows, h - outY);
+      const glY = h - outY - rows; // bottom edge of this slice, in GL's own y-up coords
+      const view = rows === stripRows ? buf : buf.subarray(0, w * rows * 4);
+      gl.readPixels(0, glY, w, rows, gl.RGBA, gl.UNSIGNED_BYTE, view);
+      const rowBytes = w * 4;
+      const tmp = new Uint8Array(rowBytes);
+      for (let i = 0, j = rows - 1; i < j; i++, j--) {
+        tmp.set(view.subarray(i * rowBytes, i * rowBytes + rowBytes));
+        view.set(view.subarray(j * rowBytes, j * rowBytes + rowBytes), i * rowBytes);
+        view.set(tmp, j * rowBytes);
+      }
+      onStrip(view, outY, rows);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
   // Pixel geometry for the exported file -- same crop math the preview
   // uses, but sized off the frame actually decoded onto the GPU
   // (state.uploadedLensSize), not the source file's own lens size
@@ -335,6 +415,6 @@
   return {
     create, uploadLens, renderComposition, compositionLayout, lensTextureIndex,
     physicalLens, circleDraw, program, buildProfile, readProfile, makeProfileTarget,
-    exportGeometry,
+    exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
   };
 });
