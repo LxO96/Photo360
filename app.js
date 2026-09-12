@@ -235,16 +235,18 @@
     }
     if (!best || bestDist > best.radius * 1.15) return;
     // The sign flip belongs to the *physical* lens being grabbed, not the
-    // slot label -- get it from GL.physicalLens, exactly as circleDraw does,
-    // so a drag under `swap` doesn't reintroduce the slot-vs-physical bug
-    // that circleDraw itself was created to prevent.
-    const physical = GL.physicalLens(state, best.lens);
+    // slot label -- Settings.dragSign resolves that through GL.physicalLens,
+    // exactly as circleDraw does, so a drag under `swap` doesn't reintroduce
+    // the slot-vs-physical bug that circleDraw itself was created to
+    // prevent. This is the one call site for that decision; it is not
+    // re-derived here.
+    const { sign } = Settings.dragSign(state, best.lens, GL.physicalLens);
     drag = {
       pointerId: e.pointerId,
       cx: best.cx, cy: best.cy,
       startAngleDeg: Math.atan2(p.y - best.cy, p.x - best.cx) * 180 / Math.PI,
       startRollDeg: state.rollDeg,
-      sign: physical === 'B' ? -1 : 1,
+      sign,
     };
     e.target.setPointerCapture(e.pointerId);
   });

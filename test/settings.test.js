@@ -2,6 +2,13 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const Settings = require('../settings.js');
+// gl.js expects a global Lens (browser <script> load order); dragSign's
+// tests exercise it together with the real GL.physicalLens, not a stand-in,
+// so a regression to reading the slot label instead of the physical lens
+// inside gl.js itself would also be caught here.
+const Lens = require('../lens.js');
+global.Lens = Lens;
+const GL = require('../gl.js');
 
 const DEFAULTS = {
   fovDeg: 180, thetaMaxDeg: 105,
@@ -163,4 +170,88 @@ test('rollForDrag negates the delta for lens B (sign -1), so it follows the poin
 test('rollForDrag clamps to +-180', () => {
   assert.strictEqual(Settings.rollForDrag(170, 1, 30), 180);
   assert.strictEqual(Settings.rollForDrag(-170, -1, 30), -180);
+});
+
+// -- dragSign: the sign selection app.js's pointerdown handler must call
+// directly, not re-derive. All four slot x swap combinations, checking the
+// resolved physical lens and its sign together -- the bug this pins is
+// precisely those two disagreeing (a slot's sign coming from its label
+// instead of the physical lens the swap put behind it).
+test('dragSign: slot A, swap off -> physical A, sign +1', () => {
+  const state = { swap: false };
+  assert.deepStrictEqual(Settings.dragSign(state, 'A', GL.physicalLens), { physical: 'A', sign: 1 });
+});
+
+test('dragSign: slot B, swap off -> physical B, sign -1', () => {
+  const state = { swap: false };
+  assert.deepStrictEqual(Settings.dragSign(state, 'B', GL.physicalLens), { physical: 'B', sign: -1 });
+});
+
+test('dragSign: slot A, swap on -> physical B, sign -1', () => {
+  const state = { swap: true };
+  assert.deepStrictEqual(Settings.dragSign(state, 'A', GL.physicalLens), { physical: 'B', sign: -1 });
+});
+
+test('dragSign: slot B, swap on -> physical A, sign +1', () => {
+  const state = { swap: true };
+  assert.deepStrictEqual(Settings.dragSign(state, 'B', GL.physicalLens), { physical: 'A', sign: 1 });
+});
+
+// -- range validation ------------------------------------------------------
+
+test('an out-of-range finite number clamps into its RANGES domain instead of passing through', () => {
+  const out = Settings.sanitize(DEFAULTS, { fovDeg: 99999, gapFrac: 5, rollDeg: 1e12 });
+  assert.strictEqual(out.fovDeg, 210);
+  assert.strictEqual(out.gapFrac, 0.25);
+  assert.strictEqual(out.rollDeg, 180);
+});
+
+test('a negative-going out-of-range number clamps to the low bound', () => {
+  const out = Settings.sanitize(DEFAULTS, { fovDeg: -50, rollDeg: -1e9 });
+  assert.strictEqual(out.fovDeg, 120);
+  assert.strictEqual(out.rollDeg, -180);
+});
+
+test('range clamping applies inside nested objects (edge, tone, nudgeDeg)', () => {
+  const out = Settings.sanitize(DEFAULTS, {
+    edge: { edgeIntensity: 999, ringWidth: -1 },
+    tone: { exposureEv: 50, contrast: -50 },
+    nudgeDeg: { A: 999, B: -999 },
+  });
+  assert.strictEqual(out.edge.edgeIntensity, 4);
+  assert.strictEqual(out.edge.ringWidth, 0.002);
+  assert.strictEqual(out.tone.exposureEv, 3);
+  assert.strictEqual(out.tone.contrast, -1);
+  assert.strictEqual(out.nudgeDeg.A, 10);
+  assert.strictEqual(out.nudgeDeg.B, -10);
+});
+
+test('a value within range is left untouched by clamping', () => {
+  const out = Settings.sanitize(DEFAULTS, { fovDeg: 190.5, rollDeg: -12.5 });
+  assert.strictEqual(out.fovDeg, 190.5);
+  assert.strictEqual(out.rollDeg, -12.5);
+});
+
+test('NaN and Infinity are still rejected outright (not clamped)', () => {
+  const out = Settings.sanitize(DEFAULTS, { fovDeg: NaN, rollDeg: Infinity, gapFrac: -Infinity });
+  assert.strictEqual(out.fovDeg, DEFAULTS.fovDeg);
+  assert.strictEqual(out.rollDeg, DEFAULTS.rollDeg);
+  assert.strictEqual(out.gapFrac, DEFAULTS.gapFrac);
+});
+
+test('a wrong-typed value still falls back to the default without disturbing siblings', () => {
+  const out = Settings.sanitize(DEFAULTS, { edge: { edgeIntensity: '9999', ringWidth: 0.01 } });
+  assert.strictEqual(out.edge.edgeIntensity, DEFAULTS.edge.edgeIntensity);
+  assert.strictEqual(out.edge.ringWidth, 0.01);
+});
+
+test('an unknown enum value still falls back to the default', () => {
+  const out = Settings.sanitize(DEFAULTS, { sensors: 'nope', orientation: 'upsidedown' });
+  assert.strictEqual(out.sensors, DEFAULTS.sensors);
+  assert.strictEqual(out.orientation, DEFAULTS.orientation);
+});
+
+test('background channels clamp to 0..1', () => {
+  const out = Settings.sanitize(DEFAULTS, { background: [5, -5, 0.5] });
+  assert.deepStrictEqual(out.background, [1, 0, 0.5]);
 });
