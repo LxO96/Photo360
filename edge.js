@@ -106,21 +106,108 @@
     return out;
   }
 
-  // Replaced with fitted values in Task 9.
+  // Task 9: fitted by tools/fit-x1-edge.py against the user's own Insta360
+  // ONE X reference photos -- Testfiles/Outputs/IMG_20210605_193319_00_019.jpg
+  // and IMG_20210721_192852_00_141.jpg, two stacked dual-fisheye frames, four
+  // image circles between them. Each circle's edge is registered per azimuth
+  // (1440 rays, a robust 3-harmonic Fourier fit to the half-plateau landmark,
+  // residual scatter 0.1-0.6% of the radius) before anything is measured,
+  // because frame-relative radii compare different physical angles across
+  // circles that sit differently in their frames, and because a rim only ~3%
+  // of the radius wide is smeared into a broad ramp by a 3% registration
+  // error. Aggregate sky-band RMS 0.0335 across the four, every one of them
+  // inside the brief's 0.06 (0.034, 0.024, 0.030, 0.043); with Flat.jpg
+  // included the aggregate is still 0.0497, though Flat's own 0.0886 is not.
+  //
+  // Testfiles/Outputs/Flat.jpg is measured and stored in the fixture but held
+  // out of the fit: it is EXIF-tagged Adobe Lightroom 12.5, is the only
+  // reference with a lifted black point, and even on its own registered radius
+  // axis its run-out is about twice as wide as any ONE X circle's. One
+  // terminator cannot be both, and averaging them fits neither.
+  //
+  // KNOWN LIMITATION -- the rendered ring is less saturated than the
+  // references. `dispersion` and `ringWidth` are only weakly constrained: the
+  // radial objective is luminance-dominated and cannot see a thin chromatic
+  // ring at all (pinning either to either end of its slider moves the
+  // objective by under 0.0004, and sometimes slightly *improves* it), so both
+  // come from a direct chromatic measurement rather than from the fit. They
+  // are honest measurements of the references' channel separation, but they
+  // are small, and the rendered ring reads softer and less coloured than the
+  // real thing. Part of that is structural: the references' saturated blue
+  // fringe sits *inside* the run-out, where this model's only chromatic lever
+  // is the achromatic terminator plus COOL, and COOL (fixed in shaders.js)
+  // tops out around b = 0.41 of the RGB sum where the references reach 0.65.
+  // Raising the Dispersion and Ring width sliders to taste is the intended
+  // remedy; these defaults are the measured floor, not a ceiling.
+  //
+  // Not every value here is fitted, and the ones that are not say so. The
+  // bracketed numbers are what it costs the 0.0335 objective to pin that
+  // parameter to each end of its slider and re-optimise everything else --
+  // the script prints the whole table.
+  //
+  //   falloffStart          FITTED, strongly [+0.143 / +0.022].
+  //   falloffSoftness       BOUNDARY-PEGGED at the slider's 4.0 ceiling
+  //                         [+0.004 / +0.00000]. The ONE X run-out is sharper
+  //                         than a smoothstep to any power the slider allows,
+  //                         so the fit asks for all of it and would take more.
+  //                         Reported rather than quietly clamped.
+  //   edgeIntensity         FITTED [+0.004 / +0.040]. This is the renderer's
+  //                         own edgeIntensity, multiplying prof.r -- not the
+  //                         product. Folding prof.r in here is what made an
+  //                         earlier attempt's rim invisible.
+  //   ringWidth             UNCONSTRAINED by the fit [-0.0001 / -0.0004];
+  //                         rimBell(u,1,ringWidth) and the haze bell sit on
+  //                         the same radius, so the objective cannot separate
+  //                         them. Set to 2x the measured dispersion so the
+  //                         measured colour fringe is resolvable at all
+  //                         instead of averaging to grey.
+  //   dispersion            MEASURED, not fitted [-0.00003 / +0.00004 -- the
+  //                         fit is blind to it]: half the radial offset
+  //                         between blue's and red's own edge landmarks,
+  //                         averaged over the four circles' sky bands
+  //                         (per-circle 0.0008-0.0032). Blue lands outside
+  //                         green on all five circles, which is the sign
+  //                         DISPERSION_RATIO assumes; red's offset is the
+  //                         noisier half.
+  //   glowSpreadDeg         UNCONSTRAINED -- left at the Task 4 default. On
+  //   highlightKnee         all four ONE X circles the light outside the image
+  //   highlightExponent     circle is *brighter* on the dark azimuths than on
+  //                         the bright-sky ones (ratios 0.02-0.80): it is
+  //                         sun-positioned veiling glare, not a local
+  //                         content-driven glow, so the azimuthal half of the
+  //                         model has nothing here to calibrate against. Best
+  //                         pooled R^2 over the whole (knee, exponent, spread)
+  //                         grid is 0.18, with the correlation's sign flipping
+  //                         between circles. A reference set without a low sun
+  //                         would be needed to measure these.
+  //   hazeWidth             FITTED [+0.003 / +0.002].
+  //   hazeStrength          FIXED at 1.0 by construction: it multiplies the
+  //                         same `intensity` edgeIntensity sets, so only their
+  //                         product is identifiable once ringWidth is narrow,
+  //                         and left free it simply runs to whatever bound it
+  //                         is given.
+  //   terminatorDesaturate  MEASURED from how chromaticity drifts through the
+  //   terminatorCoolShift   fade (15125 samples, weighted by fade depth since
+  //                         both act in proportion to it). Weakly determined
+  //                         on their own -- 5% off the chromaticity residual
+  //                         against no treatment at all -- but the luminance
+  //                         fit independently prefers the same direction
+  //                         (adopting them took the aggregate from 0.0345 to
+  //                         0.0335), so the two agree rather than trade off.
   const PRESETS = {
     x1classic: {
-      falloffStart: 0.90,
-      falloffSoftness: 1.0,
-      edgeIntensity: 1.0,
-      ringWidth: 0.012,
-      dispersion: 0.010,
+      falloffStart: 0.93693,
+      falloffSoftness: 4.0,
+      edgeIntensity: 0.26024,
+      ringWidth: 0.00398,
+      dispersion: 0.00199,
       glowSpreadDeg: 8,
       highlightKnee: 0.45,
       highlightExponent: 2.0,
-      hazeWidth: 0.06,
-      hazeStrength: 0.15,
-      terminatorDesaturate: 0.6,
-      terminatorCoolShift: 0.25,
+      hazeWidth: 0.04685,
+      hazeStrength: 1.0,
+      terminatorDesaturate: 0.46,
+      terminatorCoolShift: 0.70,
     },
   };
 
