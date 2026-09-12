@@ -1,0 +1,258 @@
+# Fisheye Print Extractor
+
+A single static web page that turns an Insta360 dual-fisheye photo into a
+print-ready 2D fisheye image of one lens (or both, side by side).
+
+## Why this exists
+
+An Insta360 X5 or ONE X shoots two overlapping fisheye circles onto one
+frame — one per lens, back to back — meant to be stitched into a 360°
+panorama. If instead you just want *one* fisheye photograph out of it (the
+classic circular "fisheye look," not a stitched sphere), two things stand in
+your way:
+
+1. **Each lens sees more than a hemisphere.** The X5's lens covers roughly
+   210° and the ONE X's roughly 225°, not the 180° a single fisheye
+   photograph should show. The extra angle beyond 180° is the same real-world
+   wedge the *other* lens also captured, so cropping to exactly 180° removes
+   duplicated content, not real information.
+2. **The camera's own sensor crops off the lens's own edge.** Insta360's
+   hardware crops the image circle at the sensor's edge, discarding the
+   soft, flared, dispersed rim that a real fisheye photograph shows at its
+   circumference. Cropping to 180° alone leaves a photograph that ends in a
+   flat, hard-edged circle — correct in framing, but visibly not what a
+   fisheye lens actually renders.
+
+This tool does both: it crops each lens to exactly 180° using a per-camera
+lens calibration, then synthesizes the missing rim — driven by the
+photograph's own content (its brightness and color right at the crop edge)
+— using a falloff shape numerically fitted against real Insta360 ONE X
+reference photographs. See "The edge preset" below for exactly how much to
+trust that synthesis.
+
+## Running it
+
+This is a static page: no build step, no package to install, no server-side
+code, and no network dependency once the page is open. Nothing you load is
+uploaded anywhere — all decoding, rendering and export happens in your
+browser.
+
+- **Simplest:** double-click `index.html`. Everything works from `file://`
+  **except** the built-in parity self-check (`App.checkParity`, used only by
+  the test suite's browser-side half), which needs `fetch` and so needs the
+  page served over HTTP.
+- **To also enable that self-check**, serve the directory over HTTP, e.g.
+  `python -m http.server 8765` from the project root, then open
+  `http://localhost:8765/index.html`.
+
+Drop an `.insp` or `.jpg` dual-fisheye file onto the page (or click to
+choose one) to get started.
+
+### Browser requirement
+
+The renderer needs **WebGL2** with the `EXT_color_buffer_float` extension
+(required for the floating-point render targets the rim-glow pass uses). A
+current desktop Chrome, Edge, or Firefox has both. Without WebGL2 the page
+reports "This browser has no WebGL2 support"; without the float extension,
+"This GPU/browser lacks floating-point render targets (EXT_color_buffer_float),
+needed for the rim glow."
+
+## The controls
+
+### Framing
+
+- **Field of view** — how much of the lens to keep, in degrees. 180°
+  crops to exactly a hemisphere (no duplication with the other lens, no
+  gap). Above 180° you get some of what the other lens also saw; below
+  180° you get less than a hemisphere. The readout under the calibration
+  line tells you which, and by how much.
+- **Lens calibration (advanced)** — the half-angle, in degrees, at which
+  the lens's own image circle sits. This is what turns "field of view" into
+  a crop radius. It's set automatically from the camera identified in the
+  file (see Calibration below); reach for this slider yourself only if the
+  180° crop visibly doesn't reach the true horizon-to-horizon frame, most
+  likely on a file whose camera this tool doesn't recognize.
+- **Sensors** — export lens A only, lens B only, or both together.
+- **Layout** — when exporting both sensors, whether to arrange the two
+  circles side by side (2:1 output) or stacked (1:2). This is independent
+  of how the *source* file happens to be arranged — a side-by-side `.insp`
+  can still be exported stacked, and vice versa.
+- **Swap A and B** — exchanges which physical lens is labelled A and which
+  is B (and which filename suffix each gets).
+- **Gap** — space between the two circles when exporting both, as a
+  fraction of one circle's diameter.
+- **Margin** — black border kept around each circle, as a fraction of its
+  diameter. See "Export sizing" for why the default isn't 0.
+
+### Level
+
+- **Show horizon guides** — overlays a horizon/vertical reference on the
+  preview; has no effect on the export.
+- **Camera roll** — rotates the whole composition to correct a tilted
+  horizon. The two lenses are back-to-back with their azimuths running in
+  opposite directions, so a single roll value is applied with opposite sign
+  to lens B automatically.
+- **Lens A / B nudge** — small per-lens rotation (±10°) for correcting a
+  lens that's very slightly misaligned relative to its partner, independent
+  of the shared roll.
+- The text under these sliders reports the FOV/duplication relationship
+  described above, live.
+
+### Edge
+
+Controls the synthesized rim glow — the part standing in for what the
+sensor crops away. All seven together are the `x1classic` preset (see "The
+edge preset" below for where its numbers came from); **Reset to X1
+classic** restores the shipped values if you've been experimenting.
+
+- **Intensity** — overall strength of the rim effect.
+- **Ring width** — how narrow or broad the colored fringe ring is.
+- **Dispersion** — how far apart the red/green/blue fringe rings sit
+  (chromatic aberration at the rim). 0 makes the ring achromatic.
+- **Glow spread** — how far the rim's brightness variation is smeared
+  around the circle's circumference, azimuthally — i.e. how much a bright
+  patch near the edge "bleeds" into the neighboring rim rather than staying
+  a tight local highlight.
+- **Highlight knee / Falloff start / Falloff softness** — shape the
+  brightness falloff itself: where in the source image a highlight starts
+  counting toward the glow, and where and how abruptly the image fades to
+  black at the true edge of the lens's field of view.
+
+### Tone
+
+Ordinary global grade applied to the photograph before the rim is
+composited: **Exposure** (stops), **Contrast**, **Saturation**. All default
+to neutral (no change).
+
+### Output
+
+- **Format** — JPEG or PNG (PNG is lossless; JPEG carries a **quality**
+  slider, 60–100).
+- **Pad to sensor square** — see "Export sizing" below.
+- **Export** — renders at full resolution to an offscreen buffer (so the
+  on-screen preview is never touched) and downloads the result. The
+  filename encodes the source name, which lens(es), and the FOV used.
+
+## Calibration
+
+Turning "180° field of view" into an actual crop radius requires knowing
+how many degrees of the real world one physical lens's image circle spans
+edge-to-edge — the half-angle of that is `thetaMaxDeg` (`Lens.THETA_MAX_DEG`
+in `lens.js`).
+
+- **Insta360 X5: 105°** (i.e. a ~210° lens). Measured by correlating the
+  two lenses' overlap annuli — the region both lenses photograph — across
+  three X5 test files, which agreed with each other at 104–107°. Treated
+  as a confident, corroborated figure.
+- **Insta360 ONE X: 112.5°, provisional** (i.e. a ~225° lens). Measured the
+  same way, but from a **single** usable reference file — the other ONE X
+  file's image circle is clipped by its own frame, so there was nothing to
+  corroborate it against. The UI marks this as provisional whenever it
+  applies, rather than presenting it as settled fact.
+
+The camera is identified from the file's EXIF model tag when present. A
+stacked 1:2 file with **no** EXIF at all (which does happen — one of this
+project's own ONE X test files has none) is never guessed to be an X5: the
+X5 never writes that shape, so the tool falls back to the ONE X figure
+instead, and says plainly in the UI that the camera wasn't identified and
+the number is a guess from the file's shape, not a read tag.
+
+Whatever the source, the **Lens calibration (advanced)** slider (60°–150°)
+always lets you override `thetaMaxDeg` by eye if the 180° crop doesn't
+reach the true horizon — most likely on an unrecognized camera, but nothing
+stops you from second-guessing a "confident" one either.
+
+## Export sizing
+
+Exports are sized from the **source pixels actually available**, never
+upscaled to some invented target resolution:
+
+- A single-lens export is `circleDiameter + 2 × margin` pixels square,
+  where `circleDiameter` is derived from the field of view and the
+  uploaded lens's native pixel size — e.g. a full-size Insta360 X5 frame
+  (5952 px per lens) at the shipped 180° FOV and 8% margin exports at
+  5918 × 5918.
+- **Pad to sensor square** additionally pads (and, if needed, upscales)
+  the circle out to the full uploaded lens size, rather than cropping
+  tightly to the FOV — useful if you want every export from a session to
+  come out the same pixel size regardless of FOV.
+- If this GPU's `MAX_TEXTURE_SIZE` forced a downscale at load time (very
+  large sensors on modest GPUs), the export sizes itself off the
+  *downscaled* texture actually in memory, never past what was really
+  decoded — the on-screen "Exports at …" line always reflects this.
+- Exporting **both** sensors lays the two circles out with
+  `width = margin + diameter + gap + diameter + margin` along the long
+  axis and `height = margin + diameter + margin` across it (or transposed,
+  for the stacked layout). The default **Gap is exactly twice the default
+  Margin** (16% vs 8%) specifically so that relationship holds:
+  `along / across` comes out to precisely 2.0, keeping a two-up export at
+  exactly 2:1 (or 1:2 stacked) out of the box. Move Gap or Margin
+  independently and you get a different aspect ratio on purpose — the
+  on-screen size readout always shows the ratio you'll actually get, e.g.
+  "1.86:1", so a departure from 2:1 is visible rather than silent.
+
+## The edge preset and its known limits
+
+The rim-glow shape shipped as `Edge.PRESETS.x1classic` (`edge.js`) was
+fitted numerically by `tools/fit-x1-edge.py` against two real Insta360 ONE X
+photographs held in `Testfiles/Outputs/` — `IMG_20210605_193319_00_019.jpg`
+and `IMG_20210721_192852_00_141.jpg`, stacked dual-fisheye frames
+contributing four separate image circles between them. Each circle's true
+edge is registered per-azimuth before anything is measured (a robust Fourier
+fit to a half-plateau landmark on 1440 rays per circle), because the raw
+frame-relative radius differs across circles that simply sit differently in
+their frames.
+
+**`Testfiles/Outputs/Flat.jpg` is measured and stored in the fit's fixture,
+but deliberately held out of the fit itself.** It's EXIF-tagged Adobe
+Lightroom 12.5, is the only reference with a lifted black point, and even
+on its own registered radius its run-out is roughly twice as wide as any
+ONE X circle's — a single terminator curve can't be both, and averaging
+across all five fits neither well. Do not treat `Flat.jpg` as ground truth
+for this preset.
+
+**Known limitation: the rendered ring reads less saturated than the
+references.** Two of the twelve fitted parameters, `dispersion` and
+`ringWidth`, are only weakly constrained by the fit — the fit's objective
+is luminance-dominated and is nearly blind to a thin chromatic ring (pinning
+either parameter to either end of its slider moves the fit's objective by
+under 0.0004). Both are set from a direct chromatic measurement of the
+references instead of from the optimizer, so they're honest measurements of
+real channel separation, but they're small, and the rendered ring is
+visibly softer and less colored than the real photographs. Part of this is
+structural: the references' saturated blue fringe sits *inside* the
+run-out, where this model's only chromatic lever is the achromatic
+terminator curve plus a fixed cool color-shift constant (`COOL` in
+`shaders.js`) — and `COOL` tops out around 41% of the way to the
+references' measured 65% blue channel share. If a rendered rim looks too
+neutral for your taste, **raising the Dispersion and Ring width sliders is
+the intended remedy** — the shipped defaults are the measured floor from
+the fit, not a ceiling on what looks good.
+
+Full provenance, every fitted-vs-unconstrained-vs-boundary-pegged verdict,
+and the sensitivity numbers behind each one are documented in the long
+comment above `PRESETS` in `edge.js`, and reproduced in detail by running
+`tools/fit-x1-edge.py` itself (it prints its own sensitivity table).
+
+## Running the tests
+
+```
+npm test
+```
+
+runs the whole suite (`node test/run.js`, currently 141 assertions) headlessly
+in Node — no browser needed for this. It covers the lens math, edge/rim
+math, EXIF handling, roll/nudge geometry, settings persistence, and a
+JS/GLSL parity fixture for the rim-profile shaders.
+
+**`Testfiles/` is git-ignored** (it holds ~85 MB of real camera output) —
+a fresh clone of this repository does not have it. `test/exif.test.js`
+reads specific files from `Testfiles/` directly (by filename, e.g.
+`Sunscreen.insp`) and will fail with a file-not-found error on a fresh
+clone until you supply your own copies of those files at the same paths.
+The rest of the suite does not depend on `Testfiles/` and passes on a bare
+clone.
+
+`tools/fit-x1-edge.py` and `tools/verify-rim.py` are developer tools, not
+part of the test suite — they need Python 3 with `numpy`, `Pillow`, and (for
+the fitter only) `scipy`, and they too read from `Testfiles/Outputs/`.
