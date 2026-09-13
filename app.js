@@ -111,6 +111,17 @@
     // like calibration/sourceName above, so deliberately not persisted.
     // {cfaPattern, blackLevel, whiteLevel, camToSrgb} or null.
     rawMeta: null,
+    // A fixed sensor-orientation correction, not a user preference: the ONE
+    // X's raw frame is stored 90 degrees off from how the camera's own JPEG
+    // pipeline presents it (its DNG Orientation tag says "normal" -- it
+    // does not record this), so raw sources need a base rotation JPEG/.insp
+    // sources don't. Composed into the roll GL.circleDraw hands the shader,
+    // on top of (never instead of) rollDeg -- see that function's own
+    // comment for why this can't just be a different rollDeg default. Like
+    // calibration/isRaw, this describes the loaded file, not a preference,
+    // so it is deliberately not persisted; every load path sets it
+    // explicitly (90 for raw, 0 otherwise).
+    sensorRotationDeg: 0,
     // The file's own AsShotNeutral, kept aside (untouched by the sliders)
     // so "Reset to as-shot" always has something to return to even after
     // both lenses have been pulled apart. Not persisted, describes the file.
@@ -119,15 +130,16 @@
     // *physical* lens (A/B), exactly like nudgeDeg above, and looked up
     // through GL.physicalLens at render time so `swap` can never cross the
     // texture/white-balance pairing the way it once could for roll (see
-    // GL.circleDraw's own comment). {A: [r,g,b], B: [r,g,b]} or null.
-    // Seeded from rawAsShotNeutral on every raw load -- Task 15 established
-    // that a freshly loaded file's own calibration beats a stored value,
-    // and the same precedence applies here.
-    rawWhiteBalance: null,
+    // GL.circleDraw's own comment). {A: [r,g,b], B: [r,g,b]}, persisted
+    // through Settings (PERSISTED_KEYS/RANGES in settings.js) exactly like
+    // every other numeric control -- but a freshly loaded raw file's own
+    // AsShotNeutral always overwrites it on load (loadDngFile), the same
+    // precedence Task 15 established for thetaMaxDeg, so a stored value only
+    // ever surfaces before any file (or a non-raw file) is loaded.
+    rawWhiteBalance: { A: [1, 1, 1], B: [1, 1, 1] },
     // Whether moving one lens's white-balance sliders moves both. A plain
-    // user preference (not per-file data), so -- unlike rawMeta/
-    // rawWhiteBalance -- this is worth persisting; see loadRawWbPrefs below
-    // for why that persistence lives outside settings.js.
+    // user preference, persisted the same way, with no file ever overriding
+    // it (unlike rawWhiteBalance itself).
     rawWbLinked: true,
   };
   let ctx = null;
@@ -222,8 +234,10 @@
   }
 
   // Reflects state.rawWhiteBalance into the four sliders/outputs.
+  // state.rawWhiteBalance is always a concrete {A,B} object (see its default
+  // above), never null, so this needs no guard -- it runs harmlessly even
+  // while the panel is hidden (no raw source loaded).
   function syncWbControls() {
-    if (!state.rawWhiteBalance) return;
     wbRedAEl.value = state.rawWhiteBalance.A[0];
     wbRedAOut.textContent = state.rawWhiteBalance.A[0].toFixed(3);
     wbBlueAEl.value = state.rawWhiteBalance.A[2];
@@ -266,6 +280,12 @@
     }
     state.isRaw = true;
     state.rawMeta = { cfaPattern: d.cfaPattern, blackLevel: d.blackLevel, whiteLevel: d.whiteLevel, camToSrgb: d.camToSrgb };
+    // Magnitude and sign (GL.circleDraw applies -90 to physical A, +90 to
+    // physical B) verified in the browser against all three supplied raw
+    // files: both circles render upright at rollDeg=0. This was found
+    // empirically, not derived from the layout code -- an initial +90/-90
+    // assignment rendered *both* circles upside down (see the task report).
+    state.sensorRotationDeg = 90;
     state.rawAsShotNeutral = d.asShotNeutral.slice();
     // A freshly loaded file's own AsShotNeutral always wins over whatever
     // white balance a previous file (or session) left behind -- the same
@@ -345,7 +365,12 @@
       state.isRaw = false;
       state.rawMeta = null;
       state.rawAsShotNeutral = null;
-      state.rawWhiteBalance = null;
+      // Only the sensor-rotation *correction* is reset here, not
+      // rawWhiteBalance itself -- rawWhiteBalance is a persisted user
+      // setting now (see its state comment above), not per-file data, and a
+      // JPEG/.insp source has no AsShotNeutral of its own to overwrite it
+      // with. It simply sits unused while the White balance panel is hidden.
+      state.sensorRotationDeg = 0;
       state.sourceName = file.name;
       state.sourceExif = Exif.buildApp1(tags);
       state.sourceLensSize = layout.lensSize;
@@ -444,15 +469,20 @@
 
   // The guide line for one circle is a straight line through its centre at
   // that circle's own current roll -- correct because a horizon through the
-  // optical axis projects to a straight line in a fisheye. draw.rollDeg
-  // comes straight from GL.circleDraw, the same call renderComposition made
-  // to pick this pass's uRoll, so the line can never drift from what
-  // COMPOSITE_FS actually rendered. It can be drawn with cos/sin directly in
-  // canvas coordinates (x right, y down) with no sign flip: COMPOSITE_FS's
-  // theta is measured in a y-up frame, so screen-space clockwise there is
-  // the same direction as increasing atan2(dy, dx) here, in y-down canvas
-  // coordinates -- the two conventions are mirror images of each other in
-  // exactly the way that cancels out.
+  // optical axis projects to a straight line in a fisheye.
+  //
+  // Deliberately does NOT use GL.circleDraw(...).rollDeg here (Task 16 fix
+  // round, Finding: guide leaked the sensor term). circleDraw's rollDeg is
+  // the *total* rotation actually applied to the pixels -- rollDeg + nudge
+  // + the raw sensor-orientation correction (state.sensorRotationDeg) --
+  // which is exactly right for rendering (COMPOSITE_FS's uRoll) but wrong
+  // for this overlay: the guide represents the *user's own levelling*, and
+  // a raw source's fixed 90 degree sensor correction is not something the
+  // user did or should see reflected in the guide. At rollDeg=0 the image
+  // is already sensor-corrected to upright by circleDraw, so the guide must
+  // read exactly horizontal there regardless of source type -- using
+  // Lens.rollFor(state, physical) directly (the same call circleDraw itself
+  // makes, just without circleDraw's added sensor term) guarantees that.
   function drawGuides() {
     if (!ctx || !state.sourceLensSize) return;
     positionGuides();
@@ -461,8 +491,14 @@
     if (!showGuidesEl.checked) return;
     const layout = GL.compositionLayout(state, guidesCanvas.width, guidesCanvas.height);
     for (const circ of layout.circles) {
-      const draw = GL.circleDraw(state, circ.lens);
-      const rollRad = draw.rollDeg * Math.PI / 180;
+      const physical = GL.physicalLens(state, circ.lens);
+      // Sign convention: COMPOSITE_FS's theta is measured in a y-up frame,
+      // so screen-space clockwise there is the same direction as increasing
+      // atan2(dy, dx) here, in y-down canvas coordinates -- the two
+      // conventions are mirror images of each other in exactly the way that
+      // cancels out, so this can be drawn with cos/sin directly, no sign
+      // flip, exactly as when this used circleDraw's rollDeg.
+      const rollRad = Lens.rollFor(state, physical) * Math.PI / 180;
       const dx = Math.cos(rollRad), dy = Math.sin(rollRad);
 
       g.strokeStyle = 'rgba(255,255,255,0.35)';
@@ -608,6 +644,11 @@
       document.getElementById(k).value = state.tone[k];
       document.getElementById(k + 'Out').textContent = state.tone[k].toFixed(2) + TONE_UNITS[k];
     }
+    // syncWbControls is defined later in this file (function declaration,
+    // so it's hoisted and safe to call here) -- reflects whatever
+    // rawWhiteBalance/rawWbLinked Settings.load just restored, even though
+    // the panel itself stays hidden until a raw file is loaded.
+    syncWbControls();
   }
 
   fovEl.addEventListener('input', () => {
@@ -684,7 +725,6 @@
   // since the motivating case (one lens in sun, the other in shade) needs
   // them independent only when the user deliberately pulls them apart.
   function setWbChannel(lens, channelIndex, value) {
-    if (!state.rawWhiteBalance) return;
     state.rawWhiteBalance[lens][channelIndex] = value;
     if (state.rawWbLinked) {
       const other = lens === 'A' ? 'B' : 'A';
@@ -705,13 +745,12 @@
     // Turning the link on snaps B to A immediately, rather than leaving
     // them apart until the next slider move -- "linked" should mean linked
     // the instant it's turned on.
-    if (state.rawWbLinked && state.rawWhiteBalance) {
+    if (state.rawWbLinked) {
       state.rawWhiteBalance.B = state.rawWhiteBalance.A.slice();
     }
     syncWbControls();
     render();
     scheduleSave();
-    saveRawWbPrefs();
   });
 
   wbResetEl.addEventListener('click', () => {
@@ -724,28 +763,6 @@
     render();
     scheduleSave();
   });
-
-  // rawWbLinked is a plain user preference (not per-file data, unlike
-  // rawWhiteBalance itself, which is always re-seeded from the loaded
-  // file's AsShotNeutral) -- worth persisting across reloads the same way
-  // every other control in EDGE_KEYS/TONE_UNITS is, via Settings.save.
-  // Settings.PERSISTED_KEYS is a fixed list inside settings.js, which this
-  // task does not modify, so this one boolean is persisted through a
-  // second, dedicated localStorage key instead of extending that list.
-  const RAW_WB_PREFS_KEY = 'photo360.rawwb-prefs.v1';
-  function saveRawWbPrefs() {
-    try {
-      window.localStorage.setItem(RAW_WB_PREFS_KEY, JSON.stringify({ linked: state.rawWbLinked }));
-    } catch (e) { /* storage disabled/full -- ignore, same as Settings.save */ }
-  }
-  function loadRawWbPrefs() {
-    try {
-      const raw = window.localStorage.getItem(RAW_WB_PREFS_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (typeof parsed.linked === 'boolean') state.rawWbLinked = parsed.linked;
-    } catch (e) { /* corrupt/inaccessible -- keep the default */ }
-  }
 
   const EDGE_KEYS = ['edgeIntensity', 'ringWidth', 'dispersion', 'glowSpreadDeg',
                      'highlightKnee', 'falloffStart', 'falloffSoftness'];
@@ -894,8 +911,6 @@
   });
 
   loadSettings();
-  loadRawWbPrefs();
-  wbLinkEl.checked = state.rawWbLinked;
 
   dropEl.addEventListener('click', () => fileEl.click());
   fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));

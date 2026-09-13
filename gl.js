@@ -348,11 +348,28 @@
   // same physical lens, so they can never disagree the way they did before
   // (texture chosen by physical lens via the swap, roll looked up by the
   // slot label -- a bug once those diverged under swap).
+  // state.sensorRotationDeg (Task 16, fix round) is a fixed *sensor*
+  // orientation correction, not a user levelling preference like rollDeg:
+  // Insta360 ONE X raw frames store the sensor data rotated 90 degrees
+  // relative to how the camera's own JPEG pipeline presents it (the DNG's
+  // own Orientation tag says "normal" -- it does not record this), and the
+  // two lenses being back-to-back means they need *opposite* corrections,
+  // exactly the same mirrored relationship Lens.rollFor already gives
+  // rollDeg between physical lens A (+) and B (-). Composed on top of
+  // Lens.rollFor's result (which already folds in rollDeg and nudgeDeg)
+  // rather than by defaulting rollDeg itself, so the roll slider stays a
+  // pure levelling control that reads 0 at "as the sensor is corrected to
+  // upright" -- zeroing it must never re-introduce the sideways rotation.
+  // Defaults to 0 (via `|| 0`) so callers/tests that don't set the field at
+  // all -- every existing gl.test.js case, and every JPEG source -- see no
+  // change in behaviour.
   function circleDraw(state, slotLens) {
     const physical = physicalLens(state, slotLens);
+    const sensorRotationDeg = state.sensorRotationDeg || 0;
+    const sensorTerm = physical === 'A' ? -sensorRotationDeg : sensorRotationDeg;
     return {
       texIndex: lensTextureIndex(state, slotLens),
-      rollDeg: Lens.rollFor(state, physical),
+      rollDeg: Lens.rollFor(state, physical) + sensorTerm,
     };
   }
 

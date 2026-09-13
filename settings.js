@@ -12,9 +12,16 @@
   // sourceLensSize describe the loaded file, not a user preference, and are
   // deliberately excluded -- reloading a stored blob must never resurrect a
   // stale filename with no matching pixels behind it.
+  // rawWhiteBalance/rawWbLinked (Task 16) are per-lens raw white-balance
+  // state: rawWhiteBalance is a genuine per-file value that a freshly loaded
+  // raw file's own AsShotNeutral always overwrites on load (app.js
+  // loadDngFile), the same precedence thetaMaxDeg already has above; a
+  // stored value only ever surfaces before any file (or a non-raw file) is
+  // loaded. rawWbLinked is a plain preference with no such override.
   const PERSISTED_KEYS = [
     'fovDeg', 'thetaMaxDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone',
+    'rawWhiteBalance', 'rawWbLinked',
   ];
 
   const ENUMS = { sensors: ['A', 'B', 'both'], orientation: ['side', 'stacked'] };
@@ -60,6 +67,11 @@
       terminatorCoolShift: [0, 1],
     },
     tone: { exposureEv: [-3, 3], contrast: [-1, 1], saturation: [-1, 1] },
+    // Matches the White balance sliders in index.html (#wbRedA etc.:
+    // min=0.2 max=1.5) exactly -- these are the file's own AsShotNeutral
+    // convention (green fixed at 1), so a value near 0 or above ~2 is not a
+    // plausible camera white balance regardless of what's in storage.
+    rawWhiteBalance: { A: [0.2, 1.5], B: [0.2, 1.5] },
   };
 
   function isFiniteNumber(v) { return typeof v === 'number' && Number.isFinite(v); }
