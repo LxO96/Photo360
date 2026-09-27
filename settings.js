@@ -25,8 +25,22 @@
   const PERSISTED_KEYS = [
     'fovDeg', 'thetaMaxDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone',
-    'rawWb', 'rawWbLinked',
+    'rawWb', 'rawWbLinked', 'panels',
   ];
+
+  // Task 18: the side panel's collapsible sections, in display order, and
+  // whether each starts open. `panels` in the render state is a plain
+  // {section: boolean} object persisted through PERSISTED_KEYS like any
+  // other preference -- sanitize()'s boolean branch rejects anything that is
+  // not a real boolean (falling back to this default for that one section)
+  // and drops keys not listed here, so a corrupt or stale blob can never
+  // hide a section for good or invent a new one. Edge starts closed: its
+  // seven fitted parameters are the most specialised controls on the page
+  // and the X1-classic preset is the intended starting point.
+  const PANEL_SECTIONS = ['framing', 'level', 'whiteBalance', 'edge', 'tone', 'output'];
+  const DEFAULT_PANELS = {
+    framing: true, level: true, whiteBalance: true, edge: false, tone: true, output: true,
+  };
 
   const ENUMS = { sensors: ['A', 'B', 'both'], orientation: ['side', 'stacked'] };
 
@@ -224,8 +238,70 @@
     return lensCount === 1 ? false : currentSwap;
   }
 
+  // -- Editable readouts and keyboard fine-adjust (Task 18) ----------------
+  // Pure helpers behind app.js's typed numeric readouts and slider arrow
+  // keys, kept here so the parsing/clamping rules are unit-testable
+  // without a DOM.
+
+  // Parses what a person typed into a readout (in the readout's *display*
+  // units -- e.g. percent for gap/margin, where `scale` is 100) and returns
+  // the value in state units, clamped through `range` (a Settings.RANGES
+  // entry). Tolerates surrounding whitespace, a trailing unit ("12 %",
+  // "180°", "0.5 EV"), a leading "+", and a decimal comma. Returns null for
+  // anything that does not start with a number, so the caller can revert
+  // the readout instead of applying NaN.
+  function parseReadout(text, range, scale) {
+    if (typeof text !== 'string') return null;
+    const m = text.trim().replace(',', '.').match(/^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?/i);
+    if (!m) return null;
+    const v = parseFloat(m[0]) / (scale || 1);
+    return Number.isFinite(v) ? clamp(v, range) : null;
+  }
+
+  // Number of decimals a range input's step can express (0.005 -> 3).
+  function decimalsForStep(step) {
+    const s = String(step);
+    if (/e-/i.test(s)) return parseInt(s.split(/e-/i)[1], 10);
+    const i = s.indexOf('.');
+    return i === -1 ? 0 : s.length - i - 1;
+  }
+
+  // Keyboard fine-adjust for a focused slider, in the slider's own units.
+  // Several sliders carry a very fine `step` (0.00001, so fitted presets
+  // are representable -- see index.html), which makes the browser's native
+  // one-step-per-arrow useless; instead one arrow press moves 1/200th of the
+  // slider's span (never less than one step), Shift moves 10x that, and
+  // `mods.fine` moves 1/10th of it (down to a single step) for fine work.
+  // app.js maps Ctrl or Alt to `fine` -- Ctrl is the one to document, since
+  // Alt+Left is Back in Windows browsers. PageUp/Down are the coarse
+  // (Shift) move, Home/End jump to the ends. The result is
+  // snapped to the step grid and clamped to [min, max]. Returns null for
+  // keys this does not handle, so the caller leaves those alone.
+  function nudgeSliderValue(value, min, max, step, key, mods) {
+    mods = mods || {};
+    let dir = 0, coarse = !!mods.shift;
+    if (key === 'ArrowUp' || key === 'ArrowRight') dir = 1;
+    else if (key === 'ArrowDown' || key === 'ArrowLeft') dir = -1;
+    else if (key === 'PageUp') { dir = 1; coarse = true; }
+    else if (key === 'PageDown') { dir = -1; coarse = true; }
+    else if (key === 'Home') return min;
+    else if (key === 'End') return max;
+    else return null;
+    step = step > 0 ? step : (max - min) / 1000;
+    let delta = Math.max(step, (max - min) / 200);
+    if (coarse) delta *= 10;
+    else if (mods.fine) delta = Math.max(step, delta / 10);
+    let v = value + dir * delta;
+    v = min + Math.round((v - min) / step) * step;
+    const d = Math.min(12, decimalsForStep(step) + 2);
+    v = parseFloat(v.toFixed(d));
+    return Math.min(max, Math.max(min, v));
+  }
+
   return {
-    STORAGE_KEY, PERSISTED_KEYS, RANGES, sanitize, serialize, save, load,
+    STORAGE_KEY, PERSISTED_KEYS, RANGES, PANEL_SECTIONS, DEFAULT_PANELS,
+    sanitize, serialize, save, load,
     normalizeAngleDeltaDeg, rollForDrag, dragSign, resolveSwapForLoad,
+    parseReadout, decimalsForStep, nudgeSliderValue,
   };
 });

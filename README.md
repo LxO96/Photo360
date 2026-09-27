@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.svg" width="96" height="96" alt="Fisheye Print Extractor logo: two overlapping circles with their shared region cut away"></p>
+
 # Fisheye Print Extractor
 
 A single static web page that turns an Insta360 dual-fisheye photo into a
@@ -59,14 +61,29 @@ needed for the rim glow."
 
 ## The controls
 
+The header bar shows the open file and has an **Open…** button that is
+always there. The panel on the right is split into collapsible sections
+(Framing, Level, White balance for raw files only, Edge, Tone, Output). The
+page remembers which sections are open along with your other settings. Every
+number beside a slider can be edited: type a value and press Enter, or click
+away, to apply it. Values outside a slider's range are clamped to it, and
+Escape cancels. With a slider or its number focused, the arrow keys nudge the
+value. Shift makes the step coarser, Ctrl makes it finer, and Page Up/Down
+make a coarse step. **Export** sits at the bottom of the panel, next to the
+exact pixel size and aspect ratio it will write.
+
+The interface is deliberately neutral grey. A tinted surround shifts how you
+judge white balance, so colour is kept for the image. The one warm accent only
+marks what you are touching.
+
 ### Framing
 
 - **Field of view** — how much of the lens to keep, in degrees. 180°
   crops to exactly a hemisphere (no duplication with the other lens, no
   gap). Above 180° you get some of what the other lens also saw; below
-  180° you get less than a hemisphere. The readout under the calibration
-  line tells you which, and by how much.
-- **Lens calibration (advanced)** — the half-angle, in degrees, at which
+  180° you get less than a hemisphere. The note under the slider tells
+  you which, and by how much.
+- **Calibration** (lens calibration, advanced) — the half-angle, in degrees, at which
   the lens's own image circle sits. This is what turns "field of view" into
   a crop radius. It's set automatically from the camera identified in the
   file (see Calibration below); reach for this slider yourself only if the
@@ -197,7 +214,7 @@ X5 never writes that shape, so the tool falls back to the ONE X figure
 instead, and says plainly in the UI that the camera wasn't identified and
 the number is a guess from the file's shape, not a read tag.
 
-Whatever the source, the **Lens calibration (advanced)** slider (60°–150°)
+Whatever the source, the **Calibration** slider (60°–150°)
 always lets you override `thetaMaxDeg` by eye if the 180° crop doesn't
 reach the true horizon — most likely on an unrecognized camera, but nothing
 stops you from second-guessing a "confident" one either.

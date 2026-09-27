@@ -4,143 +4,390 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fisheye Print Extractor</title>
+<!-- The mark (logo.svg), inlined as a data URI so the page needs no external
+     asset and still works from file://. Two lens circles, back to back; their
+     shared region (the content both lenses captured) is cut away. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23181818'/%3E%3Cpath fill='%23ededed' fill-rule='evenodd' d='M2 16a9 9 0 1 0 18 0a9 9 0 1 0-18 0ZM12 16a9 9 0 1 0 18 0a9 9 0 1 0-18 0Z'/%3E%3C/svg%3E">
 <style>
-  :root { color-scheme: dark; --bg:#141416; --panel:#1d1d20; --line:#2e2e33; --fg:#e8e8ea; --mut:#8b8b93; }
+  /* Darkroom chrome (Task 18). Every surface colour below is a neutral grey
+     (R = G = B): a tinted surround biases white-balance judgement. The one
+     chromatic token, --accent, marks interactive state only -- focus, the
+     slider being moved, the primary action -- never a large area. */
+  :root {
+    color-scheme: dark;
+    --stage: #101010;
+    --bar: #181818;
+    --panel: #1a1a1a;
+    --sec: #1f1f1f;
+    --field: #121212;
+    --line: #2a2a2a;
+    --line-2: #363636;
+    --track: #3a3a3a;
+    --thumb: #b4b4b4;
+    --fg: #dddddd;
+    --fg-2: #a6a6a6;
+    --mut: #7d7d7d;
+    --dim: #5a5a5a;
+    --accent: #f0a04b;
+    --accent-ink: #141414;
+    --accent-soft: rgba(240, 160, 75, .28);
+    --err: #ff7a6b;
+    --warn: #d9b25e;
+    --ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, Menlo, monospace;
+  }
   * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-         display:flex; height:100vh; overflow:hidden; }
-  #stage { flex:1; display:grid; place-items:center; position:relative; padding:24px; min-width:0; touch-action:none; }
-  #view { max-width:100%; max-height:100%; background:#000; }
-  #guides { position:absolute; pointer-events:none; }
-  #drop { position:absolute; inset:24px; border:2px dashed var(--line); border-radius:8px;
-          display:grid; place-items:center; color:var(--mut); text-align:center; }
-  #drop.hidden { display:none; }
-  .hidden { display:none; }
-  #panel { width:320px; flex:none; border-left:1px solid var(--line); background:var(--panel);
-           overflow-y:auto; padding:16px; }
-  #panel h2 { font-size:11px; text-transform:uppercase; letter-spacing:.08em;
-              color:var(--mut); margin:20px 0 8px; }
-  #panel h2:first-child { margin-top:0; }
-  label { display:block; margin:10px 0; }
-  label span { display:flex; justify-content:space-between; color:var(--mut); font-size:12px; }
-  input[type=range] { width:100%; }
-  #readout { color:var(--mut); font-size:12px; margin-top:4px; }
-  #exportSize { color:var(--mut); font-size:12px; margin:8px 0; }
-  #error { color:#ff7a6b; font-size:12px; margin-top:8px; white-space:pre-wrap; }
-  #warning { color:#e0b34d; font-size:12px; margin-top:8px; white-space:pre-wrap; }
-  #openFile { margin: 0 0 12px; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--stage); color: var(--fg);
+    font: 12px/1.4 var(--ui);
+    display: grid; grid-template-rows: 40px minmax(0, 1fr); grid-template-columns: minmax(0, 1fr) 312px;
+    height: 100vh; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .hidden { display: none !important; }
+  button, input, select { font: inherit; color: inherit; }
+  :focus { outline: none; }
+  :focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+
+  /* -- Header bar ------------------------------------------------------ */
+  #bar {
+    grid-column: 1 / -1; display: flex; align-items: center; gap: 10px;
+    padding: 0 10px 0 14px; background: var(--bar); border-bottom: 1px solid var(--line);
+    min-width: 0; user-select: none;
+  }
+  #bar .mark { flex: none; display: block; color: #ededed; }
+  #bar .brand { font-weight: 600; font-size: 12.5px; letter-spacing: .01em; white-space: nowrap; }
+  #bar .rule { width: 1px; height: 16px; background: var(--line-2); flex: none; }
+  #fileName {
+    color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+    font-variant-numeric: tabular-nums;
+  }
+  #fileName.empty { color: var(--dim); }
+  #fileMeta {
+    color: var(--mut); white-space: nowrap; font-size: 11px; font-variant-numeric: tabular-nums;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto;
+  }
+  #fileMeta:empty { display: none; }
+  #bar .spring { flex: 1; }
+
+  .btn {
+    height: 24px; padding: 0 10px; border-radius: 3px; cursor: pointer; white-space: nowrap;
+    background: #262626; border: 1px solid var(--line-2); color: var(--fg);
+  }
+  .btn:hover { background: #2e2e2e; border-color: #444444; }
+  .btn:active { background: #222222; }
+  .btn.ghost { background: transparent; border-color: var(--line-2); color: var(--fg-2); height: 22px; font-size: 11px; }
+  .btn.ghost:hover { color: var(--fg); border-color: #4a4a4a; }
+
+  /* -- Stage ------------------------------------------------------------ */
+  #stage {
+    display: grid; place-items: center; position: relative; padding: 24px;
+    min-width: 0; min-height: 0; touch-action: none; background: var(--stage);
+  }
+  #view { max-width: 100%; max-height: 100%; background: #000000; }
+  /* Until a file is loaded the canvas is an empty 300x150 default. */
+  body:not(.loaded) #view { visibility: hidden; }
+  #guides { position: absolute; pointer-events: none; }
+  #drop {
+    position: absolute; inset: 24px; border: 1px dashed #333333; border-radius: 6px;
+    display: grid; place-content: center; justify-items: center; gap: 14px;
+    color: var(--mut); text-align: center; cursor: pointer; user-select: none;
+  }
+  #drop:hover { border-color: #4a4a4a; color: var(--fg-2); }
+  #drop .mark { color: #3c3c3c; }
+  #drop:hover .mark { color: #585858; }
+  #drop .lead { font-size: 15px; color: var(--fg-2); font-weight: 500; }
+  #drop .sub { font-size: 11.5px; color: var(--mut); }
+  #drop kbd {
+    font: 11px var(--mono); padding: 1px 5px; border: 1px solid var(--line-2); border-radius: 3px;
+    color: var(--fg-2); background: #161616;
+  }
+
+  /* -- Panel ------------------------------------------------------------ */
+  #panel {
+    display: flex; flex-direction: column; min-height: 0;
+    background: var(--panel); border-left: 1px solid var(--line);
+  }
+  #panelScroll { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: #3a3a3a transparent; }
+
+  details.sec { border-bottom: 1px solid var(--line); }
+  details.sec > summary {
+    list-style: none; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 12px;
+    background: var(--sec); color: var(--fg-2);
+    font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+  }
+  details.sec > summary::-webkit-details-marker { display: none; }
+  details.sec > summary::before {
+    content: ""; width: 0; height: 0; flex: none;
+    border-left: 4px solid var(--mut); border-top: 3.5px solid transparent; border-bottom: 3.5px solid transparent;
+    transition: transform .12s ease;
+  }
+  details.sec[open] > summary::before { transform: rotate(90deg); }
+  details.sec > summary:hover { color: var(--fg); }
+  details.sec > summary .tag {
+    margin-left: auto; font-size: 9.5px; letter-spacing: .06em; color: var(--mut);
+    border: 1px solid var(--line-2); border-radius: 2px; padding: 0 4px; line-height: 14px;
+  }
+  details.sec > .body { padding: 6px 12px 10px; }
+
+  /* One control per row: label | slider | editable value. */
+  .row {
+    display: grid; grid-template-columns: 94px minmax(0, 1fr) 66px; align-items: center;
+    column-gap: 8px; min-height: 25px;
+  }
+  .row > label { color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row.sel > select { grid-column: 2 / 4; }
+  .sub-h {
+    margin: 8px 0 2px; color: var(--mut); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase;
+  }
+  .val { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 0; }
+  .val i { font-style: normal; color: var(--mut); font-size: 11px; min-width: 9px; }
+  input.num {
+    width: 100%; min-width: 0; height: 20px; padding: 0 4px; text-align: right;
+    background: transparent; border: 1px solid transparent; border-radius: 2px;
+    color: var(--fg); font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+  }
+  input.num:hover { border-color: var(--line-2); }
+  input.num:focus { background: var(--field); border-color: var(--accent); outline: none; }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none; width: 100%; height: 18px; margin: 0;
+    background: transparent; cursor: pointer;
+  }
+  input[type=range]::-webkit-slider-runnable-track { height: 2px; background: var(--track); border-radius: 1px; }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 11px; height: 11px; margin-top: -4.5px; border-radius: 50%;
+    background: var(--thumb); border: 0; box-shadow: 0 0 0 2px var(--panel);
+  }
+  input[type=range]::-moz-range-track { height: 2px; background: var(--track); border-radius: 1px; }
+  input[type=range]::-moz-range-thumb {
+    width: 11px; height: 11px; border-radius: 50%; background: var(--thumb); border: 0;
+    box-shadow: 0 0 0 2px var(--panel);
+  }
+  input[type=range]:hover::-webkit-slider-thumb { background: #e2e2e2; }
+  input[type=range]:hover::-moz-range-thumb { background: #e2e2e2; }
+  input[type=range]:focus-visible { outline: none; }
+  input[type=range]:focus-visible::-webkit-slider-thumb,
+  input[type=range]:active::-webkit-slider-thumb { background: var(--accent); box-shadow: 0 0 0 2px var(--panel), 0 0 0 5px var(--accent-soft); }
+  input[type=range]:focus-visible::-moz-range-thumb,
+  input[type=range]:active::-moz-range-thumb { background: var(--accent); box-shadow: 0 0 0 2px var(--panel), 0 0 0 5px var(--accent-soft); }
+
+  select {
+    height: 22px; padding: 0 6px; border-radius: 2px; min-width: 0;
+    background: var(--field); border: 1px solid var(--line-2); color: var(--fg);
+  }
+  select:hover { border-color: #4a4a4a; }
+  select:focus-visible { border-color: var(--accent); outline: none; }
+  select option { background: #1a1a1a; }
+  select option:disabled { color: var(--dim); }
+
+  label.check { display: flex; align-items: center; gap: 7px; min-height: 25px; color: var(--fg-2); cursor: pointer; }
+  label.check input { margin: 0; accent-color: var(--accent); }
+  label.check:has(input:disabled) { color: var(--dim); cursor: default; }
+
+  .note { color: var(--mut); font-size: 11px; line-height: 1.4; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
+  .note:empty { display: none; }
+  .actions { display: flex; justify-content: flex-end; margin-top: 6px; gap: 6px; }
+
+  /* -- Export footer ---------------------------------------------------- */
+  #panelFoot { flex: none; border-top: 1px solid var(--line-2); background: var(--bar); padding: 10px 12px 12px; }
+  #warning, #error { font-size: 11px; white-space: pre-wrap; margin-bottom: 8px; }
+  #warning { color: var(--warn); }
+  #error { color: var(--err); }
+  #warning:empty, #error:empty { display: none; }
+  .exportRow { display: flex; align-items: center; gap: 10px; }
+  #exportSize { flex: 1; min-width: 0; font-variant-numeric: tabular-nums; }
+  #exportDims { display: block; color: var(--fg); font-size: 13px; font-weight: 600; white-space: nowrap; }
+  #exportDims .ratio { color: var(--fg-2); font-weight: 500; margin-left: 6px; }
+  #exportNote { display: block; color: var(--mut); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #export {
+    flex: none; height: 34px; padding: 0 18px; border-radius: 3px; cursor: pointer;
+    background: var(--accent); color: var(--accent-ink); border: 0;
+    font-weight: 650; font-size: 12.5px; letter-spacing: .02em;
+  }
+  #export:hover { filter: brightness(1.08); }
+  #export:active { filter: brightness(.94); }
+  #export:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+  #export:disabled { background: #2b2b2b; color: var(--dim); cursor: default; filter: none; }
 </style>
 </head>
 <body>
+  <header id="bar">
+    <svg class="mark" width="28" height="18" viewBox="2 7 28 18" aria-hidden="true">
+      <path fill="currentColor" fill-rule="evenodd"
+            d="M2 16a9 9 0 1 0 18 0a9 9 0 1 0-18 0ZM12 16a9 9 0 1 0 18 0a9 9 0 1 0-18 0Z"/>
+    </svg>
+    <span class="brand">Fisheye Print Extractor</span>
+    <span class="rule"></span>
+    <span id="fileName" class="empty">No file open</span>
+    <span id="fileMeta"></span>
+    <span class="spring"></span>
+    <button id="openFile" class="btn" type="button" title="Open an .insp, .jpg or .dng file">Open…</button>
+  </header>
+
   <div id="stage">
     <canvas id="view"></canvas>
     <canvas id="guides"></canvas>
-    <div id="drop">Drop an .insp, .jpg or .dng fisheye file here<br>(or click to choose)</div>
+    <div id="drop">
+      <svg class="mark" width="112" height="72" viewBox="2 7 28 18" aria-hidden="true">
+        <path fill="currentColor" fill-rule="evenodd"
+              d="M2 16a9 9 0 1 0 18 0a9 9 0 1 0-18 0ZM12 16a9 9 0 1 0 18 0a9 9 0 1 0-18 0Z"/>
+      </svg>
+      <div class="lead">Drop an .insp, .jpg or .dng fisheye file here</div>
+      <div class="sub">or click to choose · Insta360 X5 and ONE X, JPEG or raw</div>
+    </div>
     <input id="file" type="file" accept=".insp,.jpg,.jpeg,.dng,image/jpeg" hidden>
   </div>
+
   <aside id="panel">
-    <button id="openFile" type="button">Open…</button>
-    <h2>Framing</h2>
-    <label><span>Field of view <output id="fovOut">180.0°</output></span>
-      <input id="fov" type="range" min="120" max="210" step="0.5" value="180"></label>
-    <div id="calibration" style="color:var(--mut); font-size:12px; margin:-4px 0 10px;"></div>
-    <label><span>Lens calibration (advanced) <output id="thetaMaxOut">105.0°</output></span>
-      <input id="thetaMax" type="range" min="60" max="150" step="0.5" value="105"></label>
-    <label><span>Sensors</span>
-      <select id="sensors">
-        <option value="A">Lens A only</option>
-        <option value="B">Lens B only</option>
-        <option value="both">Both</option>
-      </select></label>
-    <label><span>Layout</span>
-      <select id="orientation">
-        <option value="side">Side by side (2:1)</option>
-        <option value="stacked">Stacked (1:2)</option>
-      </select></label>
-    <label><span><input id="swap" type="checkbox"> Swap A and B</span></label>
-    <div id="swapHint" class="hidden" style="color:var(--mut); font-size:11px; margin:-6px 0 8px;">
-      A single-lens file has no lens B to swap in.
-    </div>
-    <label><span>Gap <output id="gapOut">16%</output></span>
-      <input id="gap" type="range" min="0" max="25" step="0.5" value="16"></label>
-    <label><span>Margin <output id="marginOut">8%</output></span>
-      <input id="margin" type="range" min="0" max="25" step="0.5" value="8"></label>
+    <div id="panelScroll">
 
-    <h2>Level</h2>
-    <label><span><input id="showGuides" type="checkbox" checked> Show horizon guides</span></label>
-    <label><span>Camera roll <output id="rollOut">0.0°</output></span>
-      <input id="roll" type="range" min="-180" max="180" step="0.1" value="0"></label>
-    <label><span>Lens A nudge <output id="nudgeAOut">0.0°</output></span>
-      <input id="nudgeA" type="range" min="-10" max="10" step="0.1" value="0"></label>
-    <label><span>Lens B nudge <output id="nudgeBOut">0.0°</output></span>
-      <input id="nudgeB" type="range" min="-10" max="10" step="0.1" value="0"></label>
-    <div id="readout"></div>
-
-    <h2 id="whiteBalanceHeading" class="hidden">White balance</h2>
-    <div id="whiteBalanceGroup" class="hidden">
-      <div style="color:var(--mut); font-size:11px; margin:-6px 0 8px;">
-        Raw source: classic Kelvin + tint per lens, like Lightroom's white
-        balance. Kelvin is the colour temperature being corrected for --
-        raising it warms the image. Positive tint adds magenta, negative
-        adds green.
+    <details class="sec" data-panel="framing" open>
+      <summary>Framing</summary>
+      <div class="body">
+        <div class="row"><label for="fov">Field of view</label>
+          <input id="fov" type="range" min="120" max="210" step="0.5" value="180">
+          <span class="val"><input id="fovOut" class="num" type="text" inputmode="decimal" aria-label="Field of view, degrees"><i>°</i></span></div>
+        <div id="readout" class="note"></div>
+        <div class="row"><label for="thetaMax" title="Lens calibration (advanced): the lens model's half-angle">Calibration</label>
+          <input id="thetaMax" type="range" min="60" max="150" step="0.5" value="105">
+          <span class="val"><input id="thetaMaxOut" class="num" type="text" inputmode="decimal" aria-label="Lens calibration, degrees"><i>°</i></span></div>
+        <div id="calibration" class="note"></div>
+        <div class="row sel"><label for="sensors">Sensors</label>
+          <select id="sensors">
+            <option value="A">Lens A only</option>
+            <option value="B">Lens B only</option>
+            <option value="both">Both</option>
+          </select></div>
+        <div class="row sel"><label for="orientation">Layout</label>
+          <select id="orientation">
+            <option value="side">Side by side (2:1)</option>
+            <option value="stacked">Stacked (1:2)</option>
+          </select></div>
+        <label class="check"><input id="swap" type="checkbox"> Swap A and B</label>
+        <div id="swapHint" class="note hidden">A single-lens file has no lens B to swap in.</div>
+        <div class="row"><label for="gap">Gap</label>
+          <input id="gap" type="range" min="0" max="25" step="0.5" value="16">
+          <span class="val"><input id="gapOut" class="num" type="text" inputmode="decimal" aria-label="Gap, percent"><i>%</i></span></div>
+        <div class="row"><label for="margin">Margin</label>
+          <input id="margin" type="range" min="0" max="25" step="0.5" value="8">
+          <span class="val"><input id="marginOut" class="num" type="text" inputmode="decimal" aria-label="Margin, percent"><i>%</i></span></div>
       </div>
-      <label><span>Lens A Kelvin
-        <input id="kelvinAOut" type="number" min="2000" max="12000" step="1"></span>
-        <input id="kelvinA" type="range" min="0" max="1" step="0.0001"></label>
-      <label><span>Lens A tint
-        <input id="tintAOut" type="number" min="-150" max="150" step="1"></span>
-        <input id="tintA" type="range" min="-1" max="1" step="0.0001"></label>
-      <label><span>Lens B Kelvin
-        <input id="kelvinBOut" type="number" min="2000" max="12000" step="1"></span>
-        <input id="kelvinB" type="range" min="0" max="1" step="0.0001"></label>
-      <label><span>Lens B tint
-        <input id="tintBOut" type="number" min="-150" max="150" step="1"></span>
-        <input id="tintB" type="range" min="-1" max="1" step="0.0001"></label>
-      <label><span><input id="wbLink" type="checkbox" checked> Link A and B</span></label>
-      <button id="wbReset" type="button">Reset to as-shot</button>
+    </details>
+
+    <details class="sec" data-panel="level" open>
+      <summary>Level</summary>
+      <div class="body">
+        <label class="check"><input id="showGuides" type="checkbox" checked> Show horizon guides</label>
+        <div class="row"><label for="roll">Camera roll</label>
+          <input id="roll" type="range" min="-180" max="180" step="0.1" value="0">
+          <span class="val"><input id="rollOut" class="num" type="text" inputmode="decimal" aria-label="Camera roll, degrees"><i>°</i></span></div>
+        <div class="row"><label for="nudgeA">Lens A nudge</label>
+          <input id="nudgeA" type="range" min="-10" max="10" step="0.1" value="0">
+          <span class="val"><input id="nudgeAOut" class="num" type="text" inputmode="decimal" aria-label="Lens A nudge, degrees"><i>°</i></span></div>
+        <div class="row"><label for="nudgeB">Lens B nudge</label>
+          <input id="nudgeB" type="range" min="-10" max="10" step="0.1" value="0">
+          <span class="val"><input id="nudgeBOut" class="num" type="text" inputmode="decimal" aria-label="Lens B nudge, degrees"><i>°</i></span></div>
+        <div class="note">Drag a circle on the image to roll it. Arrow keys adjust a focused
+          slider; Shift is coarse, Ctrl is fine.</div>
+      </div>
+    </details>
+
+    <details id="whiteBalanceGroup" class="sec hidden" data-panel="whiteBalance" open>
+      <summary id="whiteBalanceHeading">White balance <span class="tag">RAW</span></summary>
+      <div class="body">
+        <div class="note">Kelvin + tint per lens, as in Lightroom. Kelvin is the colour
+          temperature being corrected for; raising it warms the image. Positive tint adds
+          magenta, negative adds green.</div>
+        <div class="sub-h">Lens A</div>
+        <div class="row"><label for="kelvinA">Temperature</label>
+          <input id="kelvinA" type="range" min="0" max="1" step="0.0001">
+          <span class="val"><input id="kelvinAOut" class="num" type="text" inputmode="numeric" aria-label="Lens A temperature, Kelvin"><i>K</i></span></div>
+        <div class="row"><label for="tintA">Tint</label>
+          <input id="tintA" type="range" min="-1" max="1" step="0.0001">
+          <span class="val"><input id="tintAOut" class="num" type="text" inputmode="numeric" aria-label="Lens A tint"><i></i></span></div>
+        <div class="sub-h">Lens B</div>
+        <div class="row"><label for="kelvinB">Temperature</label>
+          <input id="kelvinB" type="range" min="0" max="1" step="0.0001">
+          <span class="val"><input id="kelvinBOut" class="num" type="text" inputmode="numeric" aria-label="Lens B temperature, Kelvin"><i>K</i></span></div>
+        <div class="row"><label for="tintB">Tint</label>
+          <input id="tintB" type="range" min="-1" max="1" step="0.0001">
+          <span class="val"><input id="tintBOut" class="num" type="text" inputmode="numeric" aria-label="Lens B tint"><i></i></span></div>
+        <label class="check"><input id="wbLink" type="checkbox" checked> Link A and B</label>
+        <div class="actions"><button id="wbReset" class="btn ghost" type="button">Reset to as-shot</button></div>
+      </div>
+    </details>
+
+    <details class="sec" data-panel="edge">
+      <summary>Edge</summary>
+      <div class="body">
+        <div class="row"><label for="edgeIntensity">Intensity</label>
+          <input id="edgeIntensity" type="range" min="0" max="4" step="0.00001">
+          <span class="val"><input id="edgeIntensityOut" class="num" type="text" inputmode="decimal" aria-label="Edge intensity"><i></i></span></div>
+        <div class="row"><label for="ringWidth">Ring width</label>
+          <input id="ringWidth" type="range" min="0.002" max="0.06" step="0.00001">
+          <span class="val"><input id="ringWidthOut" class="num" type="text" inputmode="decimal" aria-label="Ring width"><i></i></span></div>
+        <div class="row"><label for="dispersion">Dispersion</label>
+          <input id="dispersion" type="range" min="0" max="0.05" step="0.00001">
+          <span class="val"><input id="dispersionOut" class="num" type="text" inputmode="decimal" aria-label="Dispersion"><i></i></span></div>
+        <div class="row"><label for="glowSpreadDeg">Glow spread</label>
+          <input id="glowSpreadDeg" type="range" min="0" max="45" step="0.5">
+          <span class="val"><input id="glowSpreadDegOut" class="num" type="text" inputmode="decimal" aria-label="Glow spread, degrees"><i>°</i></span></div>
+        <div class="row"><label for="highlightKnee">Highlight knee</label>
+          <input id="highlightKnee" type="range" min="0" max="1" step="0.01">
+          <span class="val"><input id="highlightKneeOut" class="num" type="text" inputmode="decimal" aria-label="Highlight knee"><i></i></span></div>
+        <div class="row"><label for="falloffStart">Falloff start</label>
+          <input id="falloffStart" type="range" min="0.6" max="0.99" step="0.00001">
+          <span class="val"><input id="falloffStartOut" class="num" type="text" inputmode="decimal" aria-label="Falloff start"><i></i></span></div>
+        <div class="row"><label for="falloffSoftness">Falloff soft.</label>
+          <input id="falloffSoftness" type="range" min="0.3" max="4" step="0.05">
+          <span class="val"><input id="falloffSoftnessOut" class="num" type="text" inputmode="decimal" aria-label="Falloff softness"><i></i></span></div>
+        <div class="actions"><button id="resetEdge" class="btn ghost" type="button">Reset to X1 classic</button></div>
+      </div>
+    </details>
+
+    <details class="sec" data-panel="tone" open>
+      <summary>Tone</summary>
+      <div class="body">
+        <div class="row"><label for="exposureEv">Exposure</label>
+          <input id="exposureEv" type="range" min="-3" max="3" step="0.01" value="0">
+          <span class="val"><input id="exposureEvOut" class="num" type="text" inputmode="decimal" aria-label="Exposure, EV"><i>EV</i></span></div>
+        <div class="row"><label for="contrast">Contrast</label>
+          <input id="contrast" type="range" min="-1" max="1" step="0.01" value="0">
+          <span class="val"><input id="contrastOut" class="num" type="text" inputmode="decimal" aria-label="Contrast"><i></i></span></div>
+        <div class="row"><label for="saturation">Saturation</label>
+          <input id="saturation" type="range" min="-1" max="1" step="0.01" value="0">
+          <span class="val"><input id="saturationOut" class="num" type="text" inputmode="decimal" aria-label="Saturation"><i></i></span></div>
+      </div>
+    </details>
+
+    <details class="sec" data-panel="output" open>
+      <summary>Output</summary>
+      <div class="body">
+        <div class="row sel"><label for="format">Format</label>
+          <select id="format">
+            <option value="jpeg">JPEG</option>
+            <option value="png">PNG (lossless)</option>
+          </select></div>
+        <div class="row"><label for="quality">JPEG quality</label>
+          <input id="quality" type="range" min="60" max="100" step="1" value="95">
+          <span class="val"><input id="qualityOut" class="num" type="text" inputmode="numeric" aria-label="JPEG quality"><i></i></span></div>
+        <label class="check"><input id="padToSensorSquare" type="checkbox"> Pad to sensor square (upscales)</label>
+      </div>
+    </details>
+
     </div>
 
-    <h2>Edge</h2>
-    <label><span>Intensity <output id="edgeIntensityOut"></output></span>
-      <input id="edgeIntensity" type="range" min="0" max="4" step="0.00001"></label>
-    <label><span>Ring width <output id="ringWidthOut"></output></span>
-      <input id="ringWidth" type="range" min="0.002" max="0.06" step="0.00001"></label>
-    <label><span>Dispersion <output id="dispersionOut"></output></span>
-      <input id="dispersion" type="range" min="0" max="0.05" step="0.00001"></label>
-    <label><span>Glow spread <output id="glowSpreadDegOut"></output></span>
-      <input id="glowSpreadDeg" type="range" min="0" max="45" step="0.5"></label>
-    <label><span>Highlight knee <output id="highlightKneeOut"></output></span>
-      <input id="highlightKnee" type="range" min="0" max="1" step="0.01"></label>
-    <label><span>Falloff start <output id="falloffStartOut"></output></span>
-      <input id="falloffStart" type="range" min="0.6" max="0.99" step="0.00001"></label>
-    <label><span>Falloff softness <output id="falloffSoftnessOut"></output></span>
-      <input id="falloffSoftness" type="range" min="0.3" max="4" step="0.05"></label>
-    <button id="resetEdge" type="button">Reset to X1 classic</button>
-
-    <h2>Tone</h2>
-    <label><span>Exposure <output id="exposureEvOut">0.00 EV</output></span>
-      <input id="exposureEv" type="range" min="-3" max="3" step="0.01" value="0"></label>
-    <label><span>Contrast <output id="contrastOut">0.00</output></span>
-      <input id="contrast" type="range" min="-1" max="1" step="0.01" value="0"></label>
-    <label><span>Saturation <output id="saturationOut">0.00</output></span>
-      <input id="saturation" type="range" min="-1" max="1" step="0.01" value="0"></label>
-
-    <h2>Output</h2>
-    <label><span>Format</span>
-      <select id="format">
-        <option value="jpeg">JPEG</option>
-        <option value="png">PNG (lossless)</option>
-      </select></label>
-    <label><span>JPEG quality <output id="qualityOut">95</output></span>
-      <input id="quality" type="range" min="60" max="100" step="1" value="95"></label>
-    <label><span><input id="padToSensorSquare" type="checkbox">
-      Pad to sensor square (upscales)</span></label>
-    <div id="exportSize"></div>
-    <button id="export" type="button">Export</button>
-
-    <div id="warning"></div>
-    <div id="error"></div>
+    <div id="panelFoot">
+      <div id="warning"></div>
+      <div id="error"></div>
+      <div class="exportRow">
+        <div id="exportSize"><span id="exportDims">—</span><span id="exportNote">No file loaded</span></div>
+        <button id="export" type="button" disabled>Export</button>
+      </div>
+    </div>
   </aside>
 
   <script src="lens.js"></script>

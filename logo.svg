@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="64" height="64" role="img" aria-label="Fisheye Print Extractor">
+  <title>Fisheye Print Extractor</title>
+  <!-- Two lens circles, back to back (r = 9, centres 10 apart). Filled with
+       the even-odd rule, so the lens-shaped region they share (the content
+       both lenses captured, which the tool crops away) is cut out. Circle
+       edges fall on whole pixels at 16 px (x = 1, 6, 10, 15). -->
+  <rect width="32" height="32" rx="7" fill="#181818"/>
+  <path fill="#ededed" fill-rule="evenodd" d="M2 16a9 9 0 1 0 18 0a9 9 0 1 0-18 0ZM12 16a9 9 0 1 0 18 0a9 9 0 1 0-18 0Z"/>
+</svg>

@@ -7,33 +7,21 @@
   const showGuidesEl = document.getElementById('showGuides');
   const dropEl = document.getElementById('drop');
   const fileEl = document.getElementById('file');
-  const fovEl = document.getElementById('fov');
-  const fovOut = document.getElementById('fovOut');
-  const thetaMaxEl = document.getElementById('thetaMax');
-  const thetaMaxOut = document.getElementById('thetaMaxOut');
   const calibrationEl = document.getElementById('calibration');
   const sensorsEl = document.getElementById('sensors');
   const orientationEl = document.getElementById('orientation');
   const swapEl = document.getElementById('swap');
-  const gapEl = document.getElementById('gap');
-  const gapOut = document.getElementById('gapOut');
-  const marginEl = document.getElementById('margin');
-  const marginOut = document.getElementById('marginOut');
-  const rollEl = document.getElementById('roll');
-  const rollOut = document.getElementById('rollOut');
-  const nudgeAEl = document.getElementById('nudgeA');
-  const nudgeAOut = document.getElementById('nudgeAOut');
-  const nudgeBEl = document.getElementById('nudgeB');
-  const nudgeBOut = document.getElementById('nudgeBOut');
   const readout = document.getElementById('readout');
   const errorEl = document.getElementById('error');
   const formatEl = document.getElementById('format');
   const qualityEl = document.getElementById('quality');
-  const qualityOut = document.getElementById('qualityOut');
   const padToSensorSquareEl = document.getElementById('padToSensorSquare');
   const exportSizeEl = document.getElementById('exportSize');
+  const exportDimsEl = document.getElementById('exportDims');
+  const exportNoteEl = document.getElementById('exportNote');
+  const fileNameEl = document.getElementById('fileName');
+  const fileMetaEl = document.getElementById('fileMeta');
   const exportBtn = document.getElementById('export');
-  const whiteBalanceHeadingEl = document.getElementById('whiteBalanceHeading');
   const whiteBalanceGroupEl = document.getElementById('whiteBalanceGroup');
   const swapHintEl = document.getElementById('swapHint');
   const kelvinAEl = document.getElementById('kelvinA');
@@ -162,6 +150,9 @@
     // user preference, persisted the same way, with no file ever overriding
     // it (unlike rawWb itself).
     rawWbLinked: true,
+    // Task 18: which collapsible panel sections are open. A plain UI
+    // preference, persisted and validated through Settings like the rest.
+    panels: { ...Settings.DEFAULT_PANELS },
   };
   let ctx = null;
 
@@ -204,10 +195,27 @@
 
   // Shows/hides the White balance panel -- it only makes sense for a raw
   // source, since a JPEG/.insp file has already been demosaiced and white
-  // balanced by the camera.
+  // balanced by the camera. #whiteBalanceGroup is the whole collapsible
+  // section (its <summary> is #whiteBalanceHeading), so one toggle covers
+  // both; whether it is expanded is state.panels.whiteBalance's business.
   function updateWbVisibility() {
-    whiteBalanceHeadingEl.classList.toggle('hidden', !state.isRaw);
     whiteBalanceGroupEl.classList.toggle('hidden', !state.isRaw);
+  }
+
+  // Header bar (Task 18): the loaded file's name plus a terse description
+  // of what it is. Presentation only -- reads state, never writes it.
+  function updateFileHeader() {
+    const has = !!state.sourceName;
+    fileNameEl.textContent = has ? state.sourceName : 'No file open';
+    fileNameEl.classList.toggle('empty', !has);
+    fileNameEl.title = has ? state.sourceName : '';
+    if (!has) { fileMetaEl.textContent = ''; return; }
+    const parts = [];
+    if (state.calibration && state.calibration.model) parts.push(state.calibration.model);
+    parts.push(state.isRaw ? 'raw DNG' : (/\.insp$/i.test(state.sourceName) ? '.insp' : 'JPEG'));
+    parts.push(state.lensCount === 1 ? 'single lens' : 'dual lens');
+    if (state.sourceLensSize) parts.push(state.sourceLensSize + ' px/lens');
+    fileMetaEl.textContent = parts.join(' · ');
   }
 
   // Recomputes the derived camera-space neutral triples (state.rawWhiteBalance,
@@ -330,8 +338,7 @@
     Object.assign(state, patch);
 
     dropEl.classList.add('hidden');
-    thetaMaxEl.value = state.thetaMaxDeg;
-    thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
+    reflectNum(NUM.thetaMax, true);
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
     swapEl.checked = state.swap;
@@ -340,6 +347,9 @@
     updateCalibrationReadout();
     updateWbVisibility();
     syncWbControls();
+    updateFileHeader();
+    exportBtn.disabled = false;
+    document.body.classList.add('loaded');
     render();
     scheduleSave();
   }
@@ -437,14 +447,28 @@
   // exportImage itself renders at -- so this text can never drift from what
   // actually gets written.
   function updateExportSize() {
-    if (!state.sourceLensSize) { exportSizeEl.textContent = ''; return; }
+    if (!state.sourceLensSize) {
+      exportDimsEl.textContent = '—';
+      exportNoteEl.textContent = 'No file loaded';
+      exportSizeEl.title = '';
+      return;
+    }
     const g = GL.exportGeometry(state);
     const downscaled = state.uploadedLensSize && state.uploadedLensSize < state.sourceLensSize;
     const note = state.padToSensorSquare
       ? (downscaled ? 'upscaled to this GPU’s capped texture size' : 'upscaled to sensor square')
       : (downscaled ? 'native to this GPU’s capped texture size' : 'native, no invented resolution');
-    exportSizeEl.textContent =
-      `Exports at ${g.width} × ${g.height} px (${note}) — ${aspectRatioLabel(g.width, g.height)}`;
+    const ratio = aspectRatioLabel(g.width, g.height);
+    // Dimensions and ratio on the first line, beside the Export button; the
+    // provenance note under it. The full sentence the old single-line
+    // readout carried stays available as the tooltip.
+    exportDimsEl.textContent = `${g.width} × ${g.height} px`;
+    const ratioEl = document.createElement('span');
+    ratioEl.className = 'ratio';
+    ratioEl.textContent = ratio;
+    exportDimsEl.appendChild(ratioEl);
+    exportNoteEl.textContent = note;
+    exportSizeEl.title = `Exports at ${g.width} × ${g.height} px (${note}) — ${ratio}`;
   }
 
   // A terse "W:H" label (e.g. "2:1", "1:2", "1.86:1") so the shipped
@@ -584,8 +608,7 @@
     const p = pointerToCanvas(e);
     const angleDeg = Math.atan2(p.y - drag.cy, p.x - drag.cx) * 180 / Math.PI;
     state.rollDeg = Settings.rollForDrag(drag.startRollDeg, drag.sign, angleDeg - drag.startAngleDeg);
-    rollEl.value = state.rollDeg;
-    rollOut.textContent = state.rollDeg.toFixed(1) + '°';
+    reflectNum(NUM.roll, true);
     render();
     scheduleSave();
   });
@@ -620,56 +643,176 @@
     syncControlsFromState();
   }
 
+  // -- Numeric controls: slider + editable readout (Task 18) ---------------
+  // Every slider and the numeric readout beside it, driven from one table
+  // instead of one hand-written listener pair per control. Each entry says
+  // how to read and write its field of `state` (in state units), how the
+  // readout displays it, and the Settings.RANGES entry a typed value is
+  // clamped through. `scale` converts state units to the units shown in the
+  // readout and used by the slider (percent for gap/margin); the Kelvin/tint
+  // sliders are nonlinear, so they supply their own toSlider/fromSlider and
+  // route every change through setWbField (which also handles A/B linking).
+  // What a slider's `input` event did before this task is exactly what
+  // commitNum does now: set the state field, update the readout, render(),
+  // scheduleSave() -- or, for JPEG quality (not persisted, not rendered),
+  // just set state.quality.
+  const EDGE_KEYS = ['edgeIntensity', 'ringWidth', 'dispersion', 'glowSpreadDeg',
+                     'highlightKnee', 'falloffStart', 'falloffSoftness'];
+  const TONE_KEYS = ['exposureEv', 'contrast', 'saturation'];
+
+  const fmtDeg = (v) => v.toFixed(1);
+  const fmtPct = (v) => (v * 100).toFixed(1).replace(/\.0$/, '');
+
+  const NUM = {};
+  function defNum(id, def) {
+    NUM[id] = Object.assign({
+      id,
+      slider: document.getElementById(id),
+      out: document.getElementById(id + 'Out'),
+      scale: 1,
+      live: true,
+    }, def);
+  }
+
+  defNum('fov', { get: () => state.fovDeg, set: (v) => { state.fovDeg = v; },
+    range: Settings.RANGES.fovDeg, fmt: fmtDeg });
+  defNum('thetaMax', { get: () => state.thetaMaxDeg, set: (v) => { state.thetaMaxDeg = v; },
+    range: Settings.RANGES.thetaMaxDeg, fmt: fmtDeg });
+  defNum('gap', { get: () => state.gapFrac, set: (v) => { state.gapFrac = v; },
+    range: Settings.RANGES.gapFrac, scale: 100, fmt: fmtPct });
+  defNum('margin', { get: () => state.marginFrac, set: (v) => { state.marginFrac = v; },
+    range: Settings.RANGES.marginFrac, scale: 100, fmt: fmtPct });
+  defNum('roll', { get: () => state.rollDeg, set: (v) => { state.rollDeg = v; },
+    range: Settings.RANGES.rollDeg, fmt: fmtDeg });
+  defNum('nudgeA', { get: () => state.nudgeDeg.A, set: (v) => { state.nudgeDeg.A = v; },
+    range: Settings.RANGES.nudgeDeg.A, fmt: fmtDeg });
+  defNum('nudgeB', { get: () => state.nudgeDeg.B, set: (v) => { state.nudgeDeg.B = v; },
+    range: Settings.RANGES.nudgeDeg.B, fmt: fmtDeg });
+  for (const k of EDGE_KEYS) {
+    defNum(k, { get: () => state.edge[k], set: (v) => { state.edge[k] = v; },
+      range: Settings.RANGES.edge[k], fmt: (v) => formatEdgeValue(k, v) });
+  }
+  for (const k of TONE_KEYS) {
+    defNum(k, { get: () => state.tone[k], set: (v) => { state.tone[k] = v; },
+      range: Settings.RANGES.tone[k], fmt: (v) => v.toFixed(2) });
+  }
+  for (const lens of ['A', 'B']) {
+    defNum('kelvin' + lens, {
+      get: () => state.rawWb[lens].kelvin,
+      range: Settings.RANGES.rawWb[lens].kelvin,
+      toSlider: Wb.kelvinToSlider, fromSlider: Wb.sliderToKelvin,
+      fmt: (v) => String(Math.round(v)),
+      apply: (v) => setWbField(lens, 'kelvin', v),
+    });
+    defNum('tint' + lens, {
+      get: () => state.rawWb[lens].tint,
+      range: Settings.RANGES.rawWb[lens].tint,
+      toSlider: Wb.tintToSlider, fromSlider: Wb.sliderToTint,
+      fmt: (v) => String(Math.round(v)),
+      apply: (v) => setWbField(lens, 'tint', v),
+    });
+  }
+  // JPEG quality is an output option, not a persisted/rendered setting, and
+  // has no Settings.RANGES entry -- its own slider bounds are the range.
+  defNum('quality', { get: () => state.quality, set: (v) => { state.quality = v; },
+    range: [parseFloat(qualityEl.min), parseFloat(qualityEl.max)],
+    fmt: (v) => String(Math.round(v)), live: false });
+
+  function toSlider(d, v) { return d.toSlider ? d.toSlider(v) : v * d.scale; }
+  function fromSlider(d, x) { return d.fromSlider ? d.fromSlider(x) : x / d.scale; }
+
+  // Writes the state value into the slider and readout. Skips the readout
+  // while someone is typing in it (unless forced), so a render-triggered
+  // refresh can never overwrite a half-typed number.
+  function reflectNum(d, force) {
+    const v = d.get();
+    d.slider.value = toSlider(d, v);
+    if (force || document.activeElement !== d.out) d.out.value = d.fmt(v);
+  }
+
+  function commitNum(d, v) {
+    if (d.apply) { d.apply(v); return; }
+    d.set(v);
+    reflectNum(d, true);
+    if (d.live) { render(); scheduleSave(); }
+  }
+
+  // Applies what was typed into a readout: parsed and clamped through the
+  // control's Settings.RANGES entry, or reverted if it is not a number.
+  function commitReadout(d) {
+    const v = Settings.parseReadout(d.out.value, d.range, d.scale);
+    if (v === null) { reflectNum(d, true); return; }
+    // Unchanged text (e.g. blur after Enter already applied it) is a no-op,
+    // so it never triggers a redundant render.
+    if (d.out.value === d.fmt(d.get())) return;
+    commitNum(d, v);
+    reflectNum(d, true);
+  }
+
+  // Keyboard fine-adjust (Settings.nudgeSliderValue): arrows move a
+  // sensible fraction of the slider's span, Shift is coarse, Ctrl (or Alt)
+  // is fine. Works from the slider itself or from its readout.
+  function nudgeKey(d, e) {
+    const s = d.slider;
+    const x = Settings.nudgeSliderValue(parseFloat(s.value), parseFloat(s.min), parseFloat(s.max),
+      parseFloat(s.step), e.key, { shift: e.shiftKey, fine: e.ctrlKey || e.metaKey || e.altKey });
+    if (x === null) return false;
+    e.preventDefault();
+    s.value = x;
+    commitNum(d, fromSlider(d, parseFloat(s.value)));
+    return true;
+  }
+
+  for (const d of Object.values(NUM)) {
+    d.slider.addEventListener('input', () => commitNum(d, fromSlider(d, parseFloat(d.slider.value))));
+    d.slider.addEventListener('keydown', (e) => nudgeKey(d, e));
+    // 'change' fires on blur (and on Enter in most browsers); Enter is also
+    // handled explicitly below so it applies everywhere.
+    d.out.addEventListener('change', () => commitReadout(d));
+    d.out.addEventListener('blur', () => reflectNum(d, true));
+    d.out.addEventListener('focus', () => d.out.select());
+    d.out.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); commitReadout(d); d.out.select(); }
+      else if (e.key === 'Escape') { e.preventDefault(); reflectNum(d, true); d.out.blur(); }
+      else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        commitReadout(d);
+        if (nudgeKey(d, e)) { reflectNum(d, true); d.out.select(); }
+      }
+    });
+  }
+
+  // -- Collapsible panel sections (Task 18) -------------------------------
+  // Open/closed state lives in state.panels, persisted through
+  // Settings.PERSISTED_KEYS (validated per section as a boolean by
+  // Settings.sanitize). The White balance section's visibility is separate
+  // (updateWbVisibility, raw sources only); this only remembers whether it
+  // is expanded when it is shown.
+  const panelEls = Array.from(document.querySelectorAll('details[data-panel]'));
+  function syncPanels() {
+    for (const el of panelEls) el.open = !!state.panels[el.dataset.panel];
+  }
+  for (const el of panelEls) {
+    el.addEventListener('toggle', () => {
+      if (state.panels[el.dataset.panel] === el.open) return;
+      state.panels[el.dataset.panel] = el.open;
+      scheduleSave();
+    });
+  }
+
   // Reflects `state` (whatever loadSettings just merged in, or the built-in
   // defaults if there was nothing to load) into every control's value and
-  // its adjacent <output>. Mirrors applyEdgePreset's per-key loop below but
-  // covers every slider, not just the edge ones.
+  // its adjacent readout.
   function syncControlsFromState() {
-    fovEl.value = state.fovDeg;
-    fovOut.textContent = state.fovDeg.toFixed(1) + '°';
-    thetaMaxEl.value = state.thetaMaxDeg;
-    thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
     swapEl.checked = state.swap;
-    gapEl.value = state.gapFrac * 100;
-    gapOut.textContent = (state.gapFrac * 100).toFixed(1).replace(/\.0$/, '') + '%';
-    marginEl.value = state.marginFrac * 100;
-    marginOut.textContent = (state.marginFrac * 100).toFixed(1).replace(/\.0$/, '') + '%';
-    rollEl.value = state.rollDeg;
-    rollOut.textContent = state.rollDeg.toFixed(1) + '°';
-    nudgeAEl.value = state.nudgeDeg.A;
-    nudgeAOut.textContent = state.nudgeDeg.A.toFixed(1) + '°';
-    nudgeBEl.value = state.nudgeDeg.B;
-    nudgeBOut.textContent = state.nudgeDeg.B.toFixed(1) + '°';
-    for (const k of EDGE_KEYS) {
-      document.getElementById(k).value = state.edge[k];
-      document.getElementById(k + 'Out').textContent = formatEdgeValue(k, state.edge[k]);
-    }
-    for (const k of Object.keys(TONE_UNITS)) {
-      document.getElementById(k).value = state.tone[k];
-      document.getElementById(k + 'Out').textContent = state.tone[k].toFixed(2) + TONE_UNITS[k];
-    }
-    // syncWbControls is defined later in this file (function declaration,
-    // so it's hoisted and safe to call here) -- reflects whatever
-    // rawWhiteBalance/rawWbLinked Settings.load just restored, even though
-    // the panel itself stays hidden until a raw file is loaded.
+    for (const d of Object.values(NUM)) if (!d.apply) reflectNum(d, true);
+    // syncWbControls is a hoisted function declaration -- reflects whatever
+    // rawWb/rawWbLinked Settings.load just restored, even though the panel
+    // itself stays hidden until a raw file is loaded.
     syncWbControls();
+    syncPanels();
   }
-
-  fovEl.addEventListener('input', () => {
-    state.fovDeg = parseFloat(fovEl.value);
-    fovOut.textContent = state.fovDeg.toFixed(1) + '°';
-    render();
-    scheduleSave();
-  });
-
-  thetaMaxEl.addEventListener('input', () => {
-    state.thetaMaxDeg = parseFloat(thetaMaxEl.value);
-    thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
-    render();
-    scheduleSave();
-  });
 
   sensorsEl.addEventListener('input', () => {
     state.sensors = sensorsEl.value;
@@ -689,54 +832,21 @@
     scheduleSave();
   });
 
-  gapEl.addEventListener('input', () => {
-    state.gapFrac = parseFloat(gapEl.value) / 100;
-    gapOut.textContent = gapEl.value + '%';
-    render();
-    scheduleSave();
-  });
-
-  marginEl.addEventListener('input', () => {
-    state.marginFrac = parseFloat(marginEl.value) / 100;
-    marginOut.textContent = marginEl.value + '%';
-    render();
-    scheduleSave();
-  });
-
-  rollEl.addEventListener('input', () => {
-    state.rollDeg = parseFloat(rollEl.value);
-    rollOut.textContent = state.rollDeg.toFixed(1) + '°';
-    render();
-    scheduleSave();
-  });
-
-  nudgeAEl.addEventListener('input', () => {
-    state.nudgeDeg.A = parseFloat(nudgeAEl.value);
-    nudgeAOut.textContent = state.nudgeDeg.A.toFixed(1) + '°';
-    render();
-    scheduleSave();
-  });
-
-  nudgeBEl.addEventListener('input', () => {
-    state.nudgeDeg.B = parseFloat(nudgeBEl.value);
-    nudgeBOut.textContent = state.nudgeDeg.B.toFixed(1) + '°';
-    render();
-    scheduleSave();
-  });
-
   // -- White balance: Kelvin + tint (Task 17) -------------------------
   // Each control edits one field (kelvin or tint) of one physical lens's
   // {kelvin, tint} pair. When linked, editing either lens's control moves
   // both, since the motivating case (one lens in sun, the other in shade)
   // needs them independent only when the user deliberately pulls them
   // apart -- exactly Task 16's linking behaviour, just over a different
-  // field shape.
+  // field shape. The sliders and typed readouts reach this through the NUM
+  // table above (their `apply`).
   function setWbField(lens, field, value) {
-    // Typed readouts can hold anything; keep values inside the slider domain.
+    // Typed readouts can hold anything; keep values inside the slider
+    // domain (Settings.RANGES.rawWb, identical to Wb.KELVIN_MIN/MAX and
+    // Wb.TINT_MAX).
     if (!Number.isFinite(value)) { syncWbControls(); return; }
-    value = field === 'kelvin'
-      ? Math.max(Wb.KELVIN_MIN, Math.min(Wb.KELVIN_MAX, value))
-      : Math.max(-Wb.TINT_MAX, Math.min(Wb.TINT_MAX, value));
+    const range = Settings.RANGES.rawWb[lens][field];
+    value = Math.max(range[0], Math.min(range[1], value));
     state.rawWb[lens][field] = value;
     if (state.rawWbLinked) {
       const other = lens === 'A' ? 'B' : 'A';
@@ -746,20 +856,6 @@
     render();
     scheduleSave();
   }
-
-  kelvinAEl.addEventListener('input', () => setWbField('A', 'kelvin', Wb.sliderToKelvin(parseFloat(kelvinAEl.value))));
-  tintAEl.addEventListener('input', () => setWbField('A', 'tint', Wb.sliderToTint(parseFloat(tintAEl.value))));
-  kelvinBEl.addEventListener('input', () => setWbField('B', 'kelvin', Wb.sliderToKelvin(parseFloat(kelvinBEl.value))));
-  tintBEl.addEventListener('input', () => setWbField('B', 'tint', Wb.sliderToTint(parseFloat(tintBEl.value))));
-
-  // Editable readouts: typing a Kelvin/tint value directly sets the field
-  // (through the same clamping each Wb.*ToSlider call already applies),
-  // and drives the slider back through the inverse mapping via
-  // syncWbControls.
-  kelvinAOutEl.addEventListener('change', () => setWbField('A', 'kelvin', parseFloat(kelvinAOutEl.value)));
-  tintAOutEl.addEventListener('change', () => setWbField('A', 'tint', parseFloat(tintAOutEl.value)));
-  kelvinBOutEl.addEventListener('change', () => setWbField('B', 'kelvin', parseFloat(kelvinBOutEl.value)));
-  tintBOutEl.addEventListener('change', () => setWbField('B', 'tint', parseFloat(tintBOutEl.value)));
 
   wbLinkEl.addEventListener('input', () => {
     state.rawWbLinked = wbLinkEl.checked;
@@ -787,68 +883,34 @@
     scheduleSave();
   });
 
-  const EDGE_KEYS = ['edgeIntensity', 'ringWidth', 'dispersion', 'glowSpreadDeg',
-                     'highlightKnee', 'falloffStart', 'falloffSoftness'];
-
-  function decimalsForStep(step) {
-    const s = String(step);
-    const i = s.indexOf('.');
-    return i === -1 ? 0 : s.length - i - 1;
-  }
-
   // Formats an edge slider's value to its own <input step>'s decimal
   // precision instead of JS's default number-to-string, which printed raw
   // values like 0.93693 or 0.26024 next to a thumb whose step (0.005/0.01)
   // couldn't actually land there -- the readout and the slider silently
   // disagreed about what value was in effect. index.html's step attributes
   // for edgeIntensity/ringWidth/dispersion/falloffStart were tightened to
-  // 0.00001 (see their own comment there) precisely so the fitted
-  // x1classic preset's five decimal digits are representable at all; this
-  // keeps the printed text matching that same precision.
+  // 0.00001 precisely so the fitted x1classic preset's five decimal digits
+  // are representable at all; this keeps the printed text matching that
+  // same precision.
   function formatEdgeValue(k, v) {
-    return v.toFixed(decimalsForStep(document.getElementById(k).step));
+    return v.toFixed(Settings.decimalsForStep(document.getElementById(k).step));
   }
 
   function applyEdgePreset() {
     state.edge = Object.assign({}, Edge.PRESETS.x1classic);
-    for (const k of EDGE_KEYS) {
-      document.getElementById(k).value = state.edge[k];
-      document.getElementById(k + 'Out').textContent = formatEdgeValue(k, state.edge[k]);
-    }
+    for (const k of EDGE_KEYS) reflectNum(NUM[k], true);
     render();
     scheduleSave();
   }
-
-  for (const k of EDGE_KEYS) {
-    document.getElementById(k).addEventListener('input', (e) => {
-      state.edge[k] = parseFloat(e.target.value);
-      document.getElementById(k + 'Out').textContent = formatEdgeValue(k, state.edge[k]);
-      render();
-      scheduleSave();
-    });
-  }
   document.getElementById('resetEdge').addEventListener('click', applyEdgePreset);
 
-  // Task 10: exposure, contrast, saturation -- three global tone sliders,
-  // wired the same generic way as EDGE_KEYS above.
-  const TONE_UNITS = { exposureEv: ' EV', contrast: '', saturation: '' };
-
-  for (const k of Object.keys(TONE_UNITS)) {
-    document.getElementById(k).addEventListener('input', (e) => {
-      state.tone[k] = parseFloat(e.target.value);
-      document.getElementById(k + 'Out').textContent = state.tone[k].toFixed(2) + TONE_UNITS[k];
-      render();
-      scheduleSave();
-    });
+  function updateExportLabel() {
+    exportBtn.textContent = state.format === 'png' ? 'Export PNG' : 'Export JPEG';
   }
 
   formatEl.addEventListener('input', () => {
     state.format = formatEl.value;
-  });
-
-  qualityEl.addEventListener('input', () => {
-    state.quality = parseFloat(qualityEl.value);
-    qualityOut.textContent = qualityEl.value;
+    updateExportLabel();
   });
 
   padToSensorSquareEl.addEventListener('input', () => {
@@ -965,13 +1027,16 @@
   });
 
   loadSettings();
+  updateExportLabel();
+  updateExportSize();
+  updateFileHeader();
 
   dropEl.addEventListener('click', () => fileEl.click());
   // #drop is hidden the moment a file loads (both load paths), so it was
   // the *only* way to click for a file picker -- after the first load, drag
   // and drop still worked but there was no other affordance to open a
   // different file, contradicting README's "or click to choose one". This
-  // button stays visible in the panel regardless of whether a file is
+  // button stays visible in the header bar regardless of whether a file is
   // loaded.
   openBtnEl.addEventListener('click', () => fileEl.click());
   fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));
