@@ -2456,3 +2456,114 @@ creative curve; and that white balance is per lens, seeded from the file and ove
 git add dng.js test/dng.test.js shaders.js gl.js app.js index.html README.md
 git commit -m "feat: decode uncompressed DNG with per-lens white balance"
 ```
+
+---
+
+### Task 17: Kelvin/tint white balance, and the swap + single-lens fix
+
+**Added 2026-09-27** at the user's request: white balance must be a classic Kelvin slider plus
+tint, with the Kelvin control logarithmic. Also closes the residual left by the final review.
+
+**Files:**
+- Create: `wb.js`, `test/wb.test.js`
+- Modify: `app.js`, `index.html`, `settings.js`, `test/settings.test.js` (append only), `README.md`
+
+**Interfaces:**
+- Produces global/module `Wb`:
+  - `Wb.kelvinTintToXy(kelvin, tint): {x, y}`
+  - `Wb.xyToKelvinTint(x, y): {kelvin, tint}`
+  - `Wb.neutralFromKelvinTint(kelvin, tint, colorMatrix1): [r, g, b]` — camera-space neutral, normalised so g = 1, directly usable as the existing per-lens white-balance uniform.
+  - `Wb.kelvinTintFromNeutral(neutral, colorMatrix1): {kelvin, tint}` — the inverse, used to seed the sliders from `AsShotNeutral`.
+  - `Wb.sliderToKelvin(s)` / `Wb.kelvinToSlider(k)` and `Wb.sliderToTint(s)` / `Wb.tintToSlider(t)` — the UI mappings.
+- `state.rawWb: {A: {kelvin, tint}, B: {kelvin, tint}} | null` replaces `state.rawWhiteBalance`; the camera neutral fed to the shader is derived from it.
+
+**Colour science (follow this; it is the DNG/Adobe convention):**
+1. Kelvin → chromaticity on the Planckian locus using a published approximation valid for
+   1667–25000 K (Kim et al. cubic, or Krystek). State which.
+2. Tint displaces the point **perpendicular to the locus in CIE 1960 (u, v)**, with
+   `Δuv = tint / 3000` (Adobe's scale: ±150 ≈ ±0.05 Duv). **Positive tint = magenta**, negative =
+   green, matching Lightroom.
+3. (x, y) → XYZ with Y = 1 → camera neutral = `ColorMatrix1 · XYZ` (DNG's ColorMatrix1 maps
+   XYZ → camera; do **not** invert here) → normalise so green = 1.
+4. Inverse: camera neutral → XYZ via the inverse of `ColorMatrix1` → (x, y) → nearest (K, tint)
+   by Robertson's method or a bounded 1-D search along the locus. Must round-trip.
+
+**Slider mappings:**
+- Kelvin: logarithmic, 2000–12000 K. `K = 2000 · 6^(s)` for `s ∈ [0, 1]`. The readout shows K,
+  and typing a Kelvin value into it must set the slider through the inverse.
+- Tint: signed, −150…+150. A logarithmic scale is undefined across zero, so use a curve that is
+  finer near zero and symmetric: `tint = 150 · s · |s|` for `s ∈ [−1, 1]`. Readout shows the
+  signed integer, and typing a value into it must set the slider through the inverse.
+
+**Tests (TDD, write first):**
+- Kelvin → xy lands on published locus points within 0.002 (e.g. 2856 K ≈ Illuminant A,
+  6504 K ≈ D65 region — use tabulated Planckian values, not D-series daylight).
+- Tint 0 stays on the locus; positive tint moves toward magenta (v decreases), negative toward
+  green, both by the expected Duv.
+- `kelvinTintFromNeutral(neutralFromKelvinTint(K, t, M), M)` round-trips within 20 K and 1 tint
+  unit across 2500–10000 K and −100…+100, using the real `ColorMatrix1` from a test DNG.
+- The real `AsShotNeutral` of each of the three DNGs maps to a plausible daylight-ish Kelvin
+  (report the three values; they should sit roughly 4500–6500 K for outdoor shots).
+- Slider mappings are monotonic, hit their endpoints exactly, and invert exactly.
+- Swap fix (below): a 1:1 descriptor forces `swap = false`.
+
+**UI:** per-lens Kelvin and tint sliders with editable readouts, the existing **Link A and B**
+toggle (linked by default), and **Reset to as-shot**, which re-derives K/tint from
+`AsShotNeutral`. When linked, moving either lens's control moves both.
+
+**Persistence:** `settings.js` persists `rawWb` range-validated (kelvin 2000–12000, tint
+−150…150) in place of `rawWhiteBalance`; a freshly loaded file's as-shot values still win over
+stored ones. Old stored `rawWhiteBalance` blobs must be ignored gracefully, not crash.
+
+**Swap + single-lens residual (from the final review):**
+- A 1:1 file loaded with `swap = true` renders no circle and exports a blank `_B_` image, because
+  `sensors` is forced to `'A'` but `swap` is left on and `lensTextureIndex` then points at the
+  released slot 1. Fix: when `lensCount === 1`, set `swap = false` in the load patch and disable
+  the swap checkbox; re-enable it for dual files. Test it.
+- In `loadFile`, set `builtTextures = null` immediately after `GL.commitLenses(...)`, so a throw in
+  anything after the commit cannot delete textures that are now live.
+
+**Verification:** load all three DNGs; report as-shot K/tint per file; confirm the render at the
+seeded K/tint is identical to before this task (the neutral fed to the shader must equal
+`AsShotNeutral`); drag Kelvin and confirm warmer/cooler in the expected direction; confirm tint
+direction; confirm per-lens independence and linking; confirm the 1:1 + swap case now renders.
+
+---
+
+### Task 18: Darkroom UI and the back-to-back-circles logo
+
+**Added 2026-09-27** at the user's request. Direction chosen by the user: **Darkroom / pro tool**
+— near-black, neutral greys so nothing biases colour judgement, one warm accent, dense precise
+controls in the spirit of Lightroom or Capture One. Logo chosen: **two back-to-back circles** —
+two overlapping circles with the shared region cut away, showing the duplicated content the tool
+removes.
+
+**Files:**
+- Create: `logo.svg` (standalone source of the mark)
+- Modify: `index.html`, `app.js` (UI wiring only), `README.md` (add the logo at the top)
+
+**Requirements:**
+- **Neutrality is a hard constraint.** Everything around the image must be achromatic — the
+  canvas surround and all chrome in neutral greys (equal R=G=B), because a tinted surround biases
+  white-balance judgement. The single accent colour is for interactive state only (focus, active
+  slider, primary button), never large areas.
+- **Header bar**: the logo, the product name, the current file name, and a persistent **Open…**
+  button.
+- **Panel**: collapsible sections — Framing, Level, White balance (raw only), Edge, Tone, Output —
+  with open/closed state persisted through the existing settings mechanism. Every numeric readout
+  is editable (type a value, Enter or blur applies it, out-of-range values clamp through the same
+  `Settings.RANGES`). Keyboard fine-adjust on focused sliders.
+- **Export** is a prominent primary action at the bottom of the panel, with the size/ratio readout
+  beside it.
+- **Logo**: an inline SVG, no external assets, used in the header and as the favicon (inline data
+  URI). It must read at 16 px. Keep it geometric and precise; the cut-away overlap is the idea.
+- Typography: a system font stack only (no web fonts — the page must work offline from
+  `file://`). Tabular numerals for all readouts.
+- Responsive enough that the panel remains usable at 1280 px wide; no requirement for mobile.
+- **No behaviour changes.** This task restyles and restructures presentation. Every existing
+  control keeps its `id` or its wiring is updated in the same change; `test/slider-ranges.test.js`
+  must keep passing, which proves the slider ranges did not drift.
+
+**Verification:** screenshots of the empty state, an X5 `.insp` loaded two-up, and a DNG loaded
+with the white-balance section open; the logo rendered at 16 px and at 64 px; `npm test` green;
+no console errors; export still produces identical dimensions to before.
