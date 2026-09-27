@@ -54,5 +54,60 @@
     };
   }
 
-  return { fitScale, fitView, visibleRect };
+  // -- Zoom and pan --------------------------------------------------------
+  // Beyond 100% the preview samples the lens texture finer than the export
+  // would; 800% is plenty for checking the rim and focus.
+  const MAX_SCALE = 8;
+  const ZOOM_STEPS = [1 / 16, 1 / 8, 1 / 4, 1 / 3, 1 / 2, 2 / 3, 1, 2, 3, 4, 6, 8];
+
+  // Zooming out stops at fit -- or at 100%, for a composition so small that
+  // it fits the stage above 100%.
+  function clampScale(scale, fit) {
+    return Math.min(MAX_SCALE, Math.max(Math.min(fit, 1), scale));
+  }
+
+  // The view at `scale` that keeps the content point under the stage point
+  // (px, py) exactly where it is.
+  function zoomAbout(view, scale, px, py) {
+    const k = scale / view.scale;
+    return { scale, ox: px - (px - view.ox) * k, oy: py - (py - view.oy) * k };
+  }
+
+  // Per axis: content wider than the stage may be panned only until one of
+  // its edges reaches the stage edge (so it always covers the stage, and
+  // can never be dragged fully off); content narrower than the stage is
+  // centred on that axis.
+  function clampAxis(o, avail, size) {
+    if (size <= avail) return (avail - size) / 2;
+    return Math.min(0, Math.max(avail - size, o));
+  }
+
+  function clampPan(view, availW, availH, contentW, contentH) {
+    return {
+      scale: view.scale,
+      ox: clampAxis(view.ox, availW, contentW * view.scale),
+      oy: clampAxis(view.oy, availH, contentH * view.scale),
+    };
+  }
+
+  // The next preset zoom level in direction `dir` (+1 in, -1 out), clamped.
+  function stepZoom(scale, dir, fit) {
+    const eps = 1e-6;
+    let next;
+    if (dir > 0) next = ZOOM_STEPS.find((z) => z > scale * (1 + eps));
+    else next = ZOOM_STEPS.slice().reverse().find((z) => z < scale * (1 - eps));
+    if (next === undefined) next = dir > 0 ? MAX_SCALE : 0;
+    return clampScale(next, fit);
+  }
+
+  // Continuous zoom for a wheel event's deltaY (pixels; negative = wheel up
+  // = zoom in). About 15% per ordinary 100px notch.
+  function wheelScale(scale, deltaY, fit) {
+    return clampScale(scale * Math.exp(-deltaY * 0.0015), fit);
+  }
+
+  return {
+    fitScale, fitView, visibleRect,
+    MAX_SCALE, ZOOM_STEPS, clampScale, zoomAbout, clampPan, stepZoom, wheelScale,
+  };
 });

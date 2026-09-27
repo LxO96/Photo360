@@ -80,6 +80,17 @@
   .btn.ghost { background: transparent; border-color: var(--line-2); color: var(--fg-2); height: 22px; font-size: 11px; }
   .btn.ghost:hover { color: var(--fg); border-color: #4a4a4a; }
 
+  /* Preview zoom (Task 19). Achromatic like the rest of the bar; the
+     pressed mode (Fit / 100%) is interactive state, so it takes the accent. */
+  #zoomCtl { display: flex; align-items: center; gap: 4px; flex: none; }
+  #zoomCtl .btn.sq { width: 22px; padding: 0; font-size: 13px; line-height: 1; }
+  #zoomCtl .btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-soft); }
+  #zoomPct {
+    min-width: 46px; text-align: center; color: var(--fg-2); font-size: 11px;
+    font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1;
+  }
+  body:not(.loaded) #zoomCtl { opacity: .35; pointer-events: none; }
+
   /* -- Stage ------------------------------------------------------------ */
   #stage {
     display: grid; place-items: center; position: relative; padding: 16px;
@@ -91,6 +102,8 @@
   /* Until a file is loaded the canvas is an empty 300x150 default. */
   body:not(.loaded) #view { visibility: hidden; }
   #guides { position: absolute; pointer-events: none; }
+  #stage.zoomed { cursor: grab; }
+  #stage.zoomed.panning { cursor: grabbing; }
   #drop {
     position: absolute; inset: 16px; border: 1px dashed #333333; border-radius: 6px;
     display: grid; place-content: center; justify-items: center; gap: 14px;
@@ -226,6 +239,14 @@
     <span id="fileName" class="empty">No file open</span>
     <span id="fileMeta"></span>
     <span class="spring"></span>
+    <div id="zoomCtl" role="group" aria-label="Preview zoom">
+      <button id="zoomOut" class="btn ghost sq" type="button" title="Zoom out" aria-label="Zoom out">&minus;</button>
+      <span id="zoomPct" title="Preview zoom (100% = one screen pixel per exported pixel)">&mdash;</span>
+      <button id="zoomIn" class="btn ghost sq" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+      <button id="zoomFit" class="btn ghost" type="button" aria-pressed="true" title="Fit the composition to the stage (double-click the image to toggle Fit / 100%)">Fit</button>
+      <button id="zoom100" class="btn ghost" type="button" aria-pressed="false" title="One screen pixel per exported pixel">100%</button>
+    </div>
+    <span class="rule"></span>
     <button id="openFile" class="btn" type="button" title="Open an .insp, .jpg or .dng file">Open…</button>
   </header>
 
@@ -292,8 +313,9 @@
         <div class="row"><label for="nudgeB">Lens B nudge</label>
           <input id="nudgeB" type="range" min="-10" max="10" step="0.1" value="0">
           <span class="val"><input id="nudgeBOut" class="num" type="text" inputmode="decimal" aria-label="Lens B nudge, degrees"><i>°</i></span></div>
-        <div class="note">Drag a circle on the image to roll it. Arrow keys adjust a focused
-          slider; Shift is coarse, Ctrl is fine.</div>
+        <div class="note">Drag a circle on the image to roll it (Shift-drag when zoomed in;
+          a plain drag then pans). Scroll to zoom, double-click for Fit / 100%. Arrow keys
+          adjust a focused slider; Shift is coarse, Ctrl is fine.</div>
       </div>
     </details>
 

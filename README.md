@@ -72,6 +72,18 @@ value. Shift makes the step coarser, Ctrl makes it finer, and Page Up/Down
 make a coarse step. **Export** sits at the bottom of the panel, next to the
 exact pixel size and aspect ratio it will write.
 
+### Preview and zoom
+
+The preview fills the stage at the composition's true aspect ratio, drawn at
+the screen's full pixel density. The zoom controls in the header bar (−, the
+zoom readout, +, **Fit**, **100%**) and the mouse wheel zoom the preview only;
+the export is never affected. **100%** means one screen pixel per pixel of
+the file Export would write with the current Output settings. When zoomed in,
+only the visible region is rendered, at true resolution, never an upscaled
+small preview. Double-click the image to toggle between Fit and 100%. At Fit,
+dragging a circle rolls it. When zoomed in, a plain drag pans and Shift-drag
+rolls. The zoom is not saved and resets to Fit when a file is opened.
+
 The interface is deliberately neutral grey. A tinted surround shifts how you
 judge white balance, so colour is kept for the image. The one warm accent only
 marks what you are touching.

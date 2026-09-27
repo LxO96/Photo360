@@ -336,6 +336,7 @@
     patch.swap = Settings.resolveSwapForLoad(state.swap, descriptor.lensCount);
     if (descriptor.orientationDefault) patch.orientation = descriptor.orientationDefault;
     Object.assign(state, patch);
+    zoom = null;   // zoom is per view, not per file: every load starts at Fit
 
     dropEl.classList.add('hidden');
     reflectNum(NUM.thetaMax, true);
@@ -425,11 +426,24 @@
     };
   }
 
-  // Where the composition sits on the stage right now -- the fitted,
-  // centred view. Its size is GL.exportGeometry's, the pixels an export
-  // would write, so the preview has the output's true aspect ratio.
+  // Preview zoom (Task 19): null means Fit (follows the stage size);
+  // otherwise a View {scale, ox, oy} in stage device pixels, where scale 1
+  // is 100% -- one device pixel per pixel of the export the Output settings
+  // would write. Preview only: never persisted, never read by export, and
+  // reset to Fit on every file load.
+  let zoom = null;
+
+  // Where the composition sits on the stage right now. Its size is
+  // GL.exportGeometry's, the pixels an export would write, so the preview
+  // has the output's true aspect ratio at any zoom. A zoomed view is
+  // re-clamped here (and written back) so a resize can never leave it
+  // off screen or past the zoom limits.
   function currentView(m, g) {
-    return View.fitView(m.availW, m.availH, g.width, g.height);
+    if (!zoom) return View.fitView(m.availW, m.availH, g.width, g.height);
+    const fit = View.fitScale(m.availW, m.availH, g.width, g.height);
+    const scale = View.clampScale(zoom.scale, fit);
+    zoom = View.clampPan(Object.assign({}, zoom, { scale }), m.availW, m.availH, g.width, g.height);
+    return zoom;
   }
 
   // The composition's rect inside the canvas (device pixels), set by
@@ -455,6 +469,7 @@
     canvas.style.height = (canvas.height / m.dpr) + 'px';
     previewPlace = r.place;
     GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
+    updateZoomControls(m, g);
     const c = Lens.coverage(state.fovDeg, state.thetaMaxDeg);
     readout.textContent = c.overlapDeg === 0
       ? 'Exactly one hemisphere — nothing duplicated with the other lens.'
@@ -601,10 +616,103 @@
     };
   }
 
+  // -- Zoom and pan (Task 19) -------------------------------------------
+  const zoomInEl = document.getElementById('zoomIn');
+  const zoomOutEl = document.getElementById('zoomOut');
+  const zoomFitEl = document.getElementById('zoomFit');
+  const zoom100El = document.getElementById('zoom100');
+  const zoomPctEl = document.getElementById('zoomPct');
+
+  function zoomContext() {
+    const m = stageMetrics();
+    const g = GL.exportGeometry(state);
+    return { m, g, fit: View.fitScale(m.availW, m.availH, g.width, g.height) };
+  }
+
+  // A client-space point as stage device pixels (the View's own space).
+  function pointerToStage(e, m) {
+    const rect = stageEl.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left - stageEl.clientLeft - m.padL) * m.dpr,
+      y: (e.clientY - rect.top - stageEl.clientTop - m.padT) * m.dpr,
+    };
+  }
+
+  function isZoomedIn() {
+    if (!zoom || !ctx || !state.sourceLensSize) return false;
+    return zoom.scale > zoomContext().fit * (1 + 1e-6);
+  }
+
+  // Zooms to `scale` keeping the stage point (px, py) -- the stage centre
+  // if omitted -- fixed. Landing exactly on fit returns to Fit mode, so the
+  // view follows stage resizes again.
+  function setZoom(scale, px, py) {
+    if (!ctx || !state.sourceLensSize) return;
+    const { m, g, fit } = zoomContext();
+    const s = View.clampScale(scale, fit);
+    if (Math.abs(s - fit) <= fit * 1e-9) { zoom = null; render(); return; }
+    const base = currentView(m, g);
+    if (px === undefined) { px = m.availW / 2; py = m.availH / 2; }
+    zoom = View.clampPan(View.zoomAbout(base, s, px, py), m.availW, m.availH, g.width, g.height);
+    render();
+  }
+
+  function zoomToFit() { zoom = null; render(); }
+
+  function stepZoomBy(dir) {
+    if (!ctx || !state.sourceLensSize) return;
+    const { m, g, fit } = zoomContext();
+    setZoom(View.stepZoom(currentView(m, g).scale, dir, fit));
+  }
+
+  function updateZoomControls(m, g) {
+    const scale = currentView(m, g).scale;
+    const pct = scale * 100;
+    zoomPctEl.textContent = (pct < 10 ? pct.toFixed(1) : String(Math.round(pct))) + '%';
+    zoomFitEl.setAttribute('aria-pressed', String(!zoom));
+    zoom100El.setAttribute('aria-pressed', String(!!zoom && Math.abs(scale - 1) < 1e-9));
+    stageEl.classList.toggle('zoomed', isZoomedIn());
+  }
+
+  zoomInEl.addEventListener('click', () => stepZoomBy(1));
+  zoomOutEl.addEventListener('click', () => stepZoomBy(-1));
+  zoomFitEl.addEventListener('click', zoomToFit);
+  zoom100El.addEventListener('click', () => setZoom(1));
+
+  stageEl.addEventListener('wheel', (e) => {
+    if (!ctx || !state.sourceLensSize) return;
+    e.preventDefault();
+    const { m, g, fit } = zoomContext();
+    // deltaMode 1 is lines, 2 pages (some mice/browsers); normalise to px.
+    const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+    const p = pointerToStage(e, m);
+    setZoom(View.wheelScale(currentView(m, g).scale, dy, fit), p.x, p.y);
+  }, { passive: false });
+
+  // Double-click toggles Fit and 100%, zooming in about the pointer.
+  stageEl.addEventListener('dblclick', (e) => {
+    if (!ctx || !state.sourceLensSize) return;
+    if (zoom) { zoomToFit(); return; }
+    const p = pointerToStage(e, stageMetrics());
+    setZoom(1, p.x, p.y);
+  });
+
   let drag = null;
 
+  // At Fit, a plain drag on a circle rolls it, exactly as before. Zoomed
+  // in, a plain drag pans and Shift-drag rolls.
   stageEl.addEventListener('pointerdown', (e) => {
     if (!ctx || !state.sourceLensSize) return;
+    if (e.button !== 0) return;
+    if (isZoomedIn() && !e.shiftKey) {
+      drag = {
+        kind: 'pan', pointerId: e.pointerId, x: e.clientX, y: e.clientY,
+        ox: zoom.ox, oy: zoom.oy,
+      };
+      stageEl.classList.add('panning');
+      e.target.setPointerCapture(e.pointerId);
+      return;
+    }
     const p = pointerToCanvas(e);
     const layout = previewLayout();
     let best = null, bestDist = Infinity;
@@ -621,6 +729,7 @@
     // re-derived here.
     const { sign } = Settings.dragSign(state, best.lens, GL.physicalLens);
     drag = {
+      kind: 'roll',
       pointerId: e.pointerId,
       cx: best.cx, cy: best.cy,
       startAngleDeg: Math.atan2(p.y - best.cy, p.x - best.cx) * 180 / Math.PI,
@@ -632,6 +741,18 @@
 
   stageEl.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.pointerId) return;
+    if (drag.kind === 'pan') {
+      const { m, g } = zoomContext();
+      zoom = View.clampPan({
+        scale: zoom.scale,
+        ox: drag.ox + (e.clientX - drag.x) * m.dpr,
+        oy: drag.oy + (e.clientY - drag.y) * m.dpr,
+      }, m.availW, m.availH, g.width, g.height);
+      render();
+      return;
+    }
+    // A roll drag never moves the canvas (render() only re-places it when
+    // the zoom or pan changes), so canvas coordinates stay valid throughout.
     const p = pointerToCanvas(e);
     const angleDeg = Math.atan2(p.y - drag.cy, p.x - drag.cx) * 180 / Math.PI;
     state.rollDeg = Settings.rollForDrag(drag.startRollDeg, drag.sign, angleDeg - drag.startAngleDeg);
@@ -643,6 +764,7 @@
   function endDrag(e) {
     if (!drag || e.pointerId !== drag.pointerId) return;
     drag = null;
+    stageEl.classList.remove('panning');
   }
   stageEl.addEventListener('pointerup', endDrag);
   stageEl.addEventListener('pointercancel', endDrag);
@@ -942,6 +1064,9 @@
 
   padToSensorSquareEl.addEventListener('input', () => {
     state.padToSensorSquare = padToSensorSquareEl.checked;
+    // Changes the export's pixel size, which is what "100%" is measured
+    // against, so the zoom readout (and a zoomed view) follow it.
+    render();
     updateExportSize();
   });
 
@@ -1147,6 +1272,7 @@
 
   window.App = {
     loadFile, state, render, rollFor: Lens.rollFor, checkParity,
+    setZoom, zoomToFit, getZoom: () => (zoom ? Object.assign({}, zoom) : null),
     saveSettings, loadSettings, exportImage,
   };
 })();

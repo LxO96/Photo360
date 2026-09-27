@@ -71,3 +71,73 @@ test('visibleRect is empty (w or h 0) when the composition is off stage', () => 
   const r = View.visibleRect({ scale: 1, ox: 5000, oy: 0 }, 1800, 1000, 100, 100);
   assert.ok(r.w === 0 || r.h === 0);
 });
+
+// -- Preview zoom (Task 19, part 2) ----------------------------------------
+
+test('zoomAbout keeps the content point under the cursor fixed', () => {
+  const v = { scale: 0.15, ox: 12, oy: 80 };
+  const px = 700, py = 333;
+  const before = { x: (px - v.ox) / v.scale, y: (py - v.oy) / v.scale };
+  for (const s of [0.05, 0.3, 1, 4.5]) {
+    const z = View.zoomAbout(v, s, px, py);
+    assert.strictEqual(z.scale, s);
+    const after = { x: (px - z.ox) / z.scale, y: (py - z.oy) / z.scale };
+    assert.ok(near(after.x, before.x, 1e-6) && near(after.y, before.y, 1e-6), `scale ${s}`);
+  }
+});
+
+test('zoomAbout there and back returns the original view', () => {
+  const v = { scale: 0.2, ox: -40, oy: 15 };
+  const back = View.zoomAbout(View.zoomAbout(v, 1, 500, 400), 0.2, 500, 400);
+  assert.ok(near(back.ox, v.ox, 1e-9) && near(back.oy, v.oy, 1e-9));
+});
+
+test('clampScale keeps zoom between fit (or 100%, if smaller) and the maximum', () => {
+  assert.strictEqual(View.clampScale(0.01, 0.15), 0.15);
+  assert.strictEqual(View.clampScale(100, 0.15), View.MAX_SCALE);
+  assert.strictEqual(View.clampScale(0.5, 0.15), 0.5);
+  // A tiny composition whose fit is above 100% can still reach 100%.
+  assert.strictEqual(View.clampScale(0.5, 2), 1);
+});
+
+test('clampPan: a composition larger than the stage cannot leave a gap at either edge', () => {
+  const W = 11904, H = 5952, aw = 1800, ah = 1000;
+  const right = View.clampPan({ scale: 1, ox: 500, oy: 300 }, aw, ah, W, H);
+  assert.deepStrictEqual([right.ox, right.oy], [0, 0]);
+  const left = View.clampPan({ scale: 1, ox: -1e6, oy: -1e6 }, aw, ah, W, H);
+  assert.deepStrictEqual([left.ox, left.oy], [aw - W, ah - H]);
+  const inside = View.clampPan({ scale: 1, ox: -3000, oy: -2000 }, aw, ah, W, H);
+  assert.deepStrictEqual([inside.ox, inside.oy], [-3000, -2000]);
+});
+
+test('clampPan: an axis smaller than the stage is centred on it', () => {
+  // 2000 x 1000 at 0.5 is 1000 x 500 in an 1800 x 1000 stage: both axes fit.
+  const v = View.clampPan({ scale: 0.5, ox: -9999, oy: 9999 }, 1800, 1000, 2000, 1000);
+  assert.deepStrictEqual([v.ox, v.oy], [400, 250]);
+});
+
+test('clampPan never lets the composition be dragged fully off screen', () => {
+  for (const [ox, oy] of [[1e5, 0], [-1e5, 0], [0, 1e5], [0, -1e5], [1e5, -1e5]]) {
+    for (const scale of [0.1, 0.5, 1, 3]) {
+      const v = View.clampPan({ scale, ox, oy }, 1800, 1000, 11904, 5952);
+      const r = View.visibleRect(v, 1800, 1000, 11904, 5952);
+      assert.ok(r.w > 0 && r.h > 0, `scale ${scale} (${ox}, ${oy})`);
+    }
+  }
+});
+
+test('stepZoom moves to the next preset level in each direction, from fit too', () => {
+  assert.strictEqual(View.stepZoom(1, 1, 0.15), 2);
+  assert.strictEqual(View.stepZoom(1, -1, 0.15), 2 / 3);
+  assert.strictEqual(View.stepZoom(0.15, 1, 0.15), 0.25);
+  // Stepping out below fit lands on fit, not below it.
+  assert.strictEqual(View.stepZoom(0.25, -1, 0.15), 0.15);
+  assert.strictEqual(View.stepZoom(View.MAX_SCALE, 1, 0.15), View.MAX_SCALE);
+});
+
+test('wheelScale zooms in for wheel-up and out for wheel-down, clamped', () => {
+  assert.ok(View.wheelScale(0.5, -100, 0.15) > 0.5);
+  assert.ok(View.wheelScale(0.5, 100, 0.15) < 0.5);
+  assert.strictEqual(View.wheelScale(0.15, 1e4, 0.15), 0.15);
+  assert.strictEqual(View.wheelScale(View.MAX_SCALE, -1e4, 0.15), View.MAX_SCALE);
+});
