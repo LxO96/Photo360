@@ -35,14 +35,15 @@
   const exportBtn = document.getElementById('export');
   const whiteBalanceHeadingEl = document.getElementById('whiteBalanceHeading');
   const whiteBalanceGroupEl = document.getElementById('whiteBalanceGroup');
-  const wbRedAEl = document.getElementById('wbRedA');
-  const wbRedAOut = document.getElementById('wbRedAOut');
-  const wbBlueAEl = document.getElementById('wbBlueA');
-  const wbBlueAOut = document.getElementById('wbBlueAOut');
-  const wbRedBEl = document.getElementById('wbRedB');
-  const wbRedBOut = document.getElementById('wbRedBOut');
-  const wbBlueBEl = document.getElementById('wbBlueB');
-  const wbBlueBOut = document.getElementById('wbBlueBOut');
+  const swapHintEl = document.getElementById('swapHint');
+  const kelvinAEl = document.getElementById('kelvinA');
+  const kelvinAOutEl = document.getElementById('kelvinAOut');
+  const tintAEl = document.getElementById('tintA');
+  const tintAOutEl = document.getElementById('tintAOut');
+  const kelvinBEl = document.getElementById('kelvinB');
+  const kelvinBOutEl = document.getElementById('kelvinBOut');
+  const tintBEl = document.getElementById('tintB');
+  const tintBOutEl = document.getElementById('tintBOut');
   const wbLinkEl = document.getElementById('wbLink');
   const wbResetEl = document.getElementById('wbReset');
   const openBtnEl = document.getElementById('openFile');
@@ -137,20 +138,29 @@
     // so "Reset to as-shot" always has something to return to even after
     // both lenses have been pulled apart. Not persisted, describes the file.
     rawAsShotNeutral: null,
-    // Per-lens white balance the user can adjust independently -- keyed by
-    // *physical* lens (A/B), exactly like nudgeDeg above, and looked up
-    // through GL.physicalLens at render time so `swap` can never cross the
-    // texture/white-balance pairing the way it once could for roll (see
-    // GL.circleDraw's own comment). {A: [r,g,b], B: [r,g,b]}, persisted
-    // through Settings (PERSISTED_KEYS/RANGES in settings.js) exactly like
-    // every other numeric control -- but a freshly loaded raw file's own
-    // AsShotNeutral always overwrites it on load (loadDngFile), the same
-    // precedence Task 15 established for thetaMaxDeg, so a stored value only
-    // ever surfaces before any file (or a non-raw file) is loaded.
+    // Task 17: per-lens white balance as classic Kelvin + tint (replacing
+    // Task 16's raw red/blue multipliers) -- keyed by *physical* lens (A/B),
+    // exactly like nudgeDeg above. Persisted through Settings
+    // (PERSISTED_KEYS/RANGES in settings.js) exactly like every other
+    // numeric control, but a freshly loaded raw file's own AsShotNeutral
+    // (converted through Wb.kelvinTintFromNeutral) always overwrites it on
+    // load (applyLoadedDescriptor), the same precedence Task 15 established
+    // for thetaMaxDeg, so a stored value only ever surfaces before any file
+    // (or a non-raw file) is loaded.
+    rawWb: { A: { kelvin: 6500, tint: 0 }, B: { kelvin: 6500, tint: 0 } },
+    // The camera-space neutral triple (green = 1) the shader's uWhiteBalance
+    // uniform actually consumes (see gl.js setRawUniforms) -- derived from
+    // rawWb + rawMeta.colorMatrix1 via Wb.neutralFromKelvinTint every time
+    // either changes (recomputeRawWhiteBalance, below). Deliberately not
+    // persisted and not user-editable directly: it is pure derived state,
+    // kept in this shape only so gl.js's existing per-physical-lens lookup
+    // (state.rawWhiteBalance[physicalLens]) needs no change at all -- this
+    // task changes how the neutral is produced, never the shader path that
+    // consumes it.
     rawWhiteBalance: { A: [1, 1, 1], B: [1, 1, 1] },
     // Whether moving one lens's white-balance sliders moves both. A plain
     // user preference, persisted the same way, with no file ever overriding
-    // it (unlike rawWhiteBalance itself).
+    // it (unlike rawWb itself).
     rawWbLinked: true,
   };
   let ctx = null;
@@ -200,20 +210,38 @@
     whiteBalanceGroupEl.classList.toggle('hidden', !state.isRaw);
   }
 
-  // Reflects state.rawWhiteBalance into the four sliders/outputs.
-  // state.rawWhiteBalance is always a concrete {A,B} object (see its default
-  // above), never null, so this needs no guard -- it runs harmlessly even
-  // while the panel is hidden (no raw source loaded).
+  // Recomputes the derived camera-space neutral triples (state.rawWhiteBalance,
+  // green = 1) that gl.js's setRawUniforms actually reads, from the
+  // user-facing state.rawWb (Kelvin/tint) plus this file's own
+  // rawMeta.colorMatrix1. Must run after every change to rawWb -- render()
+  // alone would otherwise keep drawing with a stale neutral. Falls back to
+  // an identity-ish (1,1,1) neutral when there's no raw file loaded yet
+  // (colorMatrix1 null); Wb.neutralFromKelvinTint itself already treats a
+  // missing matrix as identity, so this is purely defensive.
+  function recomputeRawWhiteBalance() {
+    const m = state.rawMeta && state.rawMeta.colorMatrix1;
+    state.rawWhiteBalance = {
+      A: Wb.neutralFromKelvinTint(state.rawWb.A.kelvin, state.rawWb.A.tint, m),
+      B: Wb.neutralFromKelvinTint(state.rawWb.B.kelvin, state.rawWb.B.tint, m),
+    };
+  }
+
+  // Reflects state.rawWb into the Kelvin/tint sliders and their editable
+  // numeric readouts, and recomputes the derived neutral triple gl.js
+  // consumes. state.rawWb is always a concrete {A,B} object (see its
+  // default above), never null, so this needs no guard -- it runs
+  // harmlessly even while the panel is hidden (no raw source loaded).
   function syncWbControls() {
-    wbRedAEl.value = state.rawWhiteBalance.A[0];
-    wbRedAOut.textContent = state.rawWhiteBalance.A[0].toFixed(3);
-    wbBlueAEl.value = state.rawWhiteBalance.A[2];
-    wbBlueAOut.textContent = state.rawWhiteBalance.A[2].toFixed(3);
-    wbRedBEl.value = state.rawWhiteBalance.B[0];
-    wbRedBOut.textContent = state.rawWhiteBalance.B[0].toFixed(3);
-    wbBlueBEl.value = state.rawWhiteBalance.B[2];
-    wbBlueBOut.textContent = state.rawWhiteBalance.B[2].toFixed(3);
+    kelvinAEl.value = Wb.kelvinToSlider(state.rawWb.A.kelvin);
+    kelvinAOutEl.value = Math.round(state.rawWb.A.kelvin);
+    tintAEl.value = Wb.tintToSlider(state.rawWb.A.tint);
+    tintAOutEl.value = Math.round(state.rawWb.A.tint);
+    kelvinBEl.value = Wb.kelvinToSlider(state.rawWb.B.kelvin);
+    kelvinBOutEl.value = Math.round(state.rawWb.B.kelvin);
+    tintBEl.value = Wb.tintToSlider(state.rawWb.B.tint);
+    tintBOutEl.value = Math.round(state.rawWb.B.tint);
     wbLinkEl.checked = state.rawWbLinked;
+    recomputeRawWhiteBalance();
   }
 
   // Shows/hides (and value-restricts) the Sensors control to match the
@@ -227,6 +255,19 @@
     for (const opt of sensorsEl.options) {
       opt.disabled = single && opt.value !== 'A';
     }
+  }
+
+  // Swap + single-lens fix (final review residual): a 1:1 file has no lens
+  // B to swap in, so `swap` is forced off (see applyLoadedDescriptor) and
+  // the checkbox itself disabled here -- re-enabled the moment a dual file
+  // loads. Without this, a 1:1 file loaded with `swap` left on from a
+  // previous dual file rendered no circle and exported a blank `_B_` image,
+  // because `sensors` was forced to 'A' but `swap` still pointed
+  // lensTextureIndex at the released slot 1 (GL.physicalLens/circleDraw).
+  function updateSwapAvailability() {
+    const single = state.lensCount === 1;
+    swapEl.disabled = single;
+    swapHintEl.classList.toggle('hidden', !single);
   }
 
   // Maps a thrown Error to the text shown in #error. `e.formatted` (set by
@@ -273,13 +314,18 @@
       uploadedLensSize: descriptor.uploadedLensSize,
       lensCount: descriptor.lensCount,
     };
-    if (descriptor.isRaw) patch.rawWhiteBalance = descriptor.rawWhiteBalance;
+    if (descriptor.isRaw) patch.rawWb = descriptor.rawWb;
     // Constrain Sensors to the file's own lens count -- a 1:1 file has no
     // lens B, so a `sensors` of 'B' or 'both' left over from a previous
     // dual file must not silently keep pointing at a texture slot this file
     // never populated (see GL.releaseLens's own comment for the bug this
     // closes on the texture side).
     if (descriptor.lensCount === 1) patch.sensors = 'A';
+    // Swap + single-lens fix: a 1:1 file has no lens B to swap in, so any
+    // `swap` left on from a previous dual file must be forced off here --
+    // see Settings.resolveSwapForLoad's own comment for the bug this
+    // closes.
+    patch.swap = Settings.resolveSwapForLoad(state.swap, descriptor.lensCount);
     if (descriptor.orientationDefault) patch.orientation = descriptor.orientationDefault;
     Object.assign(state, patch);
 
@@ -288,7 +334,9 @@
     thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
+    swapEl.checked = state.swap;
     updateSensorsAvailability();
+    updateSwapAvailability();
     updateCalibrationReadout();
     updateWbVisibility();
     syncWbControls();
@@ -333,6 +381,12 @@
       // Nothing below this line can throw before ctx/state are consistent
       // again -- see this function's own top comment.
       GL.commitLenses(ctx, builtTextures);
+      // Final review residual: clear the local reference the instant the
+      // textures are live in ctx, so a throw from anything below (e.g.
+      // applyLoadedDescriptor) hits the catch block's `if (builtTextures)`
+      // guard as false and can never delete textures that GL.commitLenses
+      // has already committed and this file now depends on.
+      builtTextures = null;
       applyLoadedDescriptor(descriptor);
     } catch (e) {
       // A throw after some (but not all) textures were built -- e.g. the
@@ -670,27 +724,37 @@
     scheduleSave();
   });
 
-  // -- White balance (Task 16) ---------------------------------------
-  // Each control edits one channel of one physical lens's neutral triple
-  // (see the White balance panel's own note in index.html for why lower
-  // means stronger). When linked, editing either lens's slider moves both,
-  // since the motivating case (one lens in sun, the other in shade) needs
-  // them independent only when the user deliberately pulls them apart.
-  function setWbChannel(lens, channelIndex, value) {
-    state.rawWhiteBalance[lens][channelIndex] = value;
+  // -- White balance: Kelvin + tint (Task 17) -------------------------
+  // Each control edits one field (kelvin or tint) of one physical lens's
+  // {kelvin, tint} pair. When linked, editing either lens's control moves
+  // both, since the motivating case (one lens in sun, the other in shade)
+  // needs them independent only when the user deliberately pulls them
+  // apart -- exactly Task 16's linking behaviour, just over a different
+  // field shape.
+  function setWbField(lens, field, value) {
+    state.rawWb[lens][field] = value;
     if (state.rawWbLinked) {
       const other = lens === 'A' ? 'B' : 'A';
-      state.rawWhiteBalance[other][channelIndex] = value;
+      state.rawWb[other][field] = value;
     }
     syncWbControls();
     render();
     scheduleSave();
   }
 
-  wbRedAEl.addEventListener('input', () => setWbChannel('A', 0, parseFloat(wbRedAEl.value)));
-  wbBlueAEl.addEventListener('input', () => setWbChannel('A', 2, parseFloat(wbBlueAEl.value)));
-  wbRedBEl.addEventListener('input', () => setWbChannel('B', 0, parseFloat(wbRedBEl.value)));
-  wbBlueBEl.addEventListener('input', () => setWbChannel('B', 2, parseFloat(wbBlueBEl.value)));
+  kelvinAEl.addEventListener('input', () => setWbField('A', 'kelvin', Wb.sliderToKelvin(parseFloat(kelvinAEl.value))));
+  tintAEl.addEventListener('input', () => setWbField('A', 'tint', Wb.sliderToTint(parseFloat(tintAEl.value))));
+  kelvinBEl.addEventListener('input', () => setWbField('B', 'kelvin', Wb.sliderToKelvin(parseFloat(kelvinBEl.value))));
+  tintBEl.addEventListener('input', () => setWbField('B', 'tint', Wb.sliderToTint(parseFloat(tintBEl.value))));
+
+  // Editable readouts: typing a Kelvin/tint value directly sets the field
+  // (through the same clamping each Wb.*ToSlider call already applies),
+  // and drives the slider back through the inverse mapping via
+  // syncWbControls.
+  kelvinAOutEl.addEventListener('change', () => setWbField('A', 'kelvin', parseFloat(kelvinAOutEl.value)));
+  tintAOutEl.addEventListener('change', () => setWbField('A', 'tint', parseFloat(tintAOutEl.value)));
+  kelvinBOutEl.addEventListener('change', () => setWbField('B', 'kelvin', parseFloat(kelvinBOutEl.value)));
+  tintBOutEl.addEventListener('change', () => setWbField('B', 'tint', parseFloat(tintBOutEl.value)));
 
   wbLinkEl.addEventListener('input', () => {
     state.rawWbLinked = wbLinkEl.checked;
@@ -698,7 +762,7 @@
     // them apart until the next slider move -- "linked" should mean linked
     // the instant it's turned on.
     if (state.rawWbLinked) {
-      state.rawWhiteBalance.B = state.rawWhiteBalance.A.slice();
+      state.rawWb.B = { ...state.rawWb.A };
     }
     syncWbControls();
     render();
@@ -707,9 +771,11 @@
 
   wbResetEl.addEventListener('click', () => {
     if (!state.rawAsShotNeutral) return;
-    state.rawWhiteBalance = {
-      A: state.rawAsShotNeutral.slice(),
-      B: state.rawAsShotNeutral.slice(),
+    const m = state.rawMeta && state.rawMeta.colorMatrix1;
+    const kt = Wb.kelvinTintFromNeutral(state.rawAsShotNeutral, m);
+    state.rawWb = {
+      A: { kelvin: kt.kelvin, tint: kt.tint },
+      B: { kelvin: kt.kelvin, tint: kt.tint },
     };
     syncWbControls();
     render();

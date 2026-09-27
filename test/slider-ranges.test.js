@@ -50,10 +50,17 @@ const SLIDER_TO_RANGE = {
   exposureEv: [Settings.RANGES.tone.exposureEv, 1],
   contrast: [Settings.RANGES.tone.contrast, 1],
   saturation: [Settings.RANGES.tone.saturation, 1],
-  wbRedA: [Settings.RANGES.rawWhiteBalance.A, 1],
-  wbBlueA: [Settings.RANGES.rawWhiteBalance.A, 1],
-  wbRedB: [Settings.RANGES.rawWhiteBalance.B, 1],
-  wbBlueB: [Settings.RANGES.rawWhiteBalance.B, 1],
+  // Task 17 replaced the raw red/blue multiplier sliders (wbRedA/wbBlueA/
+  // wbRedB/wbBlueB, a linear 0.2-1.5 range that matched Settings.RANGES
+  // directly) with Kelvin/tint controls. Those are deliberately
+  // *nonlinear* (Kelvin logarithmic, tint a signed power curve -- see
+  // wb.js), so the <input type=range> itself always spans a plain 0..1 (or
+  // -1..1) slider-position domain, not the Kelvin/tint domain in
+  // Settings.RANGES.rawWb -- this test's premise (the DOM slider's own
+  // min/max literally *is* the persisted range) no longer holds for them,
+  // so they are intentionally left out of this table rather than compared
+  // against a scale that doesn't apply. Settings.RANGES.rawWb is still
+  // exercised directly in test/settings.test.js.
 };
 
 for (const [id, [range, scale]] of Object.entries(SLIDER_TO_RANGE)) {

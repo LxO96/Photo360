@@ -78,7 +78,8 @@ needed for the rim glow."
   of how the *source* file happens to be arranged — a side-by-side `.insp`
   can still be exported stacked, and vice versa.
 - **Swap A and B** — exchanges which physical lens is labelled A and which
-  is B (and which filename suffix each gets).
+  is B (and which filename suffix each gets). Disabled for a single-lens
+  (1:1) file, which has no lens B to swap in.
 - **Gap** — space between the two circles when exporting both, as a
   fraction of one circle's diameter.
 - **Margin** — black border kept around each circle, as a fraction of its
@@ -129,25 +130,29 @@ Shown only when the loaded file is a raw `.dng` — a JPEG/`.insp` has already
 been demosaiced and white balanced by the camera, so the panel has nothing
 to do there.
 
-- **Lens A/B red, Lens A/B blue** — each lens's own white balance,
-  independent of the other. The motivating case is one lens in sun and the
-  other in shade, which a single white-balance value can't fix. Each slider
-  directly edits one channel of that lens's neutral triple — the same
-  convention the file's own `AsShotNeutral` tag uses (green fixed at 1: the
-  renderer divides the demosaiced pixel by this triple, so a *lower* value
-  makes that channel *stronger* in the image). A slider was chosen over a
-  derived temperature/tint pair so the exposed control is mathematically
-  identical to what the shader consumes, with no separate conversion layer
-  to get subtly wrong.
-- **Link A and B** (on by default) — moving either lens's sliders moves
+- **Lens A/B Kelvin, Lens A/B tint** — each lens's own white balance,
+  independent of the other, expressed as a classic colour-temperature +
+  tint pair (like Lightroom's), not raw multipliers. The motivating case is
+  one lens in sun and the other in shade, which a single white-balance
+  value can't fix. Kelvin is logarithmic (2000–12000 K); dragging it right
+  (raising the temperature you're correcting for) warms the image. Tint
+  runs −150…+150; positive is magenta, negative is green — dragging either
+  readout number directly and pressing Enter/Tab also works. Both readouts
+  are editable text, not just labels.
+- **Link A and B** (on by default) — moving either lens's controls moves
   both, for the common case where you just want one overall white balance.
   Turn it off to give the two lenses genuinely different white balance.
-- **Reset to as-shot** — returns both lenses to the file's own
-  `AsShotNeutral`, discarding any adjustment.
+- **Reset to as-shot** — returns both lenses to the Kelvin/tint that
+  reproduces the file's own `AsShotNeutral`, discarding any adjustment.
 
+Internally, `wb.js` converts Kelvin/tint to a camera-space neutral triple
+(green fixed at 1, on the Planckian locus for tint 0) via the file's own
+`ColorMatrix1`, then feeds that triple through exactly the same shader path
+Task 16 established: the renderer divides the demosaiced pixel by it, so a
+*lower* value in a channel makes that channel *stronger* in the image.
 Because white balance is applied in the fragment shader (demosaic, white
 balance, colour matrix and gamma all happen live, every frame, from the
-raw sensor data uploaded once at load time), moving these sliders costs
+raw sensor data uploaded once at load time), moving these controls costs
 nothing and never re-decodes the file.
 
 ### Tone

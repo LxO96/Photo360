@@ -12,16 +12,20 @@
   // sourceLensSize describe the loaded file, not a user preference, and are
   // deliberately excluded -- reloading a stored blob must never resurrect a
   // stale filename with no matching pixels behind it.
-  // rawWhiteBalance/rawWbLinked (Task 16) are per-lens raw white-balance
-  // state: rawWhiteBalance is a genuine per-file value that a freshly loaded
+  // rawWb/rawWbLinked (Task 17, replacing Task 16's raw red/blue
+  // multipliers) are per-lens white-balance state, now expressed as
+  // Kelvin/tint: rawWb is a genuine per-file value that a freshly loaded
   // raw file's own AsShotNeutral always overwrites on load (app.js
-  // loadDngFile), the same precedence thetaMaxDeg already has above; a
-  // stored value only ever surfaces before any file (or a non-raw file) is
-  // loaded. rawWbLinked is a plain preference with no such override.
+  // applyLoadedDescriptor), the same precedence thetaMaxDeg already has
+  // above; a stored value only ever surfaces before any file (or a
+  // non-raw file) is loaded. rawWbLinked is a plain preference with no such
+  // override. An old stored blob's `rawWhiteBalance` key (Task 16's shape)
+  // is simply not in this list any more, so sanitize() below never looks at
+  // it -- it is silently ignored rather than crashing anything.
   const PERSISTED_KEYS = [
     'fovDeg', 'thetaMaxDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone',
-    'rawWhiteBalance', 'rawWbLinked',
+    'rawWb', 'rawWbLinked',
   ];
 
   const ENUMS = { sensors: ['A', 'B', 'both'], orientation: ['side', 'stacked'] };
@@ -67,11 +71,12 @@
       terminatorCoolShift: [0, 1],
     },
     tone: { exposureEv: [-3, 3], contrast: [-1, 1], saturation: [-1, 1] },
-    // Matches the White balance sliders in index.html (#wbRedA etc.:
-    // min=0.2 max=1.5) exactly -- these are the file's own AsShotNeutral
-    // convention (green fixed at 1), so a value near 0 or above ~2 is not a
-    // plausible camera white balance regardless of what's in storage.
-    rawWhiteBalance: { A: [0.2, 1.5], B: [0.2, 1.5] },
+    // Task 17: Kelvin/tint replaces the raw red/blue multipliers. Matches
+    // Wb.KELVIN_MIN/MAX and Wb.TINT_MAX exactly.
+    rawWb: {
+      A: { kelvin: [2000, 12000], tint: [-150, 150] },
+      B: { kelvin: [2000, 12000], tint: [-150, 150] },
+    },
   };
 
   function isFiniteNumber(v) { return typeof v === 'number' && Number.isFinite(v); }
@@ -203,8 +208,22 @@
     return { physical, sign: physical === 'B' ? -1 : 1 };
   }
 
+  // Swap + single-lens fix (Task 17, closing the final review's residual
+  // finding): a 1:1 file has no lens B to swap in, so `swap` must never be
+  // left on for one -- otherwise `sensors` gets forced to 'A' (see
+  // app.js's applyLoadedDescriptor) while `swap` still points
+  // lensTextureIndex at the released slot 1 (GL.physicalLens/circleDraw),
+  // rendering no circle and exporting a blank `_B_` image. Pulled out as a
+  // pure function -- like dragSign above -- purely so app.js's load patch
+  // has exactly one implementation of this decision to regress, and it is
+  // unit-testable without a DOM. For a dual (or not-yet-loaded) file,
+  // `swap` is left exactly as it was.
+  function resolveSwapForLoad(currentSwap, lensCount) {
+    return lensCount === 1 ? false : currentSwap;
+  }
+
   return {
     STORAGE_KEY, PERSISTED_KEYS, RANGES, sanitize, serialize, save, load,
-    normalizeAngleDeltaDeg, rollForDrag, dragSign,
+    normalizeAngleDeltaDeg, rollForDrag, dragSign, resolveSwapForLoad,
   };
 });

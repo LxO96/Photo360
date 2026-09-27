@@ -59,6 +59,9 @@
         <option value="stacked">Stacked (1:2)</option>
       </select></label>
     <label><span><input id="swap" type="checkbox"> Swap A and B</span></label>
+    <div id="swapHint" class="hidden" style="color:var(--mut); font-size:11px; margin:-6px 0 8px;">
+      A single-lens file has no lens B to swap in.
+    </div>
     <label><span>Gap <output id="gapOut">16%</output></span>
       <input id="gap" type="range" min="0" max="25" step="0.5" value="16"></label>
     <label><span>Margin <output id="marginOut">8%</output></span>
@@ -77,19 +80,23 @@
     <h2 id="whiteBalanceHeading" class="hidden">White balance</h2>
     <div id="whiteBalanceGroup" class="hidden">
       <div style="color:var(--mut); font-size:11px; margin:-6px 0 8px;">
-        Raw source: each slider edits that lens's own neutral colour
-        (the same convention as the file's AsShotNeutral -- green fixed at
-        1). Lower a channel to make it stronger in the image, since the
-        shader divides the demosaiced pixel by this value.
+        Raw source: classic Kelvin + tint per lens, like Lightroom's white
+        balance. Kelvin is the colour temperature being corrected for --
+        raising it warms the image. Positive tint adds magenta, negative
+        adds green.
       </div>
-      <label><span>Lens A red <output id="wbRedAOut"></output></span>
-        <input id="wbRedA" type="range" min="0.2" max="1.5" step="0.001"></label>
-      <label><span>Lens A blue <output id="wbBlueAOut"></output></span>
-        <input id="wbBlueA" type="range" min="0.2" max="1.5" step="0.001"></label>
-      <label><span>Lens B red <output id="wbRedBOut"></output></span>
-        <input id="wbRedB" type="range" min="0.2" max="1.5" step="0.001"></label>
-      <label><span>Lens B blue <output id="wbBlueBOut"></output></span>
-        <input id="wbBlueB" type="range" min="0.2" max="1.5" step="0.001"></label>
+      <label><span>Lens A Kelvin
+        <input id="kelvinAOut" type="number" min="2000" max="12000" step="1"></span>
+        <input id="kelvinA" type="range" min="0" max="1" step="0.0001"></label>
+      <label><span>Lens A tint
+        <input id="tintAOut" type="number" min="-150" max="150" step="1"></span>
+        <input id="tintA" type="range" min="-1" max="1" step="0.0001"></label>
+      <label><span>Lens B Kelvin
+        <input id="kelvinBOut" type="number" min="2000" max="12000" step="1"></span>
+        <input id="kelvinB" type="range" min="0" max="1" step="0.0001"></label>
+      <label><span>Lens B tint
+        <input id="tintBOut" type="number" min="-150" max="150" step="1"></span>
+        <input id="tintB" type="range" min="-1" max="1" step="0.0001"></label>
       <label><span><input id="wbLink" type="checkbox" checked> Link A and B</span></label>
       <button id="wbReset" type="button">Reset to as-shot</button>
     </div>
@@ -140,6 +147,7 @@
   <script src="edge.js"></script>
   <script src="exif.js"></script>
   <script src="dng.js"></script>
+  <script src="wb.js"></script>
   <script src="shaders.js"></script>
   <script src="gl.js"></script>
   <script src="settings.js"></script>

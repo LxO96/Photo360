@@ -255,3 +255,73 @@ test('background channels clamp to 0..1', () => {
   const out = Settings.sanitize(DEFAULTS, { background: [5, -5, 0.5] });
   assert.deepStrictEqual(out.background, [1, 0, 0.5]);
 });
+
+// -- Task 17: rawWb (Kelvin/tint) persistence -----------------------------
+// DEFAULTS above predates rawWb (it was never given a rawWhiteBalance entry
+// either -- neither is exercised by the generic tests above), so these
+// tests build their own defaults with the shape settings.js actually uses.
+const WB_DEFAULTS = {
+  ...DEFAULTS,
+  rawWb: { A: { kelvin: 6500, tint: 0 }, B: { kelvin: 6500, tint: 0 } },
+  rawWbLinked: true,
+};
+
+test('sanitize keeps a valid stored rawWb', () => {
+  const out = Settings.sanitize(WB_DEFAULTS, {
+    rawWb: { A: { kelvin: 5200, tint: -30 }, B: { kelvin: 4800, tint: 10 } },
+  });
+  assert.deepStrictEqual(out.rawWb, {
+    A: { kelvin: 5200, tint: -30 }, B: { kelvin: 4800, tint: 10 },
+  });
+});
+
+test('sanitize clamps rawWb kelvin/tint into their RANGES domain', () => {
+  const out = Settings.sanitize(WB_DEFAULTS, {
+    rawWb: { A: { kelvin: 99999, tint: 9999 }, B: { kelvin: -50, tint: -9999 } },
+  });
+  assert.strictEqual(out.rawWb.A.kelvin, 12000);
+  assert.strictEqual(out.rawWb.A.tint, 150);
+  assert.strictEqual(out.rawWb.B.kelvin, 2000);
+  assert.strictEqual(out.rawWb.B.tint, -150);
+});
+
+test('sanitize falls back to defaults when rawWb is missing or malformed', () => {
+  const out = Settings.sanitize(WB_DEFAULTS, { rawWb: null });
+  assert.deepStrictEqual(out.rawWb, WB_DEFAULTS.rawWb);
+  const out2 = Settings.sanitize(WB_DEFAULTS, { rawWb: { A: { kelvin: 'nope' } } });
+  assert.strictEqual(out2.rawWb.A.kelvin, WB_DEFAULTS.rawWb.A.kelvin);
+  assert.strictEqual(out2.rawWb.B.kelvin, WB_DEFAULTS.rawWb.B.kelvin);
+});
+
+test('an old stored blob using Task 16\'s rawWhiteBalance key is ignored, not crashed on', () => {
+  const storage = fakeStorage({
+    [Settings.STORAGE_KEY]: JSON.stringify({
+      fovDeg: 175, rawWhiteBalance: { A: [0.5, 1, 0.6], B: [0.5, 1, 0.6] },
+    }),
+  });
+  assert.doesNotThrow(() => Settings.load(WB_DEFAULTS, storage));
+  const loaded = Settings.load(WB_DEFAULTS, storage);
+  assert.strictEqual(loaded.fovDeg, 175);
+  assert.deepStrictEqual(loaded.rawWb, WB_DEFAULTS.rawWb);
+  assert.strictEqual('rawWhiteBalance' in loaded, false);
+});
+
+// -- Swap + single-lens fix -------------------------------------------------
+test('resolveSwapForLoad forces swap off for a 1:1 (single-lens) file', () => {
+  assert.strictEqual(Settings.resolveSwapForLoad(true, 1), false);
+  assert.strictEqual(Settings.resolveSwapForLoad(false, 1), false);
+});
+
+test('resolveSwapForLoad leaves swap untouched for a dual (or not-yet-loaded) file', () => {
+  assert.strictEqual(Settings.resolveSwapForLoad(true, 2), true);
+  assert.strictEqual(Settings.resolveSwapForLoad(false, 2), false);
+  assert.strictEqual(Settings.resolveSwapForLoad(true, 0), true);
+});
+
+test('rawWb round-trips through save/load', () => {
+  const storage = fakeStorage();
+  const state = { ...WB_DEFAULTS, rawWb: { A: { kelvin: 3200, tint: 40 }, B: { kelvin: 7500, tint: -15 } } };
+  Settings.save(state, storage);
+  const loaded = Settings.load(WB_DEFAULTS, storage);
+  assert.deepStrictEqual(loaded.rawWb, state.rawWb);
+});

@@ -77,6 +77,107 @@
     return plane;
   }
 
+  // -- ColorMatrix1 extraction (Task 17) -----------------------------------
+  // dng.js reads ColorMatrix1 (tag 50721) internally, but only to build the
+  // display-oriented camToSrgb matrix -- already inverted, Bradford-chained
+  // to sRGB, and row-normalized to its own neutral point -- and does not
+  // return the raw XYZ->camera matrix itself. wb.js's
+  // neutralFromKelvinTint/kelvinTintFromNeutral need exactly that raw
+  // matrix (camToSrgb's per-row normalization throws away three degrees of
+  // freedom, so it cannot be un-mixed back into ColorMatrix1 -- see wb.js's
+  // own header comment). Rather than touch dng.js, this is a small,
+  // independent re-scan of the same tag: byte-order + IFD0, following tag
+  // 330 (SubIFDs) exactly like dng.js's own rawFound resolution does if
+  // IFD0 itself isn't the CFA plane. Verified against all three supplied
+  // DNGs (task report): ColorMatrix1 lives directly in IFD0 for these
+  // files, but the SubIFD fallback is kept for robustness. Returns a
+  // 9-element row-major array (XYZ -> camera) or null.
+  const CM1_TAG_SUB_IFDS = 330;
+  const CM1_TAG_COLOR_MATRIX1 = 50721;
+
+  function cm1Readers(bytes, little) {
+    return {
+      u16(o) { return little ? (bytes[o] | (bytes[o + 1] << 8)) : ((bytes[o] << 8) | bytes[o + 1]); },
+      u32(o) {
+        const v = little
+          ? (bytes[o] + bytes[o + 1] * 0x100 + bytes[o + 2] * 0x10000 + bytes[o + 3] * 0x1000000)
+          : (bytes[o] * 0x1000000 + bytes[o + 1] * 0x10000 + bytes[o + 2] * 0x100 + bytes[o + 3]);
+        return v >>> 0;
+      },
+      i32(o) { const u = this.u32(o); return u > 0x7fffffff ? u - 0x100000000 : u; },
+    };
+  }
+
+  function cm1ScanIfd(bytes, r, ifdOffset, wanted) {
+    const found = {};
+    if (ifdOffset < 0 || ifdOffset + 2 > bytes.length) return found;
+    const entryCount = r.u16(ifdOffset);
+    let p = ifdOffset + 2;
+    for (let i = 0; i < entryCount; i++) {
+      if (p + 12 > bytes.length) break;
+      const tag = r.u16(p);
+      if (wanted.has(tag)) found[tag] = { entryOffset: p, type: r.u16(p + 2), count: r.u32(p + 4) };
+      p += 12;
+    }
+    return found;
+  }
+
+  // Reads a 9-count SRATIONAL (type 10) tag's values -- ColorMatrix1's own
+  // encoding. Bounded exactly like dng.js's own readValues.
+  function cm1ReadSrational9(bytes, r, entry) {
+    if (!entry || entry.count !== 9) return null;
+    const size = 8, total = size * 9;
+    const valueOffset = r.u32(entry.entryOffset + 8);
+    if (valueOffset < 0 || valueOffset + total > bytes.length) return null;
+    const out = new Array(9);
+    for (let i = 0; i < 9; i++) {
+      const o = valueOffset + i * size;
+      const num = r.i32(o), den = r.i32(o + 4);
+      out[i] = den === 0 ? 0 : num / den;
+    }
+    return out;
+  }
+
+  // Reads tag 330's LONG offsets -- bounded the same way dng.js's own
+  // readValues is.
+  function cm1ReadSubIfdOffsets(bytes, r, entry) {
+    const size = 4, count = entry.count, total = size * count;
+    if (count <= 0 || count > 64) return [];
+    const base = total <= 4 ? entry.entryOffset + 8 : r.u32(entry.entryOffset + 8);
+    if (base < 0 || base + total > bytes.length) return [];
+    const out = [];
+    for (let i = 0; i < count; i++) out.push(r.u32(base + i * size));
+    return out;
+  }
+
+  function readColorMatrix1(bytes) {
+    try {
+      if (!bytes || bytes.length < 8) return null;
+      const little = bytes[0] === 0x49 && bytes[1] === 0x49;
+      const big = bytes[0] === 0x4d && bytes[1] === 0x4d;
+      if (!little && !big) return null;
+      const r = cm1Readers(bytes, little);
+      const ifd0Offset = r.u32(4);
+      const wanted = new Set([CM1_TAG_SUB_IFDS, CM1_TAG_COLOR_MATRIX1]);
+      const found0 = cm1ScanIfd(bytes, r, ifd0Offset, wanted);
+      if (found0[CM1_TAG_COLOR_MATRIX1]) {
+        const cm = cm1ReadSrational9(bytes, r, found0[CM1_TAG_COLOR_MATRIX1]);
+        if (cm) return cm;
+      }
+      if (!found0[CM1_TAG_SUB_IFDS]) return null;
+      for (const off of cm1ReadSubIfdOffsets(bytes, r, found0[CM1_TAG_SUB_IFDS])) {
+        const sub = cm1ScanIfd(bytes, r, off, wanted);
+        if (sub[CM1_TAG_COLOR_MATRIX1]) {
+          const cm = cm1ReadSrational9(bytes, r, sub[CM1_TAG_COLOR_MATRIX1]);
+          if (cm) return cm;
+        }
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   // Only ever a default for the output Layout control -- null (no opinion)
   // for a single-lens file, since 'side'/'stacked' describe a two-up
   // export layout that a 1:1 source has no bearing on.
@@ -108,6 +209,15 @@
       planes.push(plane);
     }
     const calibration = Lens.calibrationFor(d.model, layout.arrangement);
+    const colorMatrix1 = readColorMatrix1(bytes);
+    // Task 17: the per-lens control is Kelvin/tint, not a raw neutral
+    // triple -- seed both lenses from the file's own AsShotNeutral via
+    // Wb.kelvinTintFromNeutral (the inverse of the shader-uniform path), so
+    // "Reset to as-shot" and the initial render both start from the same
+    // real camera-measured white balance Task 16 did, just expressed as
+    // Kelvin/tint now. Wb.js is a plain global here, like Lens/Exif/Dng --
+    // see index.html's script order.
+    const asShotKt = Wb.kelvinTintFromNeutral(d.asShotNeutral, colorMatrix1);
     return {
       kind: 'dng',
       lensCount: layout.lenses.length,
@@ -119,6 +229,7 @@
       rawMeta: {
         cfaPattern: d.cfaPattern, blackLevel: d.blackLevel,
         whiteLevel: d.whiteLevel, camToSrgb: d.camToSrgb,
+        colorMatrix1,
       },
       // Magnitude and sign (GL.circleDraw applies -90 to physical A, +90 to
       // physical B) verified in the browser against all three supplied raw
@@ -126,7 +237,8 @@
       // task report.
       sensorRotationDeg: 90,
       rawAsShotNeutral: d.asShotNeutral.slice(),
-      rawWhiteBalance: { A: d.asShotNeutral.slice(), B: d.asShotNeutral.slice() },
+      rawWb: { A: { kelvin: asShotKt.kelvin, tint: asShotKt.tint },
+               B: { kelvin: asShotKt.kelvin, tint: asShotKt.tint } },
       calibration,
       calibrationGuessedFromShape: !calibration.model && layout.arrangement === 'stacked',
       thetaMaxDeg: calibration.thetaMaxDeg,
@@ -197,6 +309,6 @@
 
   return {
     decode, decodeDng, decodeJpeg, probeSize, extractBayerPlane,
-    defaultOrientationFor, HEAD_PROBE_BYTES, UNSUPPORTED_MSG,
+    defaultOrientationFor, HEAD_PROBE_BYTES, UNSUPPORTED_MSG, readColorMatrix1,
   };
 });
