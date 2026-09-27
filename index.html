@@ -28,6 +28,8 @@
   #readout { color:var(--mut); font-size:12px; margin-top:4px; }
   #exportSize { color:var(--mut); font-size:12px; margin:8px 0; }
   #error { color:#ff7a6b; font-size:12px; margin-top:8px; white-space:pre-wrap; }
+  #warning { color:#e0b34d; font-size:12px; margin-top:8px; white-space:pre-wrap; }
+  #openFile { margin: 0 0 12px; }
 </style>
 </head>
 <body>
@@ -38,6 +40,7 @@
     <input id="file" type="file" accept=".insp,.jpg,.jpeg,.dng,image/jpeg" hidden>
   </div>
   <aside id="panel">
+    <button id="openFile" type="button">Open…</button>
     <h2>Framing</h2>
     <label><span>Field of view <output id="fovOut">180.0°</output></span>
       <input id="fov" type="range" min="120" max="210" step="0.5" value="180"></label>
@@ -93,17 +96,17 @@
 
     <h2>Edge</h2>
     <label><span>Intensity <output id="edgeIntensityOut"></output></span>
-      <input id="edgeIntensity" type="range" min="0" max="4" step="0.01"></label>
+      <input id="edgeIntensity" type="range" min="0" max="4" step="0.00001"></label>
     <label><span>Ring width <output id="ringWidthOut"></output></span>
-      <input id="ringWidth" type="range" min="0.002" max="0.06" step="0.001"></label>
+      <input id="ringWidth" type="range" min="0.002" max="0.06" step="0.00001"></label>
     <label><span>Dispersion <output id="dispersionOut"></output></span>
-      <input id="dispersion" type="range" min="0" max="0.05" step="0.001"></label>
+      <input id="dispersion" type="range" min="0" max="0.05" step="0.00001"></label>
     <label><span>Glow spread <output id="glowSpreadDegOut"></output></span>
       <input id="glowSpreadDeg" type="range" min="0" max="45" step="0.5"></label>
     <label><span>Highlight knee <output id="highlightKneeOut"></output></span>
       <input id="highlightKnee" type="range" min="0" max="1" step="0.01"></label>
     <label><span>Falloff start <output id="falloffStartOut"></output></span>
-      <input id="falloffStart" type="range" min="0.6" max="0.99" step="0.005"></label>
+      <input id="falloffStart" type="range" min="0.6" max="0.99" step="0.00001"></label>
     <label><span>Falloff softness <output id="falloffSoftnessOut"></output></span>
       <input id="falloffSoftness" type="range" min="0.3" max="4" step="0.05"></label>
     <button id="resetEdge" type="button">Reset to X1 classic</button>
@@ -129,6 +132,7 @@
     <div id="exportSize"></div>
     <button id="export" type="button">Export</button>
 
+    <div id="warning"></div>
     <div id="error"></div>
   </aside>
 
@@ -139,6 +143,7 @@
   <script src="shaders.js"></script>
   <script src="gl.js"></script>
   <script src="settings.js"></script>
+  <script src="source.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

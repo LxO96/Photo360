@@ -36,7 +36,22 @@
     return { overlapDeg, duplicatedAreaFraction };
   }
 
-  const ASPECT_TOLERANCE = 0.02;
+  // A *relative* tolerance, applied directly to width/height rather than to
+  // the aspect ratio -- the old code compared `width/height` against 1, 2
+  // and 0.5 with one absolute margin (0.02) for all three, which is four
+  // times looser for the 2:1/1:2 checks than for the 1:1 check in relative
+  // terms (0.02 is a much smaller fraction of 2 than of 1). Concretely, a
+  // 3040x6160 file (aspect 0.4935, 80px off an exact 1:2 split) used to pass
+  // as "stacked" and sample its second lens 80px off the true split -- see
+  // test/lens.test.js's near-miss case. relClose below compares the two
+  // pixel dimensions that must match for a given shape (e.g. `height` vs
+  // `2*width` for 'stacked') directly, so the same tolerance means the same
+  // thing -- a fraction of the larger dimension -- in every branch.
+  const ASPECT_TOLERANCE = 0.005;
+
+  function relClose(a, b, tol) {
+    return Math.abs(a - b) <= tol * Math.max(a, b);
+  }
 
   // `arrangement` distinguishes the two physically different dual-fisheye
   // shapes ('side' 2:1, 'stacked' 1:2) for callers -- like calibrationFor's
@@ -44,21 +59,20 @@
   // without re-deriving it from width/height themselves. 'single' for a 1:1
   // file, null when unsupported.
   function detectLayout(width, height) {
-    const aspect = width / height;
     // The 1:1 check must come before either dual case: a square image's
-    // aspect is 1, not 2 or 0.5, so this ordering is not load-bearing for
-    // correctness here, but it is the guard the brief asks for against a
-    // square image ever falling into a dual branch.
-    if (Math.abs(aspect - 1) < ASPECT_TOLERANCE) {
+    // width equals its height, not 2x or 0.5x it, so this ordering is not
+    // load-bearing for correctness here, but it is the guard the brief asks
+    // for against a square image ever falling into a dual branch.
+    if (relClose(width, height, ASPECT_TOLERANCE)) {
       return { kind: 'single', lensSize: height, lenses: [{ x: 0, y: 0 }], arrangement: 'single' };
     }
-    if (Math.abs(aspect - 2) < ASPECT_TOLERANCE) {
+    if (relClose(width, height * 2, ASPECT_TOLERANCE)) {
       return {
         kind: 'dual', lensSize: height, lenses: [{ x: 0, y: 0 }, { x: height, y: 0 }],
         arrangement: 'side',
       };
     }
-    if (Math.abs(aspect - 0.5) < ASPECT_TOLERANCE) {
+    if (relClose(height, width * 2, ASPECT_TOLERANCE)) {
       return {
         kind: 'dual', lensSize: width, lenses: [{ x: 0, y: 0 }, { x: 0, y: width }],
         arrangement: 'stacked',

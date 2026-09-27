@@ -200,6 +200,18 @@ test('the full-size stacked reference is detected as dual fisheye', () => {
   assert.deepStrictEqual(l.lenses, [{ x: 0, y: 0 }, { x: 0, y: 3040 }]);
 });
 
+// Final whole-branch review, Minor finding: ASPECT_TOLERANCE used to be an
+// absolute margin (0.02) applied to the *aspect ratio*, which is four times
+// looser for the 1:2/2:1 checks than for the 1:1 check in relative terms.
+// A 3040x6160 file (80px off an exact 3040x6080 1:2 split) used to pass as
+// 'stacked' and sample its second lens 80px off the true split. The
+// tolerance is now relative and applied to the pixel dimensions directly,
+// so this near-miss is correctly refused.
+test('a near-miss 1:2 shape (80px off an exact split) is not detected as dual fisheye', () => {
+  const l = Lens.detectLayout(3040, 6160);
+  assert.strictEqual(l.kind, 'unsupported');
+});
+
 test('side-by-side detection is unchanged by the stacked case', () => {
   const l = Lens.detectLayout(11904, 5952);
   assert.strictEqual(l.kind, 'dual');

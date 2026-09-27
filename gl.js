@@ -28,8 +28,13 @@
   }
 
   function create(canvas) {
+    // preserveDrawingBuffer is deliberately omitted: export renders to an
+    // offscreen FBO (makeExportTarget/readCompositionStrips), never reads
+    // back from the visible canvas, so there is nothing left that needs the
+    // drawing buffer preserved between frames -- letting the browser clear
+    // it after presentation is the default and typically cheaper path.
     const gl = canvas.getContext('webgl2', {
-      alpha: false, antialias: false, preserveDrawingBuffer: true,
+      alpha: false, antialias: false,
       premultipliedAlpha: false,
     });
     if (!gl) throw new Error('WEBGL2_UNAVAILABLE');
@@ -201,9 +206,13 @@
     return out;
   }
 
-  function uploadLens(ctx, index, bitmap) {
-    const gl = ctx.gl;
-    if (ctx.textures[index]) gl.deleteTexture(ctx.textures[index]);
+  // Creates a lens texture from a decoded ImageBitmap *without* touching
+  // ctx.textures -- the atomic-load fix (final review round) builds every
+  // new lens's texture this way first, and only calls commitLenses (below)
+  // once all of them have succeeded, so a throw partway through a multi-lens
+  // load can never leave ctx.textures holding a mix of the old and new
+  // file's textures.
+  function makeLensTexture(gl, bitmap) {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -211,30 +220,30 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     // Orientation note: the bitmap handed in here must already be decoded
-    // with { imageOrientation: 'flipY' } (see app.js) so that texture t=0
-    // lands at the bottom of the image, matching GL's convention that
-    // gl_FragCoord.y increases upward. gl.pixelStorei(UNPACK_FLIP_Y_WEBGL)
-    // was tried first but has no effect on ImageBitmap sources in this
-    // engine -- verified empirically with an isolated 2x2-texel texture.
+    // with { imageOrientation: 'flipY' } (see app.js/source.js) so that
+    // texture t=0 lands at the bottom of the image, matching GL's
+    // convention that gl_FragCoord.y increases upward.
+    // gl.pixelStorei(UNPACK_FLIP_Y_WEBGL) was tried first but has no effect
+    // on ImageBitmap sources in this engine -- verified empirically with an
+    // isolated 2x2-texel texture.
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-    ctx.textures[index] = t;
-    ctx.textureSize[index] = null;
+    return { tex: t, size: null };
   }
 
-  // Uploads one lens's raw CFA (Bayer) plane -- a Uint16Array of width*height
-  // sensor readings, one integer per pixel, no colour of its own yet -- as a
-  // single-channel 16-bit *integer* texture. R16UI/RED_INTEGER/UNSIGNED_SHORT
-  // is the only combination WebGL2 allows for an integer texture; such
-  // textures cannot be linearly filtered by the hardware at all (only
-  // NEAREST is legal), which is exactly what the raw shader path wants
-  // anyway -- it demosaics with its own explicit neighbour sampling
-  // (texelFetch), not GPU bilinear filtering. `plane` is uploaded exactly as
-  // given, in the DNG's own row order (row 0 = the top of the image) --
-  // see shaders.js's sampleRawLensAt for why the vertical flip the JPEG path
-  // needs is handled in the sampling math instead of here.
-  function uploadBayer(ctx, index, plane, width, height) {
-    const gl = ctx.gl;
-    if (ctx.textures[index]) gl.deleteTexture(ctx.textures[index]);
+  // Creates one lens's raw CFA (Bayer) plane texture -- a Uint16Array of
+  // width*height sensor readings, one integer per pixel, no colour of its
+  // own yet -- as a single-channel 16-bit *integer* texture, without
+  // touching ctx.textures (see makeLensTexture's comment).
+  // R16UI/RED_INTEGER/UNSIGNED_SHORT is the only combination WebGL2 allows
+  // for an integer texture; such textures cannot be linearly filtered by
+  // the hardware at all (only NEAREST is legal), which is exactly what the
+  // raw shader path wants anyway -- it demosaics with its own explicit
+  // neighbour sampling (texelFetch), not GPU bilinear filtering. `plane` is
+  // uploaded exactly as given, in the DNG's own row order (row 0 = the top
+  // of the image) -- see shaders.js's sampleRawLensAt for why the vertical
+  // flip the JPEG path needs is handled in the sampling math instead of
+  // here.
+  function makeBayerTexture(gl, plane, width, height) {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -242,8 +251,59 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16UI, width, height, 0, gl.RED_INTEGER, gl.UNSIGNED_SHORT, plane);
-    ctx.textures[index] = t;
-    ctx.textureSize[index] = { width, height };
+    return { tex: t, size: { width, height } };
+  }
+
+  // Frees the GPU texture at slot `i`, if any, and clears the slot. This is
+  // the fix for the Critical finding: nothing used to clear ctx.textures[1]
+  // when a newly loaded file had only one lens, so a 1:1 file loaded after a
+  // dual one kept rendering the *previous* photograph's lens B, at the
+  // previous resolution, into slot B -- silently, with no error, and the
+  // export would contain a mix of two different photographs.
+  function releaseLens(ctx, i) {
+    if (ctx.textures[i]) ctx.gl.deleteTexture(ctx.textures[i]);
+    ctx.textures[i] = null;
+    ctx.textureSize[i] = null;
+  }
+
+  // Atomically replaces every uploaded lens texture. `built` is an array (as
+  // returned by makeLensTexture/makeBayerTexture) of length 1 or 2, one
+  // entry per lens the newly loaded file actually has. Any slot at or past
+  // built.length is released (see releaseLens), so a 1:1 file loaded on top
+  // of a 2:1 one never leaves a stale lens-B texture bound. Callers must
+  // build every entry of `built` successfully *before* calling this -- see
+  // app.js's loadFile/loadDngFile, which build the full set into a local
+  // array first, so a throw while decoding/uploading a later lens never
+  // reaches here and never touches ctx.textures at all, leaving whatever
+  // file was loaded before (if any) fully intact.
+  function commitLenses(ctx, built) {
+    for (let i = 0; i < 2; i++) {
+      if (i < built.length) {
+        releaseLens(ctx, i);
+        ctx.textures[i] = built[i].tex;
+        ctx.textureSize[i] = built[i].size;
+      } else {
+        releaseLens(ctx, i);
+      }
+    }
+  }
+
+  // Back-compat single-call wrappers, kept for anything (tests, tools) that
+  // still wants "decode straight into ctx.textures[index]" in one step; the
+  // atomic app.js load path above uses makeLensTexture/makeBayerTexture +
+  // commitLenses instead.
+  function uploadLens(ctx, index, bitmap) {
+    const built = makeLensTexture(ctx.gl, bitmap);
+    if (ctx.textures[index]) ctx.gl.deleteTexture(ctx.textures[index]);
+    ctx.textures[index] = built.tex;
+    ctx.textureSize[index] = built.size;
+  }
+
+  function uploadBayer(ctx, index, plane, width, height) {
+    const built = makeBayerTexture(ctx.gl, plane, width, height);
+    if (ctx.textures[index]) ctx.gl.deleteTexture(ctx.textures[index]);
+    ctx.textures[index] = built.tex;
+    ctx.textureSize[index] = built.size;
   }
 
   const GLOW_HEADROOM = 0.08;   // fraction of the circle radius reserved outside the edge
@@ -373,6 +433,22 @@
     };
   }
 
+  // The filename label for an export: 'AB'/'BA' for a both-sensors export
+  // (honouring swap), or the *physical* lens label for a single-sensor
+  // export. Must go through physicalLens, not the raw `state.sensors` slot
+  // label, for exactly the reason circleDraw's own texture lookup does
+  // (see that function's comment): with sensors:'A' and swap:true,
+  // circleDraw binds the physical B lens's texture into slot A, so a
+  // filename naming the slot ('A') rather than the physical lens actually
+  // drawn ('B') would be wrong. This was the one call site still doing that
+  // (Important finding #3, final review round) -- app.js's exportImage now
+  // calls this instead of re-deriving the label inline.
+  function exportLabel(state) {
+    return state.sensors === 'both'
+      ? (state.swap ? 'BA' : 'AB')
+      : physicalLens(state, state.sensors);
+  }
+
   // Scale Lens.exportLayout's pixel geometry to fit the given target.
   function compositionLayout(state, targetW, targetH) {
     const d = 1000;  // arbitrary reference diameter; everything is scaled below
@@ -438,6 +514,14 @@
   // sees it -- getting this flip backwards would export every image upside
   // down, so callers must not skip it and should verify against a known
   // pixel (see test/export.test.js and the live check in the task report).
+  //
+  // `onStrip`'s `rowsRGBA` argument is a *view* onto one scratch buffer
+  // (`buf` below) allocated once for the whole call and reused for every
+  // strip -- it is only valid for the duration of that one `onStrip`
+  // invocation. A caller that needs the bytes afterward (rather than
+  // consuming them synchronously, as app.js's putImageData does) must copy
+  // them; holding onto `rowsRGBA` across the next strip will see it
+  // overwritten.
   function readCompositionStrips(gl, fbo, w, h, stripRows, onStrip) {
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     const buf = new Uint8Array(w * stripRows * 4);
@@ -491,8 +575,9 @@
   }
 
   return {
-    create, uploadLens, uploadBayer, renderComposition, compositionLayout, lensTextureIndex,
-    physicalLens, circleDraw, program, buildProfile, readProfile, makeProfileTarget,
+    create, uploadLens, uploadBayer, makeLensTexture, makeBayerTexture, releaseLens,
+    commitLenses, renderComposition, compositionLayout, lensTextureIndex,
+    physicalLens, circleDraw, exportLabel, program, buildProfile, readProfile, makeProfileTarget,
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
   };
 });

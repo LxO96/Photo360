@@ -45,6 +45,8 @@
   const wbBlueBOut = document.getElementById('wbBlueBOut');
   const wbLinkEl = document.getElementById('wbLink');
   const wbResetEl = document.getElementById('wbReset');
+  const openBtnEl = document.getElementById('openFile');
+  const warningEl = document.getElementById('warning');
 
   const state = {
     fovDeg: 180, thetaMaxDeg: Lens.THETA_MAX_DEG,
@@ -94,6 +96,15 @@
     // export off this, not sourceLensSize, so export can never silently
     // upscale past what the texture actually holds.
     uploadedLensSize: 0,
+    // How many lenses the currently loaded file actually has (1 or 0 before
+    // any file is loaded, 2 for a dual source). Not persisted -- like
+    // sourceName/sourceLensSize, this describes the loaded file, not a
+    // preference. Drives constraining `sensors` to 'A' and disabling the
+    // Lens B / Both options for a single-lens file (see
+    // updateSensorsAvailability) -- the fix for the Critical finding that a
+    // 1:1 file inherited the previous file's lens B when Sensors was left on
+    // Both/B.
+    lensCount: 0,
     edge: { ...Edge.PRESETS.x1classic },
     tone: { exposureEv: 0, contrast: 0, saturation: 0 },
     // Task 12 output options. Not part of Settings.PERSISTED_KEYS -- these
@@ -144,13 +155,14 @@
   };
   let ctx = null;
 
-  // The X5's own .insp files carry several megabytes of embedded metadata
-  // (gain-map / preview APPn segments) before the SOF marker that carries
-  // the frame size, so the probe has to read a generous head -- still
-  // trivial next to decoding the full 283MB frame just to read two numbers.
-  const HEAD_PROBE_BYTES = 6 * 1024 * 1024;
-
-  function fail(msg) { errorEl.textContent = msg; }
+  // Errors and warnings are deliberately separate channels: `fail` used to
+  // double as both (app.js:332's non-fatal downscale notice went through
+  // the same #error element as a real failure), so a red error from an
+  // earlier problem could persist across a fully successful later
+  // operation, and a successful export never cleared a stale one either.
+  function fail(msg) { errorEl.textContent = msg; warningEl.textContent = ''; }
+  function warn(msg) { warningEl.textContent = msg; errorEl.textContent = ''; }
+  function clearMessages() { errorEl.textContent = ''; warningEl.textContent = ''; }
 
   // Shows the camera and calibration the current file loaded with, right by
   // the FOV readout. A provisional calibration (confident: false) must never
@@ -180,51 +192,6 @@
     }
   }
 
-  // Read the frame dimensions without decoding pixel data: parse the JPEG
-  // header directly, and only fall back to a full decode if that fails
-  // (e.g. an unusual file whose SOF sits beyond the probed head).
-  async function probeSize(blob, buf) {
-    const head = new Uint8Array(buf, 0, Math.min(buf.byteLength, HEAD_PROBE_BYTES));
-    const size = Exif.readJpegSize(head);
-    if (size) return size;
-    const probe = await createImageBitmap(blob);
-    const fallback = { width: probe.width, height: probe.height };
-    probe.close();
-    return fallback;
-  }
-
-  // Extracts one lens's square Bayer plane out of a DNG's single strip as a
-  // Uint16Array, honouring the file's own byte order (`d.littleEndian`).
-  // `o` is the lens's {x, y} offset within the full stacked frame (from
-  // Lens.detectLayout), in the same pixel-row/column space CFAPattern's own
-  // phase is defined in -- both `o.x` and `o.y` are exact multiples of the
-  // lens size (3040 for these files), which is itself even, so slicing here
-  // never shifts the CFA phase relative to the tag dng.js already read.
-  function extractBayerPlane(bytes, d, o, size) {
-    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    const plane = new Uint16Array(size * size);
-    const rowBytes = d.width * 2;
-    for (let row = 0; row < size; row++) {
-      const srcRowStart = d.stripOffset + (o.y + row) * rowBytes + o.x * 2;
-      let p = row * size;
-      for (let col = 0; col < size; col++) {
-        plane[p++] = dv.getUint16(srcRowStart + col * 2, d.littleEndian);
-      }
-    }
-    return plane;
-  }
-
-  // Applies the arrangement Lens.detectLayout found to state.orientation --
-  // the output Layout control otherwise defaults to 'side' regardless of
-  // the source file's own shape (a stacked 1:2 source used to export
-  // side-by-side by default; Task 14 finding, Task 16 brief Step 7). This
-  // is only ever a default: the control stays free to change afterward.
-  function defaultOrientationToArrangement(arrangement) {
-    if (arrangement !== 'stacked' && arrangement !== 'side') return;
-    state.orientation = arrangement;
-    orientationEl.value = state.orientation;
-  }
-
   // Shows/hides the White balance panel -- it only makes sense for a raw
   // source, since a JPEG/.insp file has already been demosaiced and white
   // balanced by the camera.
@@ -249,61 +216,79 @@
     wbLinkEl.checked = state.rawWbLinked;
   }
 
-  // Loads an uncompressed DNG: parses it with Dng.parse (pure bytes, no
-  // decode), slices its single Bayer strip into one Uint16Array per lens,
-  // and uploads those as integer textures (GL.uploadBayer) instead of the
-  // JPEG path's createImageBitmap + GL.uploadLens. The rest of the pipeline
-  // (calibration, orientation default, layout) is shared with loadFile
-  // below via the helpers above.
-  async function loadDngFile(file, buf) {
-    const bytes = new Uint8Array(buf);
-    const d = Dng.parse(bytes);
-    if (!d) {
-      fail(Dng.lastRejectionReason());
-      return;
+  // Shows/hides (and value-restricts) the Sensors control to match the
+  // currently loaded file's lens count -- a 1:1 file has no lens B to show,
+  // so 'B' and 'both' are disabled rather than left selectable with nothing
+  // behind them. Part of the Critical fix: state.sensors is forced to 'A'
+  // for a single-lens file at commit time (see applyLoadedDescriptor), and
+  // this keeps the control itself from immediately offering to undo that.
+  function updateSensorsAvailability() {
+    const single = state.lensCount === 1;
+    for (const opt of sensorsEl.options) {
+      opt.disabled = single && opt.value !== 'A';
     }
-    const layout = Lens.detectLayout(d.width, d.height);
-    if (layout.kind === 'unsupported') {
-      fail('Not a fisheye file: expected a 2:1 or 1:2 dual fisheye or a 1:1 single fisheye.');
-      return;
+  }
+
+  // Maps a thrown Error to the text shown in #error. `e.formatted` (set by
+  // source.js) marks a message that is already a complete, human-readable
+  // sentence -- a known rejection reason, not a raw JS exception -- so it is
+  // shown verbatim instead of getting the generic "Could not read..." prefix.
+  function describeLoadError(e) {
+    if (e.message === 'WEBGL2_UNAVAILABLE') return 'This browser has no WebGL2 support.';
+    if (e.message === 'FLOAT_FBO_UNAVAILABLE') {
+      return 'This GPU/browser lacks floating-point render targets ' +
+        '(EXT_color_buffer_float), needed for the rim glow.';
     }
-    if (!ctx) ctx = GL.create(canvas);
-    if (layout.lensSize > ctx.maxTextureSize) {
-      fail('This GPU caps textures at ' + ctx.maxTextureSize + ' px; this raw file\'s ' +
-        layout.lensSize + 'px lenses cannot be downscaled without corrupting the sensor ' +
-        'pattern, so this raw file cannot be loaded on this GPU.');
-      return;
-    }
-    for (let i = 0; i < layout.lenses.length; i++) {
-      const plane = extractBayerPlane(bytes, d, layout.lenses[i], layout.lensSize);
-      GL.uploadBayer(ctx, i, plane, layout.lensSize, layout.lensSize);
-    }
-    state.isRaw = true;
-    state.rawMeta = { cfaPattern: d.cfaPattern, blackLevel: d.blackLevel, whiteLevel: d.whiteLevel, camToSrgb: d.camToSrgb };
-    // Magnitude and sign (GL.circleDraw applies -90 to physical A, +90 to
-    // physical B) verified in the browser against all three supplied raw
-    // files: both circles render upright at rollDeg=0. This was found
-    // empirically, not derived from the layout code -- an initial +90/-90
-    // assignment rendered *both* circles upside down (see the task report).
-    state.sensorRotationDeg = 90;
-    state.rawAsShotNeutral = d.asShotNeutral.slice();
-    // A freshly loaded file's own AsShotNeutral always wins over whatever
-    // white balance a previous file (or session) left behind -- the same
-    // precedence Task 15 established for thetaMaxDeg (see the comment on
-    // that assignment in loadFile below).
-    state.rawWhiteBalance = { A: d.asShotNeutral.slice(), B: d.asShotNeutral.slice() };
-    const calibration = Lens.calibrationFor(d.model, layout.arrangement);
-    state.thetaMaxDeg = calibration.thetaMaxDeg;
-    state.calibration = calibration;
-    state.calibrationGuessedFromShape = !calibration.model && layout.arrangement === 'stacked';
-    state.sourceName = file.name;
-    state.sourceExif = Exif.buildApp1({ make: '', model: d.model, dateTimeOriginal: d.dateTimeOriginal });
-    state.sourceLensSize = layout.lensSize;
-    state.uploadedLensSize = layout.lensSize;
-    defaultOrientationToArrangement(layout.arrangement);
+    return e.formatted ? e.message : 'Could not read that file: ' + e.message;
+  }
+
+  // Commits a fully-decoded Source descriptor into `state` in one
+  // assignment, plus whatever DOM reflection every previous load path did
+  // piecemeal. Called only after every one of the descriptor's lenses has
+  // already been uploaded to the GPU and GL.commitLenses has run -- by the
+  // time this runs, the load can no longer fail, so state is never observed
+  // half-updated between two files (the Critical finding, and Important #2:
+  // a throw partway through a load used to leave textures from two
+  // different files, or a texture uploaded under the wrong shader's
+  // assumptions, mixed together).
+  function applyLoadedDescriptor(descriptor) {
+    const patch = {
+      calibration: descriptor.calibration,
+      calibrationGuessedFromShape: descriptor.calibrationGuessedFromShape,
+      thetaMaxDeg: descriptor.thetaMaxDeg,
+      isRaw: descriptor.isRaw,
+      rawMeta: descriptor.rawMeta,
+      rawAsShotNeutral: descriptor.rawAsShotNeutral,
+      // Only the sensor-rotation *correction* is ever forced by a load, not
+      // rawWhiteBalance itself for a non-raw file -- rawWhiteBalance is a
+      // persisted user setting (see its state comment above), not per-file
+      // data, and a JPEG/.insp source has no AsShotNeutral of its own to
+      // overwrite it with. It simply sits unused while the White balance
+      // panel is hidden. A raw file's own AsShotNeutral (below) is the one
+      // exception, exactly as before.
+      sensorRotationDeg: descriptor.sensorRotationDeg,
+      sourceName: descriptor.sourceName,
+      sourceExif: descriptor.sourceExif,
+      sourceLensSize: descriptor.lensSize,
+      uploadedLensSize: descriptor.uploadedLensSize,
+      lensCount: descriptor.lensCount,
+    };
+    if (descriptor.isRaw) patch.rawWhiteBalance = descriptor.rawWhiteBalance;
+    // Constrain Sensors to the file's own lens count -- a 1:1 file has no
+    // lens B, so a `sensors` of 'B' or 'both' left over from a previous
+    // dual file must not silently keep pointing at a texture slot this file
+    // never populated (see GL.releaseLens's own comment for the bug this
+    // closes on the texture side).
+    if (descriptor.lensCount === 1) patch.sensors = 'A';
+    if (descriptor.orientationDefault) patch.orientation = descriptor.orientationDefault;
+    Object.assign(state, patch);
+
     dropEl.classList.add('hidden');
     thetaMaxEl.value = state.thetaMaxDeg;
     thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
+    sensorsEl.value = state.sensors;
+    orientationEl.value = state.orientation;
+    updateSensorsAvailability();
     updateCalibrationReadout();
     updateWbVisibility();
     syncWbControls();
@@ -311,84 +296,51 @@
     scheduleSave();
   }
 
+  // The single load entry point for every source kind (.insp/.jpg/.dng).
+  // Decoding/validation (Source.decode) and GPU upload both happen into
+  // local variables only -- ctx.textures and state are touched nowhere
+  // before the final GL.commitLenses + applyLoadedDescriptor pair, so a
+  // throw at any point before that leaves whatever was loaded previously
+  // (if anything) completely intact; a throw after would have nothing left
+  // to fail on. See source.js's own top-of-file comment for the fuller
+  // rationale.
   async function loadFile(file) {
-    errorEl.textContent = '';
+    clearMessages();
+    let builtTextures = null;
     try {
       const buf = await file.arrayBuffer();
-      if (/\.dng$/i.test(file.name)) {
-        await loadDngFile(file, buf);
-        return;
-      }
-      const blob = new Blob([buf], { type: 'image/jpeg' });  // .insp has no MIME type
-      const size = await probeSize(blob, buf);
-      const layout = Lens.detectLayout(size.width, size.height);
-      if (layout.kind === 'unsupported') {
-        fail('Not a fisheye file: expected a 2:1 or 1:2 dual fisheye or a 1:1 single fisheye.');
-        return;
-      }
       if (!ctx) ctx = GL.create(canvas);
-      const overLimit = layout.lensSize > ctx.maxTextureSize;
-      if (overLimit) {
-        fail('This GPU caps textures at ' + ctx.maxTextureSize +
-             ' px; the image is being downscaled from ' + layout.lensSize + ' px.');
-      }
-      // imageOrientation: 'flipY' makes GL texture t=0 the bottom of the
-      // image, matching gl_FragCoord.y (increases upward). Tried
-      // gl.pixelStorei(UNPACK_FLIP_Y_WEBGL) first, but that pixel-store
-      // flag has no effect on ImageBitmap sources -- this option, baked in
-      // at decode time, is what actually flips the sampled orientation.
-      const decodeOpts = overLimit
-        ? { imageOrientation: 'flipY', resizeWidth: ctx.maxTextureSize,
-            resizeHeight: ctx.maxTextureSize, resizeQuality: 'high' }
-        : { imageOrientation: 'flipY' };
-      for (let i = 0; i < layout.lenses.length; i++) {
-        const o = layout.lenses[i];
-        const half = await createImageBitmap(
-          blob, o.x, o.y, layout.lensSize, layout.lensSize, decodeOpts);
-        try {
-          GL.uploadLens(ctx, i, half);
-        } finally {
-          half.close();
+      const descriptor = await Source.decode(file, buf, ctx.maxTextureSize);
+      const gl = ctx.gl;
+      builtTextures = [];
+      try {
+        if (descriptor.kind === 'dng') {
+          for (const plane of descriptor.planes) {
+            builtTextures.push(GL.makeBayerTexture(gl, plane, descriptor.lensSize, descriptor.lensSize));
+          }
+        } else {
+          for (const bitmap of descriptor.bitmaps) {
+            builtTextures.push(GL.makeLensTexture(gl, bitmap));
+          }
         }
+      } finally {
+        if (descriptor.bitmaps) for (const b of descriptor.bitmaps) b.close();
       }
-      const tags = Exif.readTags(new Uint8Array(buf));
-      // A freshly loaded file's own camera always wins over whatever
-      // thetaMaxDeg a previous session left in localStorage: loadSettings()
-      // only ever runs once, at page init, before any file is chosen, so by
-      // the time this runs it is safe to overwrite state.thetaMaxDeg
-      // unconditionally -- there is no later restore that could clobber it
-      // back to a stale value.
-      const calibration = Lens.calibrationFor(tags.model, layout.arrangement);
-      state.thetaMaxDeg = calibration.thetaMaxDeg;
-      state.calibration = calibration;
-      state.calibrationGuessedFromShape = !calibration.model && layout.arrangement === 'stacked';
-      state.isRaw = false;
-      state.rawMeta = null;
-      state.rawAsShotNeutral = null;
-      // Only the sensor-rotation *correction* is reset here, not
-      // rawWhiteBalance itself -- rawWhiteBalance is a persisted user
-      // setting now (see its state comment above), not per-file data, and a
-      // JPEG/.insp source has no AsShotNeutral of its own to overwrite it
-      // with. It simply sits unused while the White balance panel is hidden.
-      state.sensorRotationDeg = 0;
-      state.sourceName = file.name;
-      state.sourceExif = Exif.buildApp1(tags);
-      state.sourceLensSize = layout.lensSize;
-      state.uploadedLensSize = overLimit ? ctx.maxTextureSize : layout.lensSize;
-      defaultOrientationToArrangement(layout.arrangement);
-      dropEl.classList.add('hidden');
-      thetaMaxEl.value = state.thetaMaxDeg;
-      thetaMaxOut.textContent = state.thetaMaxDeg.toFixed(1) + '°';
-      updateCalibrationReadout();
-      updateWbVisibility();
-      render();
-      scheduleSave();
+      if (descriptor.overLimit) {
+        warn('This GPU caps textures at ' + ctx.maxTextureSize +
+             ' px; the image is being downscaled from ' + descriptor.lensSize + ' px.');
+      }
+      // Nothing below this line can throw before ctx/state are consistent
+      // again -- see this function's own top comment.
+      GL.commitLenses(ctx, builtTextures);
+      applyLoadedDescriptor(descriptor);
     } catch (e) {
-      fail(e.message === 'WEBGL2_UNAVAILABLE'
-        ? 'This browser has no WebGL2 support.'
-        : e.message === 'FLOAT_FBO_UNAVAILABLE'
-          ? 'This GPU/browser lacks floating-point render targets (EXT_color_buffer_float), needed for the rim glow.'
-          : 'Could not read that file: ' + e.message);
+      // A throw after some (but not all) textures were built -- e.g. the
+      // second of two lenses failing to decode -- must not leak the ones
+      // that did succeed, and must never reach GL.commitLenses (which would
+      // otherwise commit an incomplete set).
+      if (builtTextures) for (const b of builtTextures) ctx.gl.deleteTexture(b.tex);
+      fail(describeLoadError(e));
     }
   }
 
@@ -638,7 +590,7 @@
     nudgeBOut.textContent = state.nudgeDeg.B.toFixed(1) + '°';
     for (const k of EDGE_KEYS) {
       document.getElementById(k).value = state.edge[k];
-      document.getElementById(k + 'Out').textContent = state.edge[k];
+      document.getElementById(k + 'Out').textContent = formatEdgeValue(k, state.edge[k]);
     }
     for (const k of Object.keys(TONE_UNITS)) {
       document.getElementById(k).value = state.tone[k];
@@ -767,11 +719,30 @@
   const EDGE_KEYS = ['edgeIntensity', 'ringWidth', 'dispersion', 'glowSpreadDeg',
                      'highlightKnee', 'falloffStart', 'falloffSoftness'];
 
+  function decimalsForStep(step) {
+    const s = String(step);
+    const i = s.indexOf('.');
+    return i === -1 ? 0 : s.length - i - 1;
+  }
+
+  // Formats an edge slider's value to its own <input step>'s decimal
+  // precision instead of JS's default number-to-string, which printed raw
+  // values like 0.93693 or 0.26024 next to a thumb whose step (0.005/0.01)
+  // couldn't actually land there -- the readout and the slider silently
+  // disagreed about what value was in effect. index.html's step attributes
+  // for edgeIntensity/ringWidth/dispersion/falloffStart were tightened to
+  // 0.00001 (see their own comment there) precisely so the fitted
+  // x1classic preset's five decimal digits are representable at all; this
+  // keeps the printed text matching that same precision.
+  function formatEdgeValue(k, v) {
+    return v.toFixed(decimalsForStep(document.getElementById(k).step));
+  }
+
   function applyEdgePreset() {
     state.edge = Object.assign({}, Edge.PRESETS.x1classic);
     for (const k of EDGE_KEYS) {
       document.getElementById(k).value = state.edge[k];
-      document.getElementById(k + 'Out').textContent = state.edge[k];
+      document.getElementById(k + 'Out').textContent = formatEdgeValue(k, state.edge[k]);
     }
     render();
     scheduleSave();
@@ -780,7 +751,7 @@
   for (const k of EDGE_KEYS) {
     document.getElementById(k).addEventListener('input', (e) => {
       state.edge[k] = parseFloat(e.target.value);
-      document.getElementById(k + 'Out').textContent = e.target.value;
+      document.getElementById(k + 'Out').textContent = formatEdgeValue(k, state.edge[k]);
       render();
       scheduleSave();
     });
@@ -831,10 +802,18 @@
   // GPU/browser clamps that well below MAX_TEXTURE_SIZE; an offscreen FBO
   // is not -- see the task report for how that was found and confirmed).
   async function exportImage(opts) {
-    state.format = opts.format;
-    state.quality = opts.quality;
-    state.padToSensorSquare = opts.padToSensorSquare;
-    const g = GL.exportGeometry(state);
+    clearMessages();
+    // Deliberately does not write opts back into `state`: this used to mean
+    // a bare `App.exportImage({...})` call from outside the Export button's
+    // own handler mutated persisted state as a side effect of just
+    // rendering a file. `exportState` is a throwaway shallow copy carrying
+    // this export's own format/quality/padToSensorSquare, used for every
+    // geometry/render call below instead of `state` itself; the on-screen
+    // controls (and their persisted values) are untouched.
+    const exportState = Object.assign({}, state, {
+      format: opts.format, quality: opts.quality, padToSensorSquare: opts.padToSensorSquare,
+    });
+    const g = GL.exportGeometry(exportState);
     const gl = ctx.gl;
     let target = null;
     try {
@@ -845,6 +824,20 @@
           'or export one lens at a time.');
         return;
       }
+      // The 2D canvas's own (browser-specific, but generous) area limit is
+      // distinct from the WebGL drawing-buffer clamp checked above; checked
+      // here, *before* the full-resolution render below, so a browser that
+      // would silently shrink the canvas is caught before spending time on
+      // a render whose result can't be read back anyway.
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = g.width;
+      outCanvas.height = g.height;
+      if (outCanvas.width !== g.width || outCanvas.height !== g.height) {
+        fail(`This browser's 2D canvas cannot hold a ${g.width}x${g.height} image ` +
+          `(it gave ${outCanvas.width}x${outCanvas.height} instead). Try a smaller FOV, ` +
+          'remove padding, or export one lens at a time.');
+        return;
+      }
       target = GL.makeExportTarget(gl, g.width, g.height);
       if (!target.complete) {
         fail(`This GPU could not allocate a ${g.width}x${g.height} render target ` +
@@ -852,21 +845,8 @@
           'or export one lens at a time.');
         return;
       }
-      GL.renderComposition(ctx, state, g.width, g.height, target.fbo);
+      GL.renderComposition(ctx, exportState, g.width, g.height, target.fbo);
 
-      const outCanvas = document.createElement('canvas');
-      outCanvas.width = g.width;
-      outCanvas.height = g.height;
-      // A 2D canvas has its own (browser-specific, but generous) area
-      // limit, distinct from the WebGL drawing-buffer clamp this replaces;
-      // if it silently shrank the request the same way, that would show up
-      // here exactly as it did on the WebGL canvas.
-      if (outCanvas.width !== g.width || outCanvas.height !== g.height) {
-        fail(`This browser's 2D canvas cannot hold a ${g.width}x${g.height} image ` +
-          `(it gave ${outCanvas.width}x${outCanvas.height} instead). Try a smaller FOV, ` +
-          'remove padding, or export one lens at a time.');
-        return;
-      }
       const c2d = outCanvas.getContext('2d');
       GL.readCompositionStrips(gl, target.fbo, g.width, g.height, EXPORT_STRIP_ROWS,
         (rowsRGBA, outY, rows) => {
@@ -882,8 +862,11 @@
         );
       });
       const bytes = new Uint8Array(await blob.arrayBuffer());
+      // PNG carries no EXIF -- Exif.reattach only applies to the JPEG
+      // container, so a PNG export has no capture time or camera embedded
+      // (see README's Output section).
       const out = opts.format === 'jpeg' ? Exif.reattach(bytes, state.sourceExif) : bytes;
-      const label = state.sensors === 'both' ? (state.swap ? 'BA' : 'AB') : state.sensors;
+      const label = GL.exportLabel(state);
       download(new Blob([out], { type: blob.type }),
         Lens.exportFilename(state.sourceName, label, state.fovDeg,
           opts.format === 'png' ? 'png' : 'jpg'));
@@ -913,6 +896,13 @@
   loadSettings();
 
   dropEl.addEventListener('click', () => fileEl.click());
+  // #drop is hidden the moment a file loads (both load paths), so it was
+  // the *only* way to click for a file picker -- after the first load, drag
+  // and drop still worked but there was no other affordance to open a
+  // different file, contradicting README's "or click to choose one". This
+  // button stays visible in the panel regardless of whether a file is
+  // loaded.
+  openBtnEl.addEventListener('click', () => fileEl.click());
   fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));
   document.addEventListener('dragover', (e) => { e.preventDefault(); });
   document.addEventListener('drop', (e) => {

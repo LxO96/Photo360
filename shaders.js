@@ -273,8 +273,7 @@
     float bin = floor(gl_FragCoord.x);
     vec4 acc = vec4(0.0);
     float wsum = 0.0;
-    for (int k = -maxRadius; k <= maxRadius; k++) {
-      if (k < -radius || k > radius) continue;
+    for (int k = -radius; k <= radius; k++) {
       float w = exp(-float(k * k) / (2.0 * uSpreadBins * uSpreadBins));
       int j = int(mod(bin + float(k) + uBins, uBins));
       acc += texelFetch(uProfile, ivec2(j, 0), 0) * w;

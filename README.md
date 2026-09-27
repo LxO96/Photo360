@@ -86,8 +86,9 @@ needed for the rim glow."
 
 ### Level
 
-- **Show horizon guides** — overlays a horizon/vertical reference on the
-  preview; has no effect on the export.
+- **Show horizon guides** — overlays a crop-edge circle, an axis-aligned
+  thirds grid, and a horizon line on the preview; has no effect on the
+  export.
 - **Camera roll** — rotates the whole composition to correct a tilted
   horizon. The two lenses are back-to-back with their azimuths running in
   opposite directions, so a single roll value is applied with opposite sign
@@ -101,9 +102,13 @@ needed for the rim glow."
 ### Edge
 
 Controls the synthesized rim glow — the part standing in for what the
-sensor crops away. All seven together are the `x1classic` preset (see "The
-edge preset" below for where its numbers came from); **Reset to X1
-classic** restores the shipped values if you've been experimenting.
+sensor crops away. These seven sliders are seven of the *twelve* parameters
+that make up the `x1classic` preset (see "The edge preset" below for where
+its numbers came from) — the other five (`highlightExponent`, `hazeWidth`,
+`hazeStrength`, `terminatorDesaturate`, `terminatorCoolShift`) have no
+slider and sit fixed at the preset's own values in `edge.js`'s `PRESETS`
+table. **Reset to X1 classic** restores the shipped values of the seven
+sliders shown here if you've been experimenting.
 
 - **Intensity** — overall strength of the rim effect.
 - **Ring width** — how narrow or broad the colored fringe ring is.
@@ -154,7 +159,10 @@ to neutral (no change).
 ### Output
 
 - **Format** — JPEG or PNG (PNG is lossless; JPEG carries a **quality**
-  slider, 60–100).
+  slider, 60–100). Only the JPEG export carries the source file's EXIF
+  (capture time, camera model) forward into the output — a PNG export has
+  none, since `Exif.reattach` only knows how to splice APP1 metadata into a
+  JPEG container.
 - **Pad to sensor square** — see "Export sizing" below.
 - **Export** — renders at full resolution to an offscreen buffer (so the
   on-screen preview is never touched) and downloads the result. The
@@ -305,8 +313,11 @@ across all five fits neither well. Do not treat `Flat.jpg` as ground truth
 for this preset.
 
 **Known limitation: the rendered ring reads less saturated than the
-references.** Two of the twelve fitted parameters, `dispersion` and
-`ringWidth`, are only weakly constrained by the fit — the fit's objective
+references.** Two of the twelve parameters that make up the preset,
+`dispersion` and `ringWidth`, are only weakly constrained by the fit
+(neither is actually *fitted* — see the per-parameter verdicts in `edge.js`
+above `PRESETS`: `dispersion` is measured directly, and `ringWidth` is set
+from it by a fixed ratio, not optimised) — the fit's objective
 is luminance-dominated and is nearly blind to a thin chromatic ring (pinning
 either parameter to either end of its slider moves the fit's objective by
 under 0.0004). Both are set from a direct chromatic measurement of the
@@ -333,7 +344,7 @@ comment above `PRESETS` in `edge.js`, and reproduced in detail by running
 npm test
 ```
 
-runs the whole suite (`node test/run.js`, currently 148 assertions) headlessly
+runs the whole suite (`node test/run.js`) headlessly
 in Node — no browser needed for this. It covers the lens math, edge/rim
 math, EXIF and DNG header parsing, roll/nudge geometry, settings persistence,
 and a JS/GLSL parity fixture for the rim-profile shaders.

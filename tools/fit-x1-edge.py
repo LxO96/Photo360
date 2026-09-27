@@ -201,8 +201,20 @@ RING_WIDTH_OVER_DISPERSION = 2.0
 # carry the scale.
 HAZE_STRENGTH_FIXED = 1.0
 
-# Slider ranges from index.html / app.js. A fitted value is reported, never
-# silently clamped, if it lands on one of these.
+# Final whole-branch review, Important finding #4: this table used to claim
+# ("Slider ranges from index.html / app.js") a provenance that was only ever
+# true for the seven keys that *have* a slider -- highlightExponent,
+# hazeWidth and hazeStrength have no UI control at all (see settings.js's own
+# RANGES comment), and this table's values for those three, plus a rounding
+# difference on the rest, had silently drifted from settings.js's
+# Settings.RANGES, the actual single source of truth for every key's valid
+# domain (test/slider-ranges.test.js now cross-checks RANGES against
+# index.html's sliders directly, so the two can't drift again for the seven
+# that have one). Copied by hand from Settings.RANGES rather than shared at
+# build time (no build step, and this is Python, not JS) -- if the two
+# disagree again, trust settings.js and update this table, not the other way
+# around. A fitted value is reported, never silently clamped, if it lands on
+# one of these.
 SLIDER_RANGE = {
     'falloffStart': (0.6, 0.99),
     'falloffSoftness': (0.3, 4.0),
@@ -211,9 +223,9 @@ SLIDER_RANGE = {
     'dispersion': (0.0, 0.05),
     'glowSpreadDeg': (0.0, 45.0),
     'highlightKnee': (0.0, 1.0),
-    'highlightExponent': (0.5, 4.0),
-    'hazeWidth': (0.005, 0.25),
-    'hazeStrength': (0.0, 2.0),
+    'highlightExponent': (0.5, 8.0),
+    'hazeWidth': (0.0, 0.3),
+    'hazeStrength': (0.0, 4.0),
     'terminatorDesaturate': (0.0, 1.0),
     'terminatorCoolShift': (0.0, 1.0),
 }

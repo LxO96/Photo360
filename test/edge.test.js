@@ -211,6 +211,31 @@ const COMPOSITE_LUMA = { r: 0.2126, g: 0.7152, b: 0.0722 };
 const COMPOSITE_COOL = { r: 0.82, g: 0.92, b: 1.12 };
 const CHANNELS = ['r', 'g', 'b'];
 
+// Final whole-branch review, Important finding #5: COMPOSITE_LUMA/
+// COMPOSITE_COOL and modelBand's desaturate-then-cool-then-terminator
+// ordering above are a hand re-transcription of shaders.js's COMPOSITE_FS,
+// not a shared source -- a shader edit to COOL, the ordering, or the u<1.0
+// gate could leave all four preset-quality tests below passing against a
+// stale transcription. The same source-grep trick test/edge.test.js already
+// uses for gl.js/Edge.MAX_BLUR_RADIUS_BINS (see the test above this file's
+// Task 9 section) applied to the actual GLSL string, so a shader change
+// that isn't mirrored here fails loudly instead of silently.
+test('the COMPOSITE_FS shader source still matches this test\'s transcription of it', () => {
+  const Shaders = require('../shaders.js');
+  const src = Shaders.COMPOSITE_FS;
+  assert.ok(src.includes('const vec3 COOL = vec3(0.82, 0.92, 1.12)'),
+    'COMPOSITE_FS\'s COOL constant no longer matches COMPOSITE_COOL above -- update both');
+  assert.ok(
+    src.includes('img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);') &&
+    src.includes('img = mix(img, img * COOL, fade * uTerminatorCoolShift);') &&
+    src.includes('img *= term;'),
+    'COMPOSITE_FS\'s desaturate -> cool-shift -> terminator ordering changed -- ' +
+    'modelBand above must be updated to match');
+  assert.ok(src.includes('if (u < 1.0) {'),
+    'COMPOSITE_FS\'s hard u < 1.0 gate on the image term changed -- modelBand\'s ' +
+    '`u >= 1 ? 0 : ...` must be updated to match');
+});
+
 function modelBand(preset, rho, circle, band) {
   const base = circle[band + 'Base'];
   const slope = circle[band + 'BaseSlope'];

@@ -169,3 +169,22 @@ test('readCompositionStrips binds the given fbo and restores the default framebu
   assert.strictEqual(seen[0], 'my-fbo');
   assert.strictEqual(seen[seen.length - 1], null);
 });
+
+// Final whole-branch review, Important finding #3: the export filename
+// label used to be computed as `state.sensors === 'both' ? ... : sensors`,
+// ignoring `swap` for a single-lens export -- with sensors:'A' and
+// swap:true, circleDraw draws the *physical* B lens into slot A, but the
+// file was named "..._A_...", the same slot-vs-physical bug this project
+// fixed elsewhere via GL.physicalLens. GL.exportLabel is the extracted,
+// testable fix.
+test('exportLabel names the physical lens actually drawn, not the slot, when swapped', () => {
+  assert.strictEqual(GL.exportLabel({ sensors: 'A', swap: false }), 'A');
+  assert.strictEqual(GL.exportLabel({ sensors: 'A', swap: true }), 'B');
+  assert.strictEqual(GL.exportLabel({ sensors: 'B', swap: false }), 'B');
+  assert.strictEqual(GL.exportLabel({ sensors: 'B', swap: true }), 'A');
+});
+
+test('exportLabel for both sensors reflects swap as AB/BA, independent of physicalLens', () => {
+  assert.strictEqual(GL.exportLabel({ sensors: 'both', swap: false }), 'AB');
+  assert.strictEqual(GL.exportLabel({ sensors: 'both', swap: true }), 'BA');
+});
