@@ -14,7 +14,7 @@ classic circular "fisheye look," not a stitched sphere), two things stand in
 your way:
 
 1. **Each lens sees more than a hemisphere.** The X5's lens covers roughly
-   210° and the ONE X's roughly 225°, not the 180° a single fisheye
+   210° and the ONE X's roughly 190°, not the 180° a single fisheye
    photograph should show. The extra angle beyond 180° is the same real-world
    wedge the *other* lens also captured, so cropping to exactly 180° removes
    duplicated content, not real information.
@@ -213,11 +213,23 @@ in `lens.js`).
   two lenses' overlap annuli — the region both lenses photograph — across
   three X5 test files, which agreed with each other at 104–107°. Treated
   as a confident, corroborated figure.
-- **Insta360 ONE X: 112.5°, provisional** (i.e. a ~225° lens). Measured the
-  same way, but from a **single** usable reference file — the other ONE X
-  file's image circle is clipped by its own frame, so there was nothing to
-  corroborate it against. The UI marks this as provisional whenever it
-  applies, rather than presenting it as settled fact.
+- **Insta360 ONE X: 95°, user-reported** (i.e. a ~190° lens, with very little
+  overlap between the two lenses). The ONE X writes `Insta360 One2` as its
+  EXIF model. This replaces an earlier provisional 112.5°, measured from a
+  single reference file at weak correlation. It is not a measurement, and
+  the UI says so.
+
+Other Insta360 bodies (ONE X2, X3, X4) are not listed: their exact EXIF
+model strings haven't been confirmed from real files, and a guessed string
+would either never match or silently apply the wrong lens. They fall back to
+the X5 figure, marked as a default.
+
+The note under the Calibration slider names the camera, its full field of
+view and where the number comes from, for example "X5 · 210° full ·
+measured" or "ONE X · 190° full · user-reported". The **Field of view**
+slider runs from 120° up to the lens's whole image circle (twice the
+calibration), so moving the Calibration slider moves its maximum and clamps
+the FOV into it.
 
 The camera is identified from the file's EXIF model tag when present. A
 stacked 1:2 file with **no** EXIF at all (which does happen — one of this

@@ -201,7 +201,7 @@ test('dragSign: slot B, swap on -> physical A, sign +1', () => {
 
 test('an out-of-range finite number clamps into its RANGES domain instead of passing through', () => {
   const out = Settings.sanitize(DEFAULTS, { fovDeg: 99999, gapFrac: 5, rollDeg: 1e12 });
-  assert.strictEqual(out.fovDeg, 210);
+  assert.strictEqual(out.fovDeg, 300);  // RANGES.fovDeg is the superset over every calibration (Task 19)
   assert.strictEqual(out.gapFrac, 0.25);
   assert.strictEqual(out.rollDeg, 180);
 });

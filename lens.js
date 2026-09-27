@@ -81,14 +81,26 @@
     return { kind: 'unsupported', lensSize: 0, lenses: [], arrangement: null };
   }
 
-  // theta-max per camera body, measured by correlating the two lenses' overlap
-  // annuli. The X5 figure is corroborated by three files agreeing at
-  // 104-107 degrees; the ONE X figure comes from a single usable reference
-  // (peak correlation 0.60), so it is applied but flagged unconfident.
+  // theta-max per camera body, keyed by the exact EXIF Model string, with
+  // where the number comes from (`source`, shown in the UI) and a short
+  // display name (`label`).
+  //   X5: measured by correlating the two lenses' overlap annuli, three
+  //     files agreeing at 104-107 degrees -- confident.
+  //   ONE X (its EXIF model is 'Insta360 One2', as its DNGs and the
+  //     reference JPEGs are tagged): 95 degrees, i.e. about 190 full, as
+  //     reported by the user (Task 19) -- "roughly 190 with very little
+  //     overlap". It replaces the provisional 112.5 an earlier task
+  //     measured from a single reference at weak correlation (0.60). Not
+  //     measured here, so not flagged confident.
+  // ONE X2/X3/X4 are deliberately absent: their photo EXIF model strings
+  // could not be confirmed from real files, and a guessed key would either
+  // never match or silently mis-calibrate (see the Task 19 report).
   const CALIBRATIONS = {
-    'Insta360 X5': { thetaMaxDeg: 105, confident: true },
-    'Insta360 One2': { thetaMaxDeg: 112.5, confident: false },
+    'Insta360 X5': { thetaMaxDeg: 105, confident: true, source: 'measured', label: 'X5' },
+    'Insta360 One2': { thetaMaxDeg: 95, confident: false, source: 'user-reported', label: 'ONE X' },
   };
+  const GUESS_SOURCE = 'guessed from stacked layout';
+  const DEFAULT_SOURCE = 'X5 default, unverified';
 
   // `arrangement` (from Lens.detectLayout) lets the fallback for a file with
   // no usable EXIF model do better than always assuming the X5: a stacked
@@ -104,12 +116,40 @@
   function calibrationFor(model, arrangement) {
     const key = (model || '').replace(/\0+$/, '').trim();
     const hit = CALIBRATIONS[key];
-    if (hit) return { thetaMaxDeg: hit.thetaMaxDeg, model: key, confident: hit.confident };
+    if (hit) {
+      return {
+        thetaMaxDeg: hit.thetaMaxDeg, model: key, confident: hit.confident,
+        source: hit.source, label: hit.label,
+      };
+    }
     if (!key && arrangement === 'stacked') {
       const guess = CALIBRATIONS['Insta360 One2'];
-      return { thetaMaxDeg: guess.thetaMaxDeg, model: key, confident: false };
+      return {
+        thetaMaxDeg: guess.thetaMaxDeg, model: key, confident: false,
+        source: GUESS_SOURCE, label: '',
+      };
     }
-    return { thetaMaxDeg: THETA_MAX_DEG, model: key, confident: false };
+    return { thetaMaxDeg: THETA_MAX_DEG, model: key, confident: false, source: DEFAULT_SOURCE, label: '' };
+  }
+
+  // The Field of view slider's range for a given calibration (Task 19):
+  // from 120 up to the lens's whole image circle, 2 x theta-max -- past
+  // that there is no image to crop. Never inverted.
+  const FOV_MIN_DEG = 120;
+  function fovRangeFor(thetaMaxDeg) {
+    return [FOV_MIN_DEG, Math.max(FOV_MIN_DEG, 2 * thetaMaxDeg)];
+  }
+
+  const fmtDeg = (v) => String(Math.round(v * 10) / 10);
+
+  // The compact Framing-panel note: "X5 · 210° full · measured". `cal` is a
+  // calibrationFor result; `thetaMaxDeg` the value actually in effect, which
+  // the Calibration slider may have moved off the model's own figure.
+  function calibrationNote(cal, thetaMaxDeg) {
+    const name = cal.label || cal.model || 'Camera not identified';
+    let note = `${name} · ${fmtDeg(2 * cal.thetaMaxDeg)}° full · ${cal.source}`;
+    if (Math.abs(thetaMaxDeg - cal.thetaMaxDeg) > 1e-9) note += ` · set to ${fmtDeg(2 * thetaMaxDeg)}°`;
+    return note;
   }
 
   function exportLayout(opts) {
@@ -156,6 +196,6 @@
 
   return {
     THETA_MAX_DEG, radiusForFov, fovForRadius, coverage, detectLayout, exportLayout,
-    exportFilename, rollFor, CALIBRATIONS, calibrationFor,
+    exportFilename, rollFor, CALIBRATIONS, calibrationFor, fovRangeFor, calibrationNote,
   };
 });

@@ -165,32 +165,30 @@
   function warn(msg) { warningEl.textContent = msg; errorEl.textContent = ''; }
   function clearMessages() { errorEl.textContent = ''; warningEl.textContent = ''; }
 
-  // Shows the camera and calibration the current file loaded with, right by
-  // the FOV readout. A provisional calibration (confident: false) must never
-  // read as measured fact -- see Lens.CALIBRATIONS' comment for why the ONE
-  // X figure is a single-file estimate. The advanced thetaMax slider stays
-  // visible regardless, so a provisional number can always be corrected by
-  // eye.
+  // Task 19: the compact note under the Calibration slider -- the camera,
+  // its full FOV and where that number comes from ("X5 · 210° full ·
+  // measured", "ONE X · 190° full · user-reported"), plus the value
+  // actually in effect if the Calibration slider has been moved off it.
+  // Lens.calibrationNote builds the text; a guessed or default calibration
+  // says so in its source rather than reading as measured fact.
   function updateCalibrationReadout() {
     const c = state.calibration;
-    if (!c) { calibrationEl.textContent = ''; return; }
-    const fullFov = c.thetaMaxDeg * 2;
-    if (c.confident) {
-      calibrationEl.textContent = `${c.model} — ${fullFov.toFixed(1)}° lens (measured calibration).`;
-    } else if (c.model) {
-      calibrationEl.textContent =
-        `${c.model} — ${fullFov.toFixed(1)}° lens ` +
-        '(provisional calibration; adjust the slider below if the 180° crop looks wrong).';
-    } else if (state.calibrationGuessedFromShape) {
-      calibrationEl.textContent =
-        `Camera not identified — guessing a ${fullFov.toFixed(1)}° lens from the stacked 1:2 ` +
-        'layout (this shape is never written by the X5; adjust the slider below if the 180° ' +
-        'crop looks wrong).';
-    } else {
-      calibrationEl.textContent =
-        `Unknown camera — using the default ${fullFov.toFixed(1)}° lens ` +
-        '(provisional calibration; adjust the slider below if the 180° crop looks wrong).';
-    }
+    calibrationEl.textContent = c ? Lens.calibrationNote(c, state.thetaMaxDeg) : '';
+  }
+
+  // Task 19: the Field of view slider runs from 120 to the lens's whole
+  // image circle, 2 x the current theta-max (Lens.fovRangeFor). Moving the
+  // Calibration slider, loading a file or restoring settings moves the max
+  // and clamps the FOV into it; the typed readout clamps through the same
+  // range. Settings.RANGES.fovDeg stays the superset used for persistence.
+  function syncFovRange() {
+    const d = NUM.fov;
+    const r = Lens.fovRangeFor(state.thetaMaxDeg);
+    d.range = r;
+    d.slider.min = r[0];
+    d.slider.max = r[1];
+    state.fovDeg = Math.min(r[1], Math.max(r[0], state.fovDeg));
+    reflectNum(d, true);
   }
 
   // Shows/hides the White balance panel -- it only makes sense for a raw
@@ -340,6 +338,7 @@
 
     dropEl.classList.add('hidden');
     reflectNum(NUM.thetaMax, true);
+    syncFovRange();
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
     swapEl.checked = state.swap;
@@ -825,7 +824,8 @@
 
   defNum('fov', { get: () => state.fovDeg, set: (v) => { state.fovDeg = v; },
     range: Settings.RANGES.fovDeg, fmt: fmtDeg });
-  defNum('thetaMax', { get: () => state.thetaMaxDeg, set: (v) => { state.thetaMaxDeg = v; },
+  defNum('thetaMax', { get: () => state.thetaMaxDeg,
+    set: (v) => { state.thetaMaxDeg = v; syncFovRange(); updateCalibrationReadout(); },
     range: Settings.RANGES.thetaMaxDeg, fmt: fmtDeg });
   defNum('gap', { get: () => state.gapFrac, set: (v) => { state.gapFrac = v; },
     range: Settings.RANGES.gapFrac, scale: 100, fmt: fmtPct });
@@ -956,6 +956,7 @@
     orientationEl.value = state.orientation;
     swapEl.checked = state.swap;
     for (const d of Object.values(NUM)) if (!d.apply) reflectNum(d, true);
+    syncFovRange();
     // syncWbControls is a hoisted function declaration -- reflects whatever
     // rawWb/rawWbLinked Settings.load just restored, even though the panel
     // itself stays hidden until a raw file is loaded.

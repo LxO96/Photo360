@@ -33,7 +33,9 @@ function sliderRange(id) {
 // `scale` converts the slider's own units (e.g. gap/margin sliders are 0-25,
 // meaning percent) into the fractional units RANGES stores.
 const SLIDER_TO_RANGE = {
-  fov: [Settings.RANGES.fovDeg, 1],
+  // fov is deliberately absent (Task 19): its max is dynamic, 2 x the
+  // current Calibration (theta-max), set by app.js -- see the dedicated
+  // tests at the bottom of this file.
   thetaMax: [Settings.RANGES.thetaMaxDeg, 1],
   roll: [Settings.RANGES.rollDeg, 1],
   nudgeA: [Settings.RANGES.nudgeDeg.A, 1],
@@ -72,3 +74,29 @@ for (const [id, [range, scale]] of Object.entries(SLIDER_TO_RANGE)) {
       `#${id} max=${max} (=${max / scale} after scale) does not match RANGES ${range[1]}`);
   });
 }
+
+// Task 19: the FOV slider's max follows the Calibration slider (2 x
+// theta-max, Lens.fovRangeFor), so neither its static HTML max nor
+// Settings.RANGES.fovDeg can be "the" range any more. What must hold:
+//   - RANGES.fovDeg is a superset of every range fovRangeFor can produce
+//     over the whole Calibration range, so a stored fovDeg that was valid
+//     under some calibration is never clamped by persistence validation
+//     (the app clamps it to the current calibration itself);
+//   - the static HTML max is what app.js would set for the default
+//     calibration (2 x Lens.THETA_MAX_DEG = 210), so the slider does not
+//     jump before app.js runs, and its min is fovRangeFor's fixed 120.
+const Lens = require('../lens.js');
+
+test('Settings.RANGES.fovDeg covers the FOV range at every calibration', () => {
+  const [tLo, tHi] = Settings.RANGES.thetaMaxDeg;
+  for (let t = tLo; t <= tHi; t += 0.5) {
+    const [lo, hi] = Lens.fovRangeFor(t);
+    assert.ok(lo >= Settings.RANGES.fovDeg[0] && hi <= Settings.RANGES.fovDeg[1], `theta-max ${t}`);
+  }
+  assert.strictEqual(Settings.RANGES.fovDeg[1], 2 * tHi, 'no wider than the widest calibration needs');
+});
+
+test("index.html's #fov slider is the default calibration's FOV range", () => {
+  assert.deepStrictEqual(sliderRange('fov'), Lens.fovRangeFor(Lens.THETA_MAX_DEG));
+  assert.deepStrictEqual(sliderRange('fov'), [120, 210]);
+});

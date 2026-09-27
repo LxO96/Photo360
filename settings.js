@@ -49,7 +49,7 @@
   // Keep these in sync with the matching <input min max> in index.html --
   // there is no shared source at build time (no build step), so a slider's
   // range and this table are two places that must agree by hand:
-  //   fovDeg 120..210, rollDeg -180..180, nudgeDeg.A/B -10..10,
+  //   fovDeg 120..300 (a superset; the slider's own max is dynamic), rollDeg -180..180, nudgeDeg.A/B -10..10,
   //   gapFrac/marginFrac 0..0.25 (the 0-25% sliders), edge.edgeIntensity
   //   0..4, edge.ringWidth 0.002..0.06, edge.dispersion 0..0.05,
   //   edge.glowSpreadDeg 0..45, edge.highlightKnee 0..1,
@@ -63,7 +63,10 @@
   // UI would never let a person reach, without pretending to know a tighter
   // "correct" range than the preset-fitting task established.
   const RANGES = {
-    fovDeg: [120, 210],
+    // Task 19: the FOV slider's max is 2 x the current theta-max (set by
+    // app.js via Lens.fovRangeFor), so this is the superset over the whole
+    // thetaMaxDeg range below -- test/slider-ranges.test.js holds it there.
+    fovDeg: [120, 300],
     thetaMaxDeg: [60, 150],
     rollDeg: [-180, 180],
     nudgeDeg: { A: [-10, 10], B: [-10, 10] },

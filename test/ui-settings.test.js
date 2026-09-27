@@ -53,7 +53,10 @@ test('parseReadout parses plain numbers, units, signs and decimal commas', () =>
 });
 
 test('parseReadout clamps through the given RANGES entry', () => {
-  assert.strictEqual(Settings.parseReadout('999', Settings.RANGES.fovDeg, 1), 210);
+  assert.strictEqual(Settings.parseReadout('999', Settings.RANGES.fovDeg, 1), 300);
+  // The FOV readout itself clamps through the current calibration's range
+  // (Task 19): 2 x theta-max, e.g. 190 for the ONE X.
+  assert.strictEqual(Settings.parseReadout('999', require('../lens.js').fovRangeFor(95), 1), 190);
   assert.strictEqual(Settings.parseReadout('-5', Settings.RANGES.fovDeg, 1), 120);
   assert.strictEqual(Settings.parseReadout('20000', Settings.RANGES.rawWb.A.kelvin, 1), 12000);
   assert.strictEqual(Settings.parseReadout('-400', Settings.RANGES.rawWb.A.tint, 1), -150);

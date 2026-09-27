@@ -222,12 +222,28 @@ test('the X5 calibration is the measured 105 degrees', () => {
   const c = Lens.calibrationFor('Insta360 X5');
   assert.strictEqual(c.thetaMaxDeg, 105);
   assert.strictEqual(c.confident, true);
+  assert.strictEqual(c.source, 'measured');
 });
 
-test('the ONE X calibration is applied but flagged as provisional', () => {
+test('the ONE X calibration is the user-reported 95 degrees (190 full), not measured', () => {
   const c = Lens.calibrationFor('Insta360 One2');
-  assert.strictEqual(c.thetaMaxDeg, 112.5);
+  assert.strictEqual(c.thetaMaxDeg, 95);
   assert.strictEqual(c.confident, false);
+  assert.strictEqual(c.source, 'user-reported');
+});
+
+test('every calibration names its source', () => {
+  for (const [model, cal] of Object.entries(Lens.CALIBRATIONS)) {
+    assert.ok(typeof cal.source === 'string' && cal.source.length > 0, model);
+    assert.ok(typeof cal.label === 'string' && cal.label.length > 0, model);
+  }
+});
+
+test('no camera model strings are invented: only the two seen in real files', () => {
+  // X5 (the .insp test files) and One2 (the ONE X DNGs and reference
+  // JPEGs). ONE X2/X3/X4 are deliberately absent until their exact EXIF
+  // model strings are confirmed from real files -- see the Task 19 report.
+  assert.deepStrictEqual(Object.keys(Lens.CALIBRATIONS).sort(), ['Insta360 One2', 'Insta360 X5']);
 });
 
 test('an unknown camera falls back to the X5 default, unconfidently', () => {
@@ -244,8 +260,8 @@ test('the two calibrations put 180 degrees at different crop radii', () => {
   const x5 = Lens.radiusForFov(180, Lens.calibrationFor('Insta360 X5').thetaMaxDeg);
   const one = Lens.radiusForFov(180, Lens.calibrationFor('Insta360 One2').thetaMaxDeg);
   assert.ok(Math.abs(x5 - 90 / 105) < 1e-9);
-  assert.ok(Math.abs(one - 0.8) < 1e-9);
-  assert.ok(one < x5, 'the wider ONE X lens must crop deeper for the same FOV');
+  assert.ok(Math.abs(one - 90 / 95) < 1e-9, 'ONE X 180 degrees is 0.947 R');
+  assert.ok(one > x5, 'the narrower (190 degree) ONE X lens crops closer to its rim than the X5');
 });
 
 test('an unrecognized model in a stacked file still gets the plain X5 default', () => {
@@ -259,7 +275,8 @@ test('an unrecognized model in a stacked file still gets the plain X5 default', 
 
 test('an unknown model in a stacked file infers the ONE X calibration', () => {
   const c = Lens.calibrationFor(null, 'stacked');
-  assert.strictEqual(c.thetaMaxDeg, 112.5);
+  assert.strictEqual(c.thetaMaxDeg, 95);
+  assert.strictEqual(c.source, 'guessed from stacked layout');
   assert.strictEqual(c.confident, false);
 });
 
@@ -279,7 +296,7 @@ test('a known model overrides the layout inference in a stacked file', () => {
 
 test('a known model overrides the layout inference in a side-by-side file', () => {
   const c = Lens.calibrationFor('Insta360 One2', 'side');
-  assert.strictEqual(c.thetaMaxDeg, 112.5);
+  assert.strictEqual(c.thetaMaxDeg, 95);
   assert.strictEqual(c.confident, false);
 });
 
@@ -292,4 +309,31 @@ test('filenames record the source, lens and FOV', () => {
     Lens.exportFilename('IMG_20260511_094146_00_004.insp', 'AB', 177.5, 'png'),
     'IMG_20260511_094146_00_004_AB_177-5deg.png'
   );
+});
+
+// -- Task 19: FOV slider per camera model ---------------------------------
+
+test('fovRangeFor: the FOV slider runs from 120 to twice theta-max', () => {
+  assert.deepStrictEqual(Lens.fovRangeFor(105), [120, 210]);
+  assert.deepStrictEqual(Lens.fovRangeFor(95), [120, 190]);
+  // Never an inverted range, even for a calibration narrower than 120 full.
+  assert.deepStrictEqual(Lens.fovRangeFor(55), [120, 120]);
+});
+
+test('calibrationNote: model, full FOV and source', () => {
+  assert.strictEqual(Lens.calibrationNote(Lens.calibrationFor('Insta360 X5'), 105),
+    'X5 · 210° full · measured');
+  assert.strictEqual(Lens.calibrationNote(Lens.calibrationFor('Insta360 One2'), 95),
+    'ONE X · 190° full · user-reported');
+  assert.strictEqual(Lens.calibrationNote(Lens.calibrationFor(null, 'stacked'), 95),
+    'Camera not identified · 190° full · guessed from stacked layout');
+  assert.strictEqual(Lens.calibrationNote(Lens.calibrationFor('Some Camera'), 105),
+    'Some Camera · 210° full · X5 default, unverified');
+  assert.strictEqual(Lens.calibrationNote(Lens.calibrationFor(''), 105),
+    'Camera not identified · 210° full · X5 default, unverified');
+});
+
+test('calibrationNote says so when the Calibration slider has moved off the model value', () => {
+  assert.strictEqual(Lens.calibrationNote(Lens.calibrationFor('Insta360 One2'), 97.5),
+    'ONE X · 190° full · user-reported · set to 195°');
 });
