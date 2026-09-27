@@ -316,9 +316,17 @@
   // still the single render path for both preview and export -- export just
   // supplies a different destination framebuffer, not a second
   // implementation of any of the logic below.
-  function renderComposition(ctx, state, targetW, targetH, targetFbo) {
+  //
+  // `place` (Task 19, preview only) is optional too: a rect {x, y, w, h}, in
+  // top-left-origin target pixels, to lay the whole composition out in
+  // instead of fitting it to the target. The on-screen preview passes it
+  // when zoomed, so the canvas only covers the visible region and the
+  // composition is drawn offset into it at true resolution; each circle's
+  // viewport is then clipped to the target (see cellViewport). Export never
+  // passes it, so its geometry and viewports are exactly what they were.
+  function renderComposition(ctx, state, targetW, targetH, targetFbo, place) {
     const gl = ctx.gl;
-    const layout = compositionLayout(state, targetW, targetH);
+    const layout = placedLayout(state, targetW, targetH, place);
     const compositeProgram = state.isRaw ? ctx.compositeRaw : ctx.composite;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
     gl.bindVertexArray(ctx.vao);
@@ -331,6 +339,8 @@
     for (const c of layout.circles) {
       const draw = circleDraw(state, c.lens);
       if (!ctx.textures[draw.texIndex]) continue;
+      const cv = cellViewport(c, targetW, targetH, !!place);
+      if (!cv.viewport) continue;   // zoomed preview: this circle is off screen
       const physical = physicalLens(state, c.lens);
       const rollRad = draw.rollDeg * Math.PI / 180;
       // buildProfile renders into ctx's own bins x 1 framebuffer (its own
@@ -341,11 +351,7 @@
       // export -- has to be re-bound afterward, every time round this loop.
       const profileTex = buildProfile(ctx, state, draw.texIndex, rollRad, physical);
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
-      // Cell reaches diameter * (1 + 2*GLOW_HEADROOM) so a later task's rim
-      // glow, which extends past the crop edge, has room to render.
-      const cell = Math.round(c.radius * 2 * (1 + 2 * GLOW_HEADROOM));
-      const vx = Math.round(c.cx - cell / 2);
-      const vy = Math.round(targetH - c.cy - cell / 2);
+      const { cell, vx, vy } = cv;
       gl.bindVertexArray(ctx.vao);
       gl.useProgram(compositeProgram);
       // buildProfile disables blending for its own passes; the composite
@@ -353,7 +359,7 @@
       // clobber each other's background-filled corners).
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
-      gl.viewport(vx, vy, cell, cell);
+      gl.viewport(cv.viewport[0], cv.viewport[1], cv.viewport[2], cv.viewport[3]);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, ctx.textures[draw.texIndex]);
       gl.activeTexture(gl.TEXTURE1);
@@ -362,9 +368,10 @@
       gl.uniform1i(u('uLens'), 0);
       if (state.isRaw) setRawUniforms(gl, compositeProgram, ctx, draw.texIndex, state, physical);
       // gl_FragCoord is in absolute framebuffer pixels (see shaders.js), so
-      // the shader needs this cell's viewport origin to recover local
-      // center-relative coordinates. Use the same rounded values as the
-      // viewport call so the uniform and the actual raster agree.
+      // the shader needs this cell's origin to recover local
+      // center-relative coordinates. These are the whole (unclipped) cell's
+      // rounded values from cellViewport, the same ones an unclipped
+      // viewport uses, so the uniform and the raster agree either way.
       gl.uniform2f(u('uCellOrigin'), vx, vy);
       gl.uniform2f(u('uCellSize'), cell, cell);
       gl.uniform1f(u('uCircleRadius'), c.radius);
@@ -447,6 +454,40 @@
     return state.sensors === 'both'
       ? (state.swap ? 'BA' : 'AB')
       : physicalLens(state, state.sensors);
+  }
+
+  // compositionLayout, optionally laid out in `place` (see
+  // renderComposition) and translated into the target. Without `place` it
+  // *is* compositionLayout -- the export path's layout, untouched.
+  function placedLayout(state, targetW, targetH, place) {
+    if (!place) return compositionLayout(state, targetW, targetH);
+    const l = compositionLayout(state, place.w, place.h);
+    return {
+      circles: l.circles.map((c) => ({
+        lens: c.lens, cx: c.cx + place.x, cy: c.cy + place.y, radius: c.radius,
+      })),
+    };
+  }
+
+  // One circle's composite cell: a square reaching diameter *
+  // (1 + 2*GLOW_HEADROOM) so the rim glow, which extends past the crop
+  // edge, has room to render. (vx, vy) is its bottom-left corner in GL's
+  // y-up framebuffer pixels and `cell` its size -- the uCellOrigin/uCellSize
+  // the shader recovers local coordinates from. `viewport` is what
+  // gl.viewport gets: the whole cell unless `clip` is set, in which case it
+  // is the cell's intersection with the target (null if they don't
+  // overlap). The shader's geometry depends only on uCellOrigin/uCellSize
+  // and gl_FragCoord, so clipping the viewport changes which fragments run,
+  // never what any of them computes -- it just keeps a 100%+ zoom's huge
+  // cells inside the canvas and under MAX_VIEWPORT_DIMS.
+  function cellViewport(c, targetW, targetH, clip) {
+    const cell = Math.round(c.radius * 2 * (1 + 2 * GLOW_HEADROOM));
+    const vx = Math.round(c.cx - cell / 2);
+    const vy = Math.round(targetH - c.cy - cell / 2);
+    if (!clip) return { cell, vx, vy, viewport: [vx, vy, cell, cell] };
+    const x0 = Math.max(0, vx), y0 = Math.max(0, vy);
+    const x1 = Math.min(targetW, vx + cell), y1 = Math.min(targetH, vy + cell);
+    return { cell, vx, vy, viewport: x1 > x0 && y1 > y0 ? [x0, y0, x1 - x0, y1 - y0] : null };
   }
 
   // Scale Lens.exportLayout's pixel geometry to fit the given target.
@@ -576,7 +617,8 @@
 
   return {
     create, uploadLens, uploadBayer, makeLensTexture, makeBayerTexture, releaseLens,
-    commitLenses, renderComposition, compositionLayout, lensTextureIndex,
+    commitLenses, renderComposition, compositionLayout, placedLayout, cellViewport, GLOW_HEADROOM,
+    lensTextureIndex,
     physicalLens, circleDraw, exportLabel, program, buildProfile, readProfile, makeProfileTarget,
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
   };

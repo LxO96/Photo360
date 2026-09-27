@@ -82,15 +82,17 @@
 
   /* -- Stage ------------------------------------------------------------ */
   #stage {
-    display: grid; place-items: center; position: relative; padding: 24px;
-    min-width: 0; min-height: 0; touch-action: none; background: var(--stage);
+    display: grid; place-items: center; position: relative; padding: 16px;
+    min-width: 0; min-height: 0; touch-action: none; background: var(--stage); overflow: hidden;
   }
-  #view { max-width: 100%; max-height: 100%; background: #000000; }
+  /* Positioned and sized by app.js render(): the visible part of the
+     composition, fitted to the stage at its true aspect ratio. */
+  #view { position: absolute; left: 16px; top: 16px; background: #000000; }
   /* Until a file is loaded the canvas is an empty 300x150 default. */
   body:not(.loaded) #view { visibility: hidden; }
   #guides { position: absolute; pointer-events: none; }
   #drop {
-    position: absolute; inset: 24px; border: 1px dashed #333333; border-radius: 6px;
+    position: absolute; inset: 16px; border: 1px dashed #333333; border-radius: 6px;
     display: grid; place-content: center; justify-items: center; gap: 14px;
     color: var(--mut); text-align: center; cursor: pointer; user-select: none;
   }
@@ -391,6 +393,7 @@
   </aside>
 
   <script src="lens.js"></script>
+  <script src="view.js"></script>
   <script src="edge.js"></script>
   <script src="exif.js"></script>
   <script src="dng.js"></script>

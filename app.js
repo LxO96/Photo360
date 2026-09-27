@@ -408,28 +408,53 @@
     }
   }
 
+  // -- Preview placement (Task 19) ---------------------------------------
+  // The stage's drawable area in CSS and device pixels (inside #stage's
+  // padding). Device pixels -- CSS times devicePixelRatio -- are what the
+  // canvas's drawing buffer is sized in, so the preview is sharp on HiDPI.
+  function stageMetrics() {
+    const cs = getComputedStyle(stageEl);
+    const padL = parseFloat(cs.paddingLeft) || 0, padR = parseFloat(cs.paddingRight) || 0;
+    const padT = parseFloat(cs.paddingTop) || 0, padB = parseFloat(cs.paddingBottom) || 0;
+    const dpr = window.devicePixelRatio || 1;
+    const cssW = Math.max(1, stageEl.clientWidth - padL - padR);
+    const cssH = Math.max(1, stageEl.clientHeight - padT - padB);
+    return {
+      padL, padT, dpr,
+      availW: Math.max(1, Math.round(cssW * dpr)), availH: Math.max(1, Math.round(cssH * dpr)),
+    };
+  }
+
+  // Where the composition sits on the stage right now -- the fitted,
+  // centred view. Its size is GL.exportGeometry's, the pixels an export
+  // would write, so the preview has the output's true aspect ratio.
+  function currentView(m, g) {
+    return View.fitView(m.availW, m.availH, g.width, g.height);
+  }
+
+  // The composition's rect inside the canvas (device pixels), set by
+  // render() and read by the guides overlay and drag-to-roll so all three
+  // agree on where each circle is.
+  let previewPlace = null;
+  function previewLayout() {
+    return GL.placedLayout(state, canvas.width, canvas.height, previewPlace);
+  }
+
   function render() {
     if (!ctx || !state.sourceLensSize) return;
-    const avail = Math.min(canvas.parentElement.clientWidth, canvas.parentElement.clientHeight) - 48;
-    const layout = Lens.exportLayout({
-      circleDiameter: 1000,
-      sensors: state.sensors,
-      orientation: state.orientation,
-      gapPx: state.gapFrac * 1000,
-      marginPx: state.marginFrac * 1000,
-    });
-    const aspect = layout.width / layout.height;
-    const fit = Math.max(256, Math.floor(avail));
-    if (aspect >= 1) {
-      canvas.width = fit;
-      canvas.height = Math.round(fit / aspect);
-    } else {
-      canvas.height = fit;
-      canvas.width = Math.round(fit * aspect);
-    }
-    canvas.style.width = canvas.width + 'px';
-    canvas.style.height = canvas.height + 'px';
-    GL.renderComposition(ctx, state, canvas.width, canvas.height);
+    const m = stageMetrics();
+    const g = GL.exportGeometry(state);
+    const r = View.visibleRect(currentView(m, g), m.availW, m.availH, g.width, g.height);
+    // The canvas covers exactly the visible part of the composition, at one
+    // buffer pixel per device pixel.
+    canvas.width = Math.max(1, r.w);
+    canvas.height = Math.max(1, r.h);
+    canvas.style.left = (m.padL + r.x / m.dpr) + 'px';
+    canvas.style.top = (m.padT + r.y / m.dpr) + 'px';
+    canvas.style.width = (canvas.width / m.dpr) + 'px';
+    canvas.style.height = (canvas.height / m.dpr) + 'px';
+    previewPlace = r.place;
+    GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
     const c = Lens.coverage(state.fovDeg, state.thetaMaxDeg);
     readout.textContent = c.overlapDeg === 0
       ? 'Exactly one hemisphere — nothing duplicated with the other lens.'
@@ -519,7 +544,9 @@
     const g = guidesCanvas.getContext('2d');
     g.clearRect(0, 0, guidesCanvas.width, guidesCanvas.height);
     if (!showGuidesEl.checked) return;
-    const layout = GL.compositionLayout(state, guidesCanvas.width, guidesCanvas.height);
+    // Same layout render() drew with -- guidesCanvas has #view's own pixel
+    // size (positionGuides), so it tracks fit, zoom and pan exactly.
+    const layout = previewLayout();
     for (const circ of layout.circles) {
       const physical = GL.physicalLens(state, circ.lens);
       // Sign convention: COMPOSITE_FS's theta is measured in a y-up frame,
@@ -579,7 +606,7 @@
   stageEl.addEventListener('pointerdown', (e) => {
     if (!ctx || !state.sourceLensSize) return;
     const p = pointerToCanvas(e);
-    const layout = GL.compositionLayout(state, canvas.width, canvas.height);
+    const layout = previewLayout();
     let best = null, bestDist = Infinity;
     for (const c of layout.circles) {
       const d = Math.hypot(p.x - c.cx, p.y - c.cy);
@@ -1046,6 +1073,15 @@
     if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
   });
   window.addEventListener('resize', render);
+  // The stage can change size without the window doing so (the panel's
+  // scrollbar appearing, devtools docking); coalesce to one render a frame.
+  let resizeFrame = 0;
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(() => {
+      if (resizeFrame) return;
+      resizeFrame = requestAnimationFrame(() => { resizeFrame = 0; render(); });
+    }).observe(stageEl);
+  }
 
   // Browser-side half of the GLSL/JS parity check (test/parity.test.js is
   // the other half). Renders PROFILE_BUILD_PARITY_FS + PROFILE_BLUR_FS --
