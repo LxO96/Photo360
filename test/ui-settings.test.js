@@ -89,7 +89,7 @@ test('nudgeSliderValue: Shift is coarse, fine (Ctrl) is fine (never below one st
   assert.strictEqual(Settings.nudgeSliderValue(0.26, 0, 4, 0.00001, 'ArrowUp', { shift: true }), 0.46);
   assert.strictEqual(Settings.nudgeSliderValue(0.26, 0, 4, 0.00001, 'ArrowUp', { fine: true }), 0.262);
   assert.strictEqual(Settings.nudgeSliderValue(180, 120, 210, 0.5, 'ArrowUp', { fine: true }), 180.5);
-  assert.strictEqual(Settings.nudgeSliderValue(0, -180, 180, 0.1, 'PageUp'), 18);
+  assert.strictEqual(Settings.nudgeSliderValue(0, -180, 180, 0.1, 'PageUp'), 1);
 });
 
 test('nudgeSliderValue clamps to the ends and handles Home/End', () => {
@@ -102,4 +102,9 @@ test('nudgeSliderValue clamps to the ends and handles Home/End', () => {
 test('nudgeSliderValue ignores keys it does not handle', () => {
   assert.strictEqual(Settings.nudgeSliderValue(3, 0, 25, 0.5, 'a'), null);
   assert.strictEqual(Settings.nudgeSliderValue(3, 0, 25, 0.5, 'Tab'), null);
+});
+
+test('nudgeSliderValue keeps a usable native step (Camera roll stays at 0.1 deg)', () => {
+  assert.strictEqual(Settings.nudgeSliderValue(0, -180, 180, 0.1, 'ArrowRight'), 0.1);
+  assert.strictEqual(Settings.nudgeSliderValue(0, -180, 180, 0.1, 'ArrowRight', { fine: true }), 0.1);
 });

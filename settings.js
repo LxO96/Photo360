@@ -269,8 +269,8 @@
   // Keyboard fine-adjust for a focused slider, in the slider's own units.
   // Several sliders carry a very fine `step` (0.00001, so fitted presets
   // are representable -- see index.html), which makes the browser's native
-  // one-step-per-arrow useless; instead one arrow press moves 1/200th of the
-  // slider's span (never less than one step), Shift moves 10x that, and
+  // one-step-per-arrow useless; instead one arrow press on such a slider moves
+  // 1/200th of its span (others move one native step), Shift moves 10x that, and
   // `mods.fine` moves 1/10th of it (down to a single step) for fine work.
   // app.js maps Ctrl or Alt to `fine` -- Ctrl is the one to document, since
   // Alt+Left is Back in Windows browsers. PageUp/Down are the coarse
@@ -288,7 +288,10 @@
     else if (key === 'End') return max;
     else return null;
     step = step > 0 ? step : (max - min) / 1000;
-    let delta = Math.max(step, (max - min) / 200);
+    // Only sliders whose step is too fine to be usable (under 1/5000 of the
+    // span, i.e. the fitted Edge presets) get the 1/200-span move; a slider
+    // with a workable native step (Camera roll at 0.1 deg) keeps it.
+    let delta = step >= (max - min) / 5000 ? step : (max - min) / 200;
     if (coarse) delta *= 10;
     else if (mods.fine) delta = Math.max(step, delta / 10);
     let v = value + dir * delta;
