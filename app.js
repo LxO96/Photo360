@@ -732,6 +732,11 @@
   // apart -- exactly Task 16's linking behaviour, just over a different
   // field shape.
   function setWbField(lens, field, value) {
+    // Typed readouts can hold anything; keep values inside the slider domain.
+    if (!Number.isFinite(value)) { syncWbControls(); return; }
+    value = field === 'kelvin'
+      ? Math.max(Wb.KELVIN_MIN, Math.min(Wb.KELVIN_MAX, value))
+      : Math.max(-Wb.TINT_MAX, Math.min(Wb.TINT_MAX, value));
     state.rawWb[lens][field] = value;
     if (state.rawWbLinked) {
       const other = lens === 'A' ? 'B' : 'A';

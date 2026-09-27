@@ -325,3 +325,10 @@ test('rawWb round-trips through save/load', () => {
   const loaded = Settings.load(WB_DEFAULTS, storage);
   assert.deepStrictEqual(loaded.rawWb, state.rawWb);
 });
+
+test('sanitize clones nested rawWb defaults instead of aliasing them', () => {
+  const defaults = { rawWb: { A: { kelvin: 5000, tint: 0 }, B: { kelvin: 5000, tint: 0 } } };
+  const out = Settings.sanitize(defaults, {});
+  assert.notStrictEqual(out.rawWb.A, defaults.rawWb.A);
+  assert.deepStrictEqual(out.rawWb.A, defaults.rawWb.A);
+});

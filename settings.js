@@ -112,7 +112,9 @@
       return def.map((dv, i) => (isFiniteNumber(val[i]) ? clamp(val[i], range) : dv));
     }
     if (def && typeof def === 'object') {
-      if (!val || typeof val !== 'object') return { ...def };
+      // Recurse even when nothing is stored, so nested defaults (rawWb.A/B) are
+      // cloned rather than aliased.
+      if (!val || typeof val !== 'object') val = {};
       const out = {};
       for (const k of Object.keys(def)) {
         out[k] = mergeValue(def[k], val[k], k, range && range[k]);

@@ -364,6 +364,9 @@
         whiteLevel,
         asShotNeutral,
         camToSrgb,
+        // Raw XYZ->camera matrix (row-major), for Kelvin/tint conversion in wb.js;
+        // null when absent or malformed.
+        colorMatrix1: (colorMatrix1Vals && colorMatrix1Vals.length === 9) ? Array.from(colorMatrix1Vals) : null,
         stripOffset,
         stripByteCount,
         model: modelVals ? modelVals.replace(/\0+$/, '').trim() : '',

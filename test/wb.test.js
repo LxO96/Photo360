@@ -70,7 +70,7 @@ test('negative tint moves toward green (v increases) by the expected Duv', () =>
 });
 
 // -- 3/4. Round-trip through a real ColorMatrix1 ---------------------------
-const REAL_MATRIX = Source.readColorMatrix1(load(FILES[0]));
+const REAL_MATRIX = global.Dng.parse(load(FILES[0])).colorMatrix1;
 
 test('a real DNG actually has a ColorMatrix1 to test against', () => {
   assert.ok(REAL_MATRIX && REAL_MATRIX.length === 9, 'ColorMatrix1 should be a 9-element array');
@@ -126,7 +126,7 @@ test('each supplied DNG maps AsShotNeutral to a plausible daylight-ish Kelvin', 
   for (const name of FILES) {
     const bytes = load(name);
     const d = global.Dng.parse(bytes);
-    const cm1 = Source.readColorMatrix1(bytes);
+    const cm1 = d.colorMatrix1;
     assert.ok(cm1, name + ' should have a ColorMatrix1');
     const kt = Wb.kelvinTintFromNeutral(d.asShotNeutral, cm1);
     console.log(`  as-shot: ${name} -> ${kt.kelvin.toFixed(0)} K, tint ${kt.tint.toFixed(1)}`);
@@ -170,4 +170,10 @@ test('Tint slider mapping is monotonic, hits endpoints exactly, and inverts', ()
     const t = Wb.sliderToTint(s);
     assert.ok(Math.abs(Wb.tintToSlider(t) - s) < 1e-9, `s=${s} t=${t}`);
   }
+});
+
+test('Dng.parse exposes the raw ColorMatrix1 (independently verified values)', () => {
+  const cm = global.Dng.parse(load(FILES[0])).colorMatrix1;
+  const want = [0.9312, -0.1238, -0.0846, -0.5823, 1.4648, 0.3586, -0.0969, 0.1790, 0.8560];
+  want.forEach((w, i) => assert.ok(Math.abs(cm[i] - w) < 1e-4, `cm[${i}]=${cm[i]}`));
 });
