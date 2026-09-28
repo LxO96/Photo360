@@ -1575,6 +1575,44 @@
   // Reflects `state` (whatever loadSettings just merged in, or the built-in
   // defaults if there was nothing to load) into every control's value and
   // its adjacent readout.
+  // Auto tone: renders the whole composition small and off screen (so the
+  // preview's zoom doesn't matter) with tone off, histograms the photo
+  // pixels only -- inside each circle and inside the Edge falloff start,
+  // the scopes' mask, so the surrounding black can't drag it brighter --
+  // and lets AutoTone.solve set the five sliders. Contrast and saturation
+  // are the user's and are left alone (the solve accounts for contrast).
+  const AUTO_TONE_SIZE = 640;
+  function autoTone() {
+    if (!ctx || !state.sourceLensSize) return;
+    const g = GL.exportGeometry(state);
+    const k = Math.min(1, AUTO_TONE_SIZE / Math.max(g.width, g.height));
+    const w = Math.max(1, Math.round(g.width * k)), h = Math.max(1, Math.round(g.height * k));
+    const gl = ctx.gl;
+    const saved = state.tone;
+    state.tone = { ...DEFAULTS.tone };
+    const px = new Uint8Array(w * h * 4);
+    const target = GL.makeExportTarget(gl, w, h);
+    try {
+      GL.renderComposition(ctx, state, w, h, target.fbo);
+      GL.readCompositionStrips(gl, target.fbo, w, h, h, (rows, outY) => px.set(rows, outY * w * 4));
+    } finally {
+      GL.deleteExportTarget(gl, target);
+      state.tone = saved;
+    }
+    const photo = state.edge.falloffStart;
+    const include = Scopes.insideCircles(GL.placedLayout(state, w, h).circles.map((c) => ({
+      cx: c.cx, cy: c.cy, radius: c.radius * photo,
+    })));
+    const hist = Scopes.histogram(px, w, h, { bins: 256, mode: 'luma', include });
+    const t = AutoTone.solve(hist.channels[0], { contrast: state.tone.contrast });
+    if (!t) return;
+    state.tone = Object.assign({}, state.tone, t);
+    syncControlsFromState();
+    render();
+    scheduleSave();
+  }
+  document.getElementById('autoTone').addEventListener('click', autoTone);
+
   function syncControlsFromState() {
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;

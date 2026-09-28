@@ -233,6 +233,18 @@ composited, in Lightroom's order: **Exposure** (stops), **Contrast**,
 **Highlights**, **Shadows**, **Whites**, **Blacks**, **Saturation**. All
 default to neutral (no change).
 
+**Auto** sets Exposure, Highlights, Shadows, Whites and Blacks from the
+photo; Contrast and Saturation stay yours. It measures the whole
+composition (not just the zoomed view) with tone off, and counts only the
+photograph — inside the circles and inside the Edge falloff start — so the
+black around the circles can't make it brighten. Exposure brings the median
+to mid grey (±2 EV, never raised into clipping), Highlights and Shadows
+tame a bright or dark tail, and Whites and Blacks stretch the ends. Blown
+highlights are left out of the Highlights decision, since pulling them down
+only turns them grey. Each slider is capped well short of its range, so the
+result is a starting point; click again after other changes to re-measure,
+or double-click a slider to reset it. The solver is `autotone.js`.
+
 Highlights, Shadows, Whites and Blacks (−100 to +100) build one global
 luminance tone curve, applied after exposure and before contrast and
 saturation. It works on luminance and scales each pixel's colour by the

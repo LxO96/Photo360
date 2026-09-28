@@ -479,6 +479,10 @@
     <details class="sec" data-panel="tone" open>
       <summary>Tone</summary>
       <div class="body">
+        <div class="actions tools">
+          <button id="autoTone" class="btn ghost" type="button"
+            title="Set Exposure, Highlights, Shadows, Whites and Blacks from the photo (the black around the circles is ignored)">Auto</button>
+        </div>
         <div class="row"><label for="exposureEv">Exposure</label>
           <input id="exposureEv" type="range" min="-3" max="3" step="0.01" value="0">
           <span class="val"><input id="exposureEvOut" class="num" type="text" inputmode="decimal" aria-label="Exposure, EV"><i>EV</i></span></div>
@@ -559,6 +563,7 @@
   <script src="scopes.js"></script>
   <script src="edge.js"></script>
   <script src="detail.js"></script>
+  <script src="autotone.js"></script>
   <script src="exif.js"></script>
   <script src="dng.js"></script>
   <script src="wb.js"></script>
