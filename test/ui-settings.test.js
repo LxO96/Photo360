@@ -147,3 +147,22 @@ test('detail is persisted, clamped, and has its own panel section after Tone', (
   // An older stored blob without detail loads with it off.
   assert.deepStrictEqual(Settings.sanitize(defs, {}).detail, defs.detail);
 });
+
+// -- Calibration comes from the camera model only ---------------------------
+
+test('theta-max is not a persisted setting', () => {
+  assert.ok(!Settings.PERSISTED_KEYS.includes('thetaMaxDeg'));
+  const out = Settings.sanitize({ thetaMaxDeg: 105 }, { thetaMaxDeg: 130 });
+  assert.ok(!('thetaMaxDeg' in out) || out.thetaMaxDeg === 105);
+});
+
+// -- Double-click reset -------------------------------------------------
+
+test('valueAt reads a dotted path, or undefined when absent', () => {
+  const o = { fovDeg: 180, tone: { contrast: 0.2 }, nudgeDeg: { A: -1 } };
+  assert.strictEqual(Settings.valueAt(o, 'fovDeg'), 180);
+  assert.strictEqual(Settings.valueAt(o, 'tone.contrast'), 0.2);
+  assert.strictEqual(Settings.valueAt(o, 'nudgeDeg.A'), -1);
+  assert.strictEqual(Settings.valueAt(o, 'tone.nope'), undefined);
+  assert.strictEqual(Settings.valueAt(o, 'edge.ringWidth'), undefined);
+});

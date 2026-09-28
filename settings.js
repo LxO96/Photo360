@@ -16,14 +16,13 @@
   // multipliers) are per-lens white-balance state, now expressed as
   // Kelvin/tint: rawWb is a genuine per-file value that a freshly loaded
   // raw file's own AsShotNeutral always overwrites on load (app.js
-  // applyLoadedDescriptor), the same precedence thetaMaxDeg already has
-  // above; a stored value only ever surfaces before any file (or a
+  // applyLoadedDescriptor);  a stored value only ever surfaces before any file (or a
   // non-raw file) is loaded. rawWbLinked is a plain preference with no such
   // override. An old stored blob's `rawWhiteBalance` key (Task 16's shape)
   // is simply not in this list any more, so sanitize() below never looks at
   // it -- it is silently ignored rather than crashing anything.
   const PERSISTED_KEYS = [
-    'fovDeg', 'thetaMaxDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
+    'fovDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone', 'detail',
     'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels',
   ];
@@ -59,7 +58,8 @@
   //   edge.falloffStart 0.6..0.99, edge.falloffSoftness 0.3..4,
   //   tone.exposureEv -3..3, tone.contrast/saturation -1..1,
   //   tone.highlights/shadows/whites/blacks -100..100.
-  // thetaMaxDeg and the five edge keys with no slider (highlightExponent,
+  // thetaMaxDeg (set only from the camera model, never persisted) and the
+  // five edge keys with no slider (highlightExponent,
   // hazeWidth, hazeStrength, terminatorDesaturate, terminatorCoolShift) have
   // no UI control to mirror; their bounds below are chosen generously around
   // the fitted X1-classic preset (see edge.js PRESETS.x1classic) so a
@@ -107,6 +107,18 @@
       B: { kelvin: [2000, 12000], tint: [-150, 150] },
     },
   };
+
+  // The value at a dotted path ('tone.contrast', 'nudgeDeg.A') in a state-
+  // shaped object, or undefined if any step is missing. app.js uses it to
+  // find a slider's default for double-click reset.
+  function valueAt(obj, path) {
+    let v = obj;
+    for (const k of path.split('.')) {
+      if (!v || typeof v !== 'object' || !(k in v)) return undefined;
+      v = v[k];
+    }
+    return v;
+  }
 
   function isFiniteNumber(v) { return typeof v === 'number' && Number.isFinite(v); }
 
@@ -317,7 +329,7 @@
   }
 
   return {
-    STORAGE_KEY, PERSISTED_KEYS, RANGES, PANEL_SECTIONS, DEFAULT_PANELS,
+    valueAt, STORAGE_KEY, PERSISTED_KEYS, RANGES, PANEL_SECTIONS, DEFAULT_PANELS,
     sanitize, serialize, save, load,
     normalizeAngleDeltaDeg, rollForDrag, dragSign, resolveSwapForLoad,
     parseReadout, decimalsForStep, nudgeSliderValue,

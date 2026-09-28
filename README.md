@@ -67,7 +67,8 @@ always there. The panel on the right is split into collapsible sections
 page remembers which sections are open along with your other settings. Every
 number beside a slider can be edited: type a value and press Enter, or click
 away, to apply it. Values outside a slider's range are clamped to it, and
-Escape cancels. With a slider or its number focused, the arrow keys nudge the
+Escape cancels. Double-click a slider to reset it to its default; the
+white-balance sliders reset to the file's as-shot values. With a slider or its number focused, the arrow keys nudge the
 value. Shift makes the step coarser, Ctrl makes it finer, and Page Up/Down
 make a coarse step. **Export** sits at the bottom of the panel, next to the
 exact pixel size and aspect ratio it will write.
@@ -115,13 +116,8 @@ marks what you are touching.
   crops to exactly a hemisphere (no duplication with the other lens, no
   gap). Above 180° you get some of what the other lens also saw; below
   180° you get less than a hemisphere. The note under the slider tells
-  you which, and by how much.
-- **Calibration** (lens calibration, advanced) — the half-angle, in degrees, at which
-  the lens's own image circle sits. This is what turns "field of view" into
-  a crop radius. It's set automatically from the camera identified in the
-  file (see Calibration below); reach for this slider yourself only if the
-  180° crop visibly doesn't reach the true horizon-to-horizon frame, most
-  likely on a file whose camera this tool doesn't recognize.
+  you which, and by how much, and names the camera's lens (see Calibration
+  below).
 - **Sensors** — export lens A only, lens B only, or both together.
 - **Layout** — when exporting both sensors, whether to arrange the two
   circles side by side (2:1 output) or stacked (1:2). This is independent
@@ -278,12 +274,12 @@ model strings haven't been confirmed from real files, and a guessed string
 would either never match or silently apply the wrong lens. They fall back to
 the X5 figure, marked as a default.
 
-The note under the Calibration slider names the camera, its full field of
-view and where the number comes from, for example "X5 · 210° full ·
-measured" or "ONE X · 190° full · user-reported". The **Field of view**
-slider runs from 120° up to the lens's whole image circle (twice the
-calibration), so moving the Calibration slider moves its maximum and clamps
-the FOV into it.
+The note under Field of view names the camera, its full field of view and
+where the number comes from, for example "X5 · 210° full · measured" or
+"ONE X · 190° full · user-reported". The **Field of view** slider runs from
+120° up to the lens's whole image circle (twice the calibration). The
+calibration comes only from the camera model; there is no control for it,
+and it is not saved between sessions.
 
 The camera is identified from the file's EXIF model tag when present. A
 stacked 1:2 file with **no** EXIF at all (which does happen — one of this
@@ -291,11 +287,6 @@ project's own ONE X test files has none) is never guessed to be an X5: the
 X5 never writes that shape, so the tool falls back to the ONE X figure
 instead, and says plainly in the UI that the camera wasn't identified and
 the number is a guess from the file's shape, not a read tag.
-
-Whatever the source, the **Calibration** slider (60°–150°)
-always lets you override `thetaMaxDeg` by eye if the 180° crop doesn't
-reach the true horizon — most likely on an unrecognized camera, but nothing
-stops you from second-guessing a "confident" one either.
 
 ## Export sizing
 

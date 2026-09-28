@@ -168,6 +168,9 @@
     scopeMode: 'histogram',
     scopeChannels: 'luma',
   };
+  // The built-in defaults, snapshotted before stored settings are merged in:
+  // what double-clicking a slider resets it to (see the NUM `path`s).
+  const DEFAULTS = JSON.parse(JSON.stringify(state));
   let ctx = null;
 
   // Errors and warnings are deliberately separate channels: `fail` used to
@@ -179,10 +182,11 @@
   function warn(msg) { warningEl.textContent = msg; errorEl.textContent = ''; }
   function clearMessages() { errorEl.textContent = ''; warningEl.textContent = ''; }
 
-  // Task 19: the compact note under the Calibration slider -- the camera,
-  // its full FOV and where that number comes from ("X5 · 210° full ·
-  // measured", "ONE X · 190° full · user-reported"), plus the value
-  // actually in effect if the Calibration slider has been moved off it.
+  // Task 19: the compact note under Field of view -- the camera, its full
+  // FOV and where that number comes from ("X5 · 210° full · measured",
+  // "ONE X · 190° full · user-reported"). theta-max itself is set only
+  // from the camera model (Lens.calibrationFor) on load; there is no
+  // control for it.
   // Lens.calibrationNote builds the text; a guessed or default calibration
   // says so in its source rather than reading as measured fact.
   function updateCalibrationReadout() {
@@ -191,8 +195,8 @@
   }
 
   // Task 19: the Field of view slider runs from 120 to the lens's whole
-  // image circle, 2 x the current theta-max (Lens.fovRangeFor). Moving the
-  // Calibration slider, loading a file or restoring settings moves the max
+  // image circle, 2 x the current theta-max (Lens.fovRangeFor). Loading a
+  // file or restoring settings moves the max
   // and clamps the FOV into it; the typed readout clamps through the same
   // range. Settings.RANGES.fovDeg stays the superset used for persistence.
   function syncFovRange() {
@@ -355,7 +359,6 @@
     zoom = null;   // zoom is per view, not per file: every load starts at Fit
 
     dropEl.classList.add('hidden');
-    reflectNum(NUM.thetaMax, true);
     syncFovRange();
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
@@ -1112,40 +1115,37 @@
     }, def);
   }
 
-  defNum('fov', { get: () => state.fovDeg, set: (v) => { state.fovDeg = v; },
+  defNum('fov', { path: 'fovDeg', get: () => state.fovDeg, set: (v) => { state.fovDeg = v; },
     range: Settings.RANGES.fovDeg, fmt: fmtDeg });
-  defNum('thetaMax', { get: () => state.thetaMaxDeg,
-    set: (v) => { state.thetaMaxDeg = v; syncFovRange(); updateCalibrationReadout(); },
-    range: Settings.RANGES.thetaMaxDeg, fmt: fmtDeg });
-  defNum('gap', { get: () => state.gapFrac, set: (v) => { state.gapFrac = v; },
+  defNum('gap', { path: 'gapFrac', get: () => state.gapFrac, set: (v) => { state.gapFrac = v; },
     range: Settings.RANGES.gapFrac, scale: 100, fmt: fmtPct });
-  defNum('margin', { get: () => state.marginFrac, set: (v) => { state.marginFrac = v; },
+  defNum('margin', { path: 'marginFrac', get: () => state.marginFrac, set: (v) => { state.marginFrac = v; },
     range: Settings.RANGES.marginFrac, scale: 100, fmt: fmtPct });
-  defNum('roll', { get: () => state.rollDeg, set: (v) => { state.rollDeg = v; },
+  defNum('roll', { path: 'rollDeg', get: () => state.rollDeg, set: (v) => { state.rollDeg = v; },
     range: Settings.RANGES.rollDeg, fmt: fmtDeg });
-  defNum('nudgeA', { get: () => state.nudgeDeg.A, set: (v) => { state.nudgeDeg.A = v; },
+  defNum('nudgeA', { path: 'nudgeDeg.A', get: () => state.nudgeDeg.A, set: (v) => { state.nudgeDeg.A = v; },
     range: Settings.RANGES.nudgeDeg.A, fmt: fmtDeg });
-  defNum('nudgeB', { get: () => state.nudgeDeg.B, set: (v) => { state.nudgeDeg.B = v; },
+  defNum('nudgeB', { path: 'nudgeDeg.B', get: () => state.nudgeDeg.B, set: (v) => { state.nudgeDeg.B = v; },
     range: Settings.RANGES.nudgeDeg.B, fmt: fmtDeg });
   for (const k of EDGE_KEYS) {
-    defNum(k, { get: () => state.edge[k], set: (v) => { state.edge[k] = v; },
+    defNum(k, { path: 'edge.' + k, get: () => state.edge[k], set: (v) => { state.edge[k] = v; },
       range: Settings.RANGES.edge[k], fmt: (v) => formatEdgeValue(k, v) });
   }
   for (const k of TONE_KEYS) {
-    defNum(k, { get: () => state.tone[k], set: (v) => { state.tone[k] = v; },
+    defNum(k, { path: 'tone.' + k, get: () => state.tone[k], set: (v) => { state.tone[k] = v; },
       range: Settings.RANGES.tone[k], fmt: (v) => v.toFixed(2) });
   }
   // Signed whole numbers, as in Lightroom ("+25", "0", "-40"); a typed
   // leading "+" parses fine (Settings.parseReadout).
   for (const k of CURVE_KEYS) {
-    defNum(k, { get: () => state.tone[k], set: (v) => { state.tone[k] = v; },
+    defNum(k, { path: 'tone.' + k, get: () => state.tone[k], set: (v) => { state.tone[k] = v; },
       range: Settings.RANGES.tone[k], fmt: (v) => (v > 0 ? '+' : '') + String(Math.round(v)) });
   }
   for (const k of ['sharpenAmount', 'lumaNoise', 'colorNoise']) {
-    defNum(k, { get: () => state.detail[k], set: (v) => { state.detail[k] = v; },
+    defNum(k, { path: 'detail.' + k, get: () => state.detail[k], set: (v) => { state.detail[k] = v; },
       range: Settings.RANGES.detail[k], fmt: (v) => String(Math.round(v)) });
   }
-  defNum('sharpenRadius', { get: () => state.detail.sharpenRadius,
+  defNum('sharpenRadius', { path: 'detail.sharpenRadius', get: () => state.detail.sharpenRadius,
     set: (v) => { state.detail.sharpenRadius = v; },
     range: Settings.RANGES.detail.sharpenRadius, fmt: (v) => v.toFixed(1) });
   for (const lens of ['A', 'B']) {
@@ -1155,6 +1155,7 @@
       toSlider: Wb.kelvinToSlider, fromSlider: Wb.sliderToKelvin,
       fmt: (v) => String(Math.round(v)),
       apply: (v) => setWbField(lens, 'kelvin', v),
+      reset: () => asShotWb().kelvin,
     });
     defNum('tint' + lens, {
       get: () => state.rawWb[lens].tint,
@@ -1162,11 +1163,12 @@
       toSlider: Wb.tintToSlider, fromSlider: Wb.sliderToTint,
       fmt: (v) => String(Math.round(v)),
       apply: (v) => setWbField(lens, 'tint', v),
+      reset: () => asShotWb().tint,
     });
   }
   // JPEG quality is an output option, not a persisted/rendered setting, and
   // has no Settings.RANGES entry -- its own slider bounds are the range.
-  defNum('quality', { get: () => state.quality, set: (v) => { state.quality = v; },
+  defNum('quality', { path: 'quality', get: () => state.quality, set: (v) => { state.quality = v; },
     range: [parseFloat(qualityEl.min), parseFloat(qualityEl.max)],
     fmt: (v) => String(Math.round(v)), live: false });
 
@@ -1218,6 +1220,14 @@
   for (const d of Object.values(NUM)) {
     d.slider.addEventListener('input', () => commitNum(d, fromSlider(d, parseFloat(d.slider.value))));
     d.slider.addEventListener('keydown', (e) => nudgeKey(d, e));
+    // Double-click resets to the default (white balance: the file's as-shot
+    // value). Either way the value is clamped to the slider's current range.
+    d.slider.addEventListener('dblclick', () => {
+      const v = d.reset ? d.reset() : Settings.valueAt(DEFAULTS, d.path);
+      if (typeof v !== 'number' || !Number.isFinite(v)) return;
+      commitNum(d, Math.min(d.range[1], Math.max(d.range[0], v)));
+      reflectNum(d, true);
+    });
     // 'change' fires on blur (and on Enter in most browsers); Enter is also
     // handled explicitly below so it applies everywhere.
     d.out.addEventListener('change', () => commitReadout(d));
@@ -1324,10 +1334,16 @@
     scheduleSave();
   });
 
+  // The loaded raw file's own white balance as Kelvin/tint, or the
+  // built-in default when there is none.
+  function asShotWb() {
+    if (!state.rawAsShotNeutral) return { ...DEFAULTS.rawWb.A };
+    return Wb.kelvinTintFromNeutral(state.rawAsShotNeutral, state.rawMeta && state.rawMeta.colorMatrix1);
+  }
+
   wbResetEl.addEventListener('click', () => {
     if (!state.rawAsShotNeutral) return;
-    const m = state.rawMeta && state.rawMeta.colorMatrix1;
-    const kt = Wb.kelvinTintFromNeutral(state.rawAsShotNeutral, m);
+    const kt = asShotWb();
     state.rawWb = {
       A: { kelvin: kt.kelvin, tint: kt.tint },
       B: { kelvin: kt.kelvin, tint: kt.tint },

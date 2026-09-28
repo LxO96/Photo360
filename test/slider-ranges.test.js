@@ -36,7 +36,6 @@ const SLIDER_TO_RANGE = {
   // fov is deliberately absent (Task 19): its max is dynamic, 2 x the
   // current Calibration (theta-max), set by app.js -- see the dedicated
   // tests at the bottom of this file.
-  thetaMax: [Settings.RANGES.thetaMaxDeg, 1],
   roll: [Settings.RANGES.rollDeg, 1],
   nudgeA: [Settings.RANGES.nudgeDeg.A, 1],
   nudgeB: [Settings.RANGES.nudgeDeg.B, 1],
