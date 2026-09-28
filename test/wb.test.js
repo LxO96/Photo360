@@ -211,3 +211,27 @@ test('srgbDecode inverts the sRGB curve', () => {
   assert.ok(Math.abs(Wb.srgbDecode(1) - 1) < 1e-12);
   assert.ok(Math.abs(Wb.srgbDecode(0.5) - 0.214041) < 1e-6);
 });
+
+test('pickAverage averages usable pixels in linear light, skipping clipped and black ones', () => {
+  // 2 x 2: two usable greys, one clipped white, one black.
+  const px = new Uint8ClampedArray([
+    128, 128, 128, 255,   255, 255, 255, 255,
+    0, 0, 0, 255,         188, 188, 188, 255,
+  ]);
+  const r = Wb.pickAverage(px, 2, 2);
+  assert.strictEqual(r.used, 2);
+  assert.strictEqual(r.clipped, 1);
+  assert.strictEqual(r.dark, 1);
+  const want = (Wb.srgbDecode(128 / 255) + Wb.srgbDecode(188 / 255)) / 2;
+  r.srgb.forEach((v) => assert.ok(Math.abs(v - want) < 1e-12));
+});
+
+test('pickAverage honours the include mask and reports nothing usable', () => {
+  const px = new Uint8ClampedArray([100, 110, 120, 255, 200, 210, 220, 255]);
+  const r = Wb.pickAverage(px, 2, 1, (x) => x === 1);
+  assert.strictEqual(r.used, 1);
+  assert.ok(Math.abs(r.srgb[0] - Wb.srgbDecode(200 / 255)) < 1e-12);
+  const none = Wb.pickAverage(new Uint8ClampedArray([0, 0, 0, 255]), 1, 1);
+  assert.strictEqual(none.used, 0);
+  assert.strictEqual(none.srgb, null);
+});

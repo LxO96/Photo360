@@ -200,11 +200,14 @@ to do there.
   both, for the common case where you just want one overall white balance.
   Turn it off to give the two lenses genuinely different white balance.
 - **Pick neutral** — click it, then click something in the photo that
-  should be neutral grey or white. That lens's Kelvin and tint (both
-  lenses when linked) are set so the spot renders grey, and the note under
-  the buttons says what was set. It averages a small patch and measures
-  with Tone and Detail switched off, so those sliders don't skew the pick.
-  A clipped or near-black spot is refused with a note instead. The spot's
+  should be neutral grey or white, or drag a rectangle over a larger white
+  or grey area (a wall, a sheet, a cloud). That lens's Kelvin and tint
+  (both lenses when linked) are set so the spot or area renders grey, and
+  the note under the buttons says what was set. A click averages a small
+  patch; a drag averages the whole rectangle (the part inside the circle).
+  It measures with Tone and Detail switched off, so those sliders don't
+  skew the pick. Clipped and near-black pixels are left out of the
+  average; if most of the area is unusable the pick is refused with a note. The spot's
   camera colour is recovered by inverting the render (`Wb.neutralFromRendered`),
   converted to Kelvin/tint and re-measured a couple of times until it lands.
 - **Reset to as-shot** — returns both lenses to the Kelvin/tint that

@@ -271,9 +271,37 @@
     return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   }
 
+  // The pipette's measurement: mean linear-sRGB colour of an RGBA8 area
+  // (as rendered, gamma-encoded), over pixels that `include(x, y)` accepts
+  // (all, if omitted). Pixels with any channel at or above CLIP_LEVEL are
+  // skipped as clipped -- their true colour is unknown -- and pixels whose
+  // brightest channel is at or below DARK_LEVEL are skipped as too dark to
+  // judge. Returns { srgb, used, clipped, dark }; srgb is null when no pixel
+  // was usable.
+  const CLIP_LEVEL = 250;
+  const DARK_LEVEL = 8;
+  function pickAverage(px, w, h, include) {
+    const sum = [0, 0, 0];
+    let used = 0, clipped = 0, dark = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (include && !include(x, y)) continue;
+        const i = (y * w + x) * 4;
+        const r = px[i], g = px[i + 1], b = px[i + 2];
+        if (r >= CLIP_LEVEL || g >= CLIP_LEVEL || b >= CLIP_LEVEL) { clipped++; continue; }
+        if (Math.max(r, g, b) <= DARK_LEVEL) { dark++; continue; }
+        sum[0] += srgbDecode(r / 255);
+        sum[1] += srgbDecode(g / 255);
+        sum[2] += srgbDecode(b / 255);
+        used++;
+      }
+    }
+    return { srgb: used ? sum.map((v) => v / used) : null, used, clipped, dark };
+  }
+
   return {
     kelvinToXyOnLocus,
-    neutralFromRendered, srgbDecode, kelvinTintToXy, xyToKelvinTint,
+    neutralFromRendered, srgbDecode, pickAverage, kelvinTintToXy, xyToKelvinTint,
     xyToUv, uvToXy, xyToXyz,
     neutralFromKelvinTint, kelvinTintFromNeutral,
     sliderToKelvin, kelvinToSlider, sliderToTint, tintToSlider,

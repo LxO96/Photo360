@@ -851,6 +851,18 @@
     const g = guidesCanvas.getContext('2d');
     g.clearRect(0, 0, guidesCanvas.width, guidesCanvas.height);
     updateGuidesVisibility();
+    // While a Pick neutral area is being dragged out, the overlay shows
+    // just that rectangle, not the levelling guides.
+    if (pickRect) {
+      const r = rectOf(pickRect.start, pickRect.end);
+      const lw = Math.max(1, (window.devicePixelRatio || 1));
+      g.lineWidth = lw;
+      g.strokeStyle = 'rgba(0,0,0,0.6)';
+      g.strokeRect(r.x0 - lw, r.y0 - lw, r.x1 - r.x0 + 2 * lw, r.y1 - r.y0 + 2 * lw);
+      g.strokeStyle = 'rgba(240,160,75,0.95)';
+      g.strokeRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+      return;
+    }
     // Same layout render() drew with -- guidesCanvas has #view's own pixel
     // size (positionGuides), so it tracks fit, zoom and pan exactly.
     const layout = previewLayout();
@@ -910,7 +922,7 @@
   let guidesTimer = null;
   function updateGuidesVisibility() {
     const levelling = (drag && drag.kind === 'roll') || tool === 'straighten';
-    const show = showGuidesEl.checked || levelling || performance.now() < guidesUntil;
+    const show = !!pickRect || showGuidesEl.checked || levelling || performance.now() < guidesUntil;
     guidesCanvas.classList.toggle('show', show);
   }
   function pokeGuides() {
@@ -944,10 +956,17 @@
   const wbPickNoteEl = document.getElementById('wbPickNote');
   let tool = null;             // null | 'straighten' | 'pick'
   let straightenLine = null;   // { circ, start, end } in canvas pixels
+  let pickRect = null;         // { circ, start, end } in canvas pixels
+
+  // The rectangle spanned by two canvas points, corners ordered.
+  function rectOf(a, b) {
+    return { x0: Math.min(a.x, b.x), y0: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), y1: Math.max(a.y, b.y) };
+  }
 
   function setTool(name) {
     tool = name;
     straightenLine = null;
+    pickRect = null;
     straightenBtnEl.setAttribute('aria-pressed', String(tool === 'straighten'));
     wbPickEl.setAttribute('aria-pressed', String(tool === 'pick'));
     stageEl.classList.toggle('tool-active', !!tool);
@@ -986,51 +1005,56 @@
   }
 
   // Pick neutral: renders the preview with tone and detail off (so those
-  // sliders cannot skew the pick), averages a small patch around the click,
-  // turns it back into linear sRGB and asks Wb.neutralFromRendered for the
-  // white balance that makes it grey. Going through Kelvin/tint is not
-  // exact, so this measures and solves again a couple of times; it
-  // converges in two or three passes. Clipped or black spots are refused
-  // with a note rather than applied.
-  const PICK_HALF = 3;       // a 7 x 7 device-pixel patch
+  // sliders cannot skew the pick), averages the picked area -- a small
+  // patch for a click, the dragged rectangle for a drag -- in linear light,
+  // and asks Wb.neutralFromRendered for the white balance that makes it
+  // grey. Clipped and near-black pixels are left out (Wb.pickAverage); the
+  // pick is refused only if too little of the area is usable. Going
+  // through Kelvin/tint is not exact, so this measures and solves again a
+  // couple of times; it converges in two or three passes.
+  const PICK_HALF = 3;          // a click samples a 7 x 7 device-pixel patch
+  const PICK_DRAG_MIN_PX = 6;   // smaller drags count as a click
+  const PICK_MIN_USABLE = 0.25; // share of the area that must be usable
   const PICK_PASSES = 3;
 
-  // Mean linear sRGB of the patch at p as rendered with tone and detail
-  // off, or { error } for a clipped or too-dark spot.
-  function measurePick(p) {
+  // Mean linear sRGB of `rect` (canvas pixels, inside `circ`) as rendered
+  // with tone and detail off, or { error }.
+  function measurePick(rect, circ) {
     const saved = { tone: state.tone, detail: state.detail };
     state.tone = { ...DEFAULTS.tone };
     state.detail = { ...DEFAULTS.detail };
     GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
-    const size = PICK_HALF * 2 + 1;
+    const x0 = Math.max(0, Math.floor(rect.x0)), y0 = Math.max(0, Math.floor(rect.y0));
+    const w = Math.max(1, Math.min(canvas.width, Math.ceil(rect.x1)) - x0);
+    const h = Math.max(1, Math.min(canvas.height, Math.ceil(rect.y1)) - y0);
     const c2 = document.createElement('canvas');
-    c2.width = size; c2.height = size;
+    c2.width = w; c2.height = h;
     const g = c2.getContext('2d', { willReadFrequently: true });
-    g.drawImage(canvas, Math.round(p.x) - PICK_HALF, Math.round(p.y) - PICK_HALF, size, size, 0, 0, size, size);
-    const px = g.getImageData(0, 0, size, size).data;
+    g.drawImage(canvas, x0, y0, w, h, 0, 0, w, h);
+    const px = g.getImageData(0, 0, w, h).data;
     state.tone = saved.tone;
     state.detail = saved.detail;
-    const lin = [0, 0, 0];
-    let clipped = false, bright = 0;
-    for (let i = 0; i < px.length; i += 4) {
-      for (let c = 0; c < 3; c++) {
-        if (px[i + c] >= 250) clipped = true;
-        bright = Math.max(bright, px[i + c]);
-        lin[c] += Wb.srgbDecode(px[i + c] / 255);
-      }
+    const inside = (x, y) => Math.hypot(x0 + x + 0.5 - circ.cx, y0 + y + 0.5 - circ.cy) <= circ.radius;
+    const a = Wb.pickAverage(px, w, h, inside);
+    const total = a.used + a.clipped + a.dark;
+    if (!a.srgb || a.used < total * PICK_MIN_USABLE) {
+      return {
+        error: a.clipped >= a.dark
+          ? 'That area is mostly clipped. Pick something bright but not blown out.'
+          : 'That area is too dark to judge. Pick a mid or light grey.',
+      };
     }
-    if (clipped) return { error: 'That spot is clipped. Pick something bright but not blown out.' };
-    if (bright <= 8) return { error: 'That spot is too dark to judge. Pick a mid or light grey.' };
-    return { srgb: lin.map((v) => v / (size * size)) };
+    return { srgb: a.srgb, used: a.used, skipped: a.clipped + a.dark };
   }
 
-  function pickNeutralAt(p, circ) {
+  function pickNeutralAt(rect, circ) {
     const physical = GL.physicalLens(state, circ.lens);
     const lenses = state.rawWbLinked ? ['A', 'B'] : [physical];
     const rk = Settings.RANGES.rawWb[physical];
-    let kelvin = null, tint = null, atLimit = false;
+    let kelvin = null, tint = null, atLimit = false, skipped = 0;
     for (let pass = 0; pass < PICK_PASSES; pass++) {
-      const m = measurePick(p);
+      const m = measurePick(rect, circ);
+      if (m.srgb && pass === 0) skipped = m.skipped;
       const mat = state.rawCamToSrgb && state.rawCamToSrgb[physical];
       const neutral = m.srgb && mat ? Wb.neutralFromRendered(m.srgb, mat, state.rawWhiteBalance[physical]) : null;
       if (!neutral) {
@@ -1038,7 +1062,7 @@
         // first measurement is unusable, nothing has been changed yet.
         if (pass === 0) {
           render();
-          showPickNote(m.error || 'That spot has no usable colour. Pick a neutral grey or white.');
+          showPickNote(m.error || 'That area has no usable colour. Pick a neutral grey or white.');
           return;
         }
         break;
@@ -1054,7 +1078,8 @@
     render();
     scheduleSave();
     showPickNote(`Set ${Math.round(kelvin)} K, tint ${tint > 0 ? '+' : ''}${Math.round(tint)}` +
-      (lenses.length === 1 ? ` on lens ${physical}` : '') + (atLimit ? ' (at the slider limit)' : '') + '.');
+      (lenses.length === 1 ? ` on lens ${physical}` : '') + (atLimit ? ' (at the slider limit)' : '') + '.' +
+      (skipped ? ' Clipped or black pixels in the area were left out.' : ''));
   }
   function showPickNote(text) {
     wbPickNoteEl.textContent = text;
@@ -1167,9 +1192,13 @@
       const p = pointerToCanvas(e);
       const circ = circleAt(p);
       if (!circ) return;
-      if (tool === 'pick') { setTool(null); pickNeutralAt(p, circ); return; }
-      straightenLine = { circ, start: p, end: null };
-      drag = { kind: 'straighten', pointerId: e.pointerId };
+      if (tool === 'pick') {
+        pickRect = { circ, start: p, end: p };
+        drag = { kind: 'pick', pointerId: e.pointerId };
+      } else {
+        straightenLine = { circ, start: p, end: null };
+        drag = { kind: 'straighten', pointerId: e.pointerId };
+      }
       e.target.setPointerCapture(e.pointerId);
       return;
     }
@@ -1215,6 +1244,11 @@
       drawGuides();
       return;
     }
+    if (drag.kind === 'pick') {
+      pickRect.end = pointerToCanvas(e);
+      drawGuides();
+      return;
+    }
     if (drag.kind === 'pan') {
       const { m, g } = zoomContext();
       zoom = View.clampPan({
@@ -1250,6 +1284,14 @@
       if (ok) applyStraighten();
       setTool(ok ? null : 'straighten');
       pokeGuides();
+    } else if (kind === 'pick') {
+      const { circ, start, end } = pickRect;
+      let rect = rectOf(start, end);
+      if (rect.x1 - rect.x0 < PICK_DRAG_MIN_PX && rect.y1 - rect.y0 < PICK_DRAG_MIN_PX) {
+        rect = { x0: start.x - PICK_HALF, y0: start.y - PICK_HALF, x1: start.x + PICK_HALF + 1, y1: start.y + PICK_HALF + 1 };
+      }
+      setTool(null);   // also clears pickRect and the overlay
+      if (e.type === 'pointerup') pickNeutralAt(rect, circ);
     } else if (kind === 'roll') {
       pokeGuides();
     }
