@@ -95,7 +95,8 @@
     // Both/B.
     lensCount: 0,
     edge: { ...Edge.PRESETS.x1classic },
-    tone: { exposureEv: 0, contrast: 0, saturation: 0 },
+    // Task 19 adds the luminance-curve sliders (Edge.toneCurve), -100..100.
+    tone: { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 },
     // Task 12 output options. Not part of Settings.PERSISTED_KEYS -- these
     // describe how to write the next file, not a framing preference worth
     // resurrecting across a reload the way fovDeg/edge/tone are.
@@ -807,6 +808,7 @@
   const EDGE_KEYS = ['edgeIntensity', 'ringWidth', 'dispersion', 'glowSpreadDeg',
                      'highlightKnee', 'falloffStart', 'falloffSoftness'];
   const TONE_KEYS = ['exposureEv', 'contrast', 'saturation'];
+  const CURVE_KEYS = ['highlights', 'shadows', 'whites', 'blacks'];
 
   const fmtDeg = (v) => v.toFixed(1);
   const fmtPct = (v) => (v * 100).toFixed(1).replace(/\.0$/, '');
@@ -844,6 +846,12 @@
   for (const k of TONE_KEYS) {
     defNum(k, { get: () => state.tone[k], set: (v) => { state.tone[k] = v; },
       range: Settings.RANGES.tone[k], fmt: (v) => v.toFixed(2) });
+  }
+  // Signed whole numbers, as in Lightroom ("+25", "0", "-40"); a typed
+  // leading "+" parses fine (Settings.parseReadout).
+  for (const k of CURVE_KEYS) {
+    defNum(k, { get: () => state.tone[k], set: (v) => { state.tone[k] = v; },
+      range: Settings.RANGES.tone[k], fmt: (v) => (v > 0 ? '+' : '') + String(Math.round(v)) });
   }
   for (const lens of ['A', 'B']) {
     defNum('kelvin' + lens, {
@@ -1271,8 +1279,70 @@
     return maxDiff;
   }
 
+  // Browser-side JS/GLSL parity for the global tone (Task 19): renders
+  // Shaders.TONE_PARITY_FS -- COMPOSITE_FS's own TONE_GLSL -- over 256
+  // synthetic inputs for each of a set of tone settings (every control at
+  // its extremes, alone and combined, plus exposure pushing luminance past
+  // 1 and pure black with lifted Blacks), reads the float results back and
+  // compares them with Edge.applyTone on the same inputs.
+  const TONE_PARITY_CASES = (() => {
+    const z = { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 };
+    const cases = [z];
+    for (const k of CURVE_KEYS) for (const v of [-100, -35, 60, 100]) cases.push({ ...z, [k]: v });
+    for (const h of [-100, 100]) for (const s of [-100, 100]) for (const w of [-100, 100]) for (const b of [-100, 100]) {
+      cases.push({ ...z, highlights: h, shadows: s, whites: w, blacks: b });
+    }
+    cases.push({ exposureEv: 1.5, contrast: 0.3, saturation: -0.4, highlights: -70, shadows: 45, whites: 20, blacks: -15 });
+    cases.push({ exposureEv: -2, contrast: -0.5, saturation: 0.8, highlights: 30, shadows: -60, whites: -80, blacks: 90 });
+    cases.push({ exposureEv: 0.6, contrast: 0.2, saturation: 0.1, highlights: 0, shadows: 0, whites: 0, blacks: 0 });
+    return cases;
+  })();
+
+  function toneParityInput(x) {
+    return [x / 255, (255 - x) / 255 * 0.8 + 0.1, ((x * 37) % 256) / 255];
+  }
+
+  function checkToneParity() {
+    if (!ctx) ctx = GL.create(canvas);
+    const gl = ctx.gl;
+    const prog = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.TONE_PARITY_FS);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 256, 1, 0, gl.RGBA, gl.FLOAT, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    gl.viewport(0, 0, 256, 1);
+    gl.useProgram(prog);
+    const u = (n) => gl.getUniformLocation(prog, n);
+    const out = new Float32Array(256 * 4);
+    let maxDiff = 0, worst = null;
+    for (const t of TONE_PARITY_CASES) {
+      gl.uniform3f(u('uTone'), t.exposureEv, t.contrast, t.saturation);
+      gl.uniform4f(u('uToneCurve'), t.highlights, t.shadows, t.whites, t.blacks);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.readPixels(0, 0, 256, 1, gl.RGBA, gl.FLOAT, out);
+      for (let x = 0; x < 256; x++) {
+        const want = Edge.applyTone(toneParityInput(x), t);
+        for (let c = 0; c < 3; c++) {
+          const d = Math.abs(out[x * 4 + c] - want[c]);
+          if (d > maxDiff) { maxDiff = d; worst = { tone: t, x, c, gpu: out[x * 4 + c], js: want[c] }; }
+        }
+      }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo); gl.deleteTexture(tex); gl.deleteProgram(prog);
+    console.log('tone parity: ' + TONE_PARITY_CASES.length + ' settings x 256 inputs, max abs diff =', maxDiff,
+      maxDiff < 1e-4 ? '(OK, below 1e-4)' : '(FAIL, exceeds 1e-4)');
+    return { maxDiff, cases: TONE_PARITY_CASES.length, worst };
+  }
+
   window.App = {
-    loadFile, state, render, rollFor: Lens.rollFor, checkParity,
+    loadFile, state, render, rollFor: Lens.rollFor, checkParity, checkToneParity,
     setZoom, zoomToFit, getZoom: () => (zoom ? Object.assign({}, zoom) : null),
     saveSettings, loadSettings, exportImage,
   };

@@ -332,3 +332,21 @@ test('sanitize clones nested rawWb defaults instead of aliasing them', () => {
   assert.notStrictEqual(out.rawWb.A, defaults.rawWb.A);
   assert.deepStrictEqual(out.rawWb.A, defaults.rawWb.A);
 });
+
+// Task 19: the four new Tone sliders.
+test('an old stored tone without highlights/shadows/whites/blacks loads them at 0', () => {
+  const defs = { ...DEFAULTS, tone: { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 } };
+  const out = Settings.sanitize(defs, { tone: { exposureEv: 1.5, contrast: 0.2, saturation: -0.1 } });
+  assert.deepStrictEqual(out.tone, {
+    exposureEv: 1.5, contrast: 0.2, saturation: -0.1, highlights: 0, shadows: 0, whites: 0, blacks: 0,
+  });
+});
+
+test('the four new Tone sliders persist and clamp to -100..100', () => {
+  const defs = { ...DEFAULTS, tone: { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 } };
+  const out = Settings.sanitize(defs, { tone: { highlights: -40, shadows: 999, whites: -999, blacks: 'x' } });
+  assert.strictEqual(out.tone.highlights, -40);
+  assert.strictEqual(out.tone.shadows, 100);
+  assert.strictEqual(out.tone.whites, -100);
+  assert.strictEqual(out.tone.blacks, 0);
+});

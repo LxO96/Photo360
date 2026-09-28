@@ -187,8 +187,22 @@ nothing and never re-decodes the file.
 ### Tone
 
 Ordinary global grade applied to the photograph before the rim is
-composited: **Exposure** (stops), **Contrast**, **Saturation**. All default
-to neutral (no change).
+composited, in Lightroom's order: **Exposure** (stops), **Contrast**,
+**Highlights**, **Shadows**, **Whites**, **Blacks**, **Saturation**. All
+default to neutral (no change).
+
+Highlights, Shadows, Whites and Blacks (−100 to +100) build one global
+luminance tone curve, applied after exposure and before contrast and
+saturation. It works on luminance and scales each pixel's colour by the
+same ratio, so hue is preserved. Highlights and Shadows bend the upper and
+lower parts of the curve (smooth weights peaking around 0.75 and 0.25) and
+never move pure black or white. Whites and Blacks move the white and black
+end points. The curve is always monotonic, so it can't invert tones. The
+strong directions are the usual recovery moves: pulling Highlights down and
+lifting Shadows. The opposite directions are gentler, because pushed further
+the curve would fold over. `Edge.toneCurve` in `edge.js` is the reference,
+and the shader mirrors it exactly. `App.checkToneParity()` compares the two
+on the GPU.
 
 ### Output
 

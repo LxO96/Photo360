@@ -34,3 +34,125 @@ test('full desaturation collapses to luma', () => {
   const out = Edge.applyTone([0.2, 0.6, 0.4], { ...NEUTRAL, saturation: -1 });
   assert.ok(Math.abs(out[0] - out[1]) < 1e-9 && Math.abs(out[1] - out[2]) < 1e-9);
 });
+
+// -- Task 19: Highlights, Shadows, Whites, Blacks -------------------------
+// Edge.toneCurve(y, tone) is the global luminance curve the four sliders
+// build (each -100..100); applyTone applies it as a luminance ratio after
+// exposure and before contrast/saturation. shaders.js mirrors both exactly.
+const CURVE_KEYS = ['highlights', 'shadows', 'whites', 'blacks'];
+const ZERO4 = { highlights: 0, shadows: 0, whites: 0, blacks: 0 };
+const YS = Array.from({ length: 1001 }, (_, i) => i / 1000);
+
+test('the tone curve is exactly the identity with all four sliders at zero', () => {
+  for (const y of YS) assert.strictEqual(Edge.toneCurve(y, ZERO4), y);
+  // ...and missing keys (an old tone object) count as zero.
+  for (const y of YS) assert.strictEqual(Edge.toneCurve(y, NEUTRAL), y);
+});
+
+test('applyTone with all seven controls at zero is an exact pass-through', () => {
+  const c = [0.2, 0.5, 0.9];
+  assert.deepStrictEqual(Edge.applyTone(c, { ...NEUTRAL, ...ZERO4 }), c);
+});
+
+test('applyTone is unchanged for exposure/contrast/saturation when the four new sliders are zero', () => {
+  const t = { exposureEv: 0.7, contrast: 0.3, saturation: -0.2 };
+  const c = [0.3, 0.45, 0.12];
+  assert.deepStrictEqual(Edge.applyTone(c, { ...t, ...ZERO4 }), Edge.applyTone(c, t));
+});
+
+function assertMonotoneInRange(tone, label) {
+  let prev = -Infinity;
+  for (const y of YS) {
+    const v = Edge.toneCurve(y, tone);
+    assert.ok(v >= prev - 1e-12, `${label}: not monotonic at ${y} (${v} < ${prev})`);
+    assert.ok(v >= 0 && v <= 1, `${label}: ${v} out of [0, 1] at ${y}`);
+    prev = v;
+  }
+}
+
+test('each slider alone keeps the curve monotonic and inside [0, 1] across its range', () => {
+  for (const k of CURVE_KEYS) {
+    for (let v = -100; v <= 100; v += 5) assertMonotoneInRange({ ...ZERO4, [k]: v }, `${k}=${v}`);
+  }
+});
+
+test('every combination of the four sliders at -100 / 0 / +100 stays monotonic and in [0, 1]', () => {
+  const vals = [-100, 0, 100];
+  for (const h of vals) for (const s of vals) for (const w of vals) for (const b of vals) {
+    assertMonotoneInRange({ highlights: h, shadows: s, whites: w, blacks: b }, `h${h} s${s} w${w} b${b}`);
+  }
+});
+
+test('direction: each slider moves its own part of the curve the right way', () => {
+  const f = (k, v, y) => Edge.toneCurve(y, { ...ZERO4, [k]: v });
+  for (const v of [25, 100]) {
+    assert.ok(f('highlights', v, 0.8) > 0.8, `+highlights ${v}`);
+    assert.ok(f('highlights', -v, 0.8) < 0.8, `-highlights ${v}`);
+    assert.ok(f('shadows', v, 0.2) > 0.2, `+shadows ${v}`);
+    assert.ok(f('shadows', -v, 0.2) < 0.2, `-shadows ${v}`);
+    assert.ok(f('whites', v, 0.95) > 0.95, `+whites ${v}`);
+    assert.ok(f('whites', -v, 0.95) < 0.95, `-whites ${v}`);
+    assert.ok(f('blacks', v, 0.05) > 0.05, `+blacks ${v}`);
+    assert.ok(f('blacks', -v, 0.05) < 0.05, `-blacks ${v}`);
+  }
+});
+
+test('Highlights barely touch deep shadows, and Shadows barely touch bright highlights', () => {
+  for (const v of [-100, 100]) {
+    assert.ok(Math.abs(Edge.toneCurve(0.1, { ...ZERO4, highlights: v }) - 0.1) < 0.005, `highlights ${v}`);
+    assert.ok(Math.abs(Edge.toneCurve(0.9, { ...ZERO4, shadows: v }) - 0.9) < 0.005, `shadows ${v}`);
+  }
+});
+
+test('Whites and Blacks move the end points', () => {
+  assert.strictEqual(Edge.toneCurve(1, { ...ZERO4, whites: -100 }) < 1, true);
+  assert.strictEqual(Edge.toneCurve(0, { ...ZERO4, blacks: 100 }) > 0, true);
+  // Highlights and Shadows alone leave both end points exactly where they are.
+  for (const k of ['highlights', 'shadows']) {
+    for (const v of [-100, 100]) {
+      assert.strictEqual(Edge.toneCurve(0, { ...ZERO4, [k]: v }), 0);
+      assert.strictEqual(Edge.toneCurve(1, { ...ZERO4, [k]: v }), 1);
+    }
+  }
+});
+
+test('the curve is applied as a luminance ratio, so hue (channel ratios) is preserved', () => {
+  const c = [0.6, 0.3, 0.15];
+  const out = Edge.applyTone(c, { ...NEUTRAL, highlights: -60, shadows: 40 });
+  assert.ok(Math.abs(out[0] / out[1] - c[0] / c[1]) < 1e-9);
+  assert.ok(Math.abs(out[2] / out[1] - c[2] / c[1]) < 1e-9);
+  assert.notStrictEqual(out[1], c[1]);
+});
+
+test('the curve runs after exposure and before contrast', () => {
+  const t = { exposureEv: 1, contrast: 0.4, saturation: 0, ...ZERO4, shadows: 50 };
+  const c = [0.1, 0.1, 0.1];
+  const y = Edge.toneCurve(0.2, t);           // exposure first: 0.1 -> 0.2
+  const expected = (y - 0.5) * 1.4 + 0.5;     // then contrast
+  const out = Edge.applyTone(c, t);
+  assert.ok(Math.abs(out[0] - expected) < 1e-12, `${out[0]} vs ${expected}`);
+});
+
+test('black input with lifted Blacks becomes a neutral grey (no division by zero)', () => {
+  const out = Edge.applyTone([0, 0, 0], { ...NEUTRAL, ...ZERO4, blacks: 100 });
+  assert.ok(out[0] > 0 && out[0] === out[1] && out[1] === out[2]);
+});
+
+test('luminance above 1 (after exposure) passes through the curve continuously', () => {
+  const t = { ...NEUTRAL, ...ZERO4, highlights: -50 };
+  const a = Edge.applyTone([1.2, 1.2, 1.2], t);
+  assert.ok(Number.isFinite(a[0]) && Math.abs(a[0] - 1.2) < 1e-12);
+});
+
+// The GPU half of the tone parity check (App.checkToneParity) renders
+// Shaders.TONE_PARITY_FS; it only proves anything about the shipped
+// shaders if that is the very same TONE_GLSL both composite shaders use.
+test('both composite shaders and the tone parity shader share one TONE_GLSL', () => {
+  const Shaders = require('../shaders.js');
+  for (const name of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS', 'TONE_PARITY_FS']) {
+    assert.ok(Shaders[name].includes(Shaders.TONE_GLSL), name);
+  }
+  for (const name of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS']) {
+    assert.ok(Shaders[name].includes('applyTone(img, uTone, uToneCurve)'), name);
+  }
+});

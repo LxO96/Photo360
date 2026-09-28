@@ -221,17 +221,85 @@
     },
   };
 
-  // Task 10: global tone -- exposure, contrast, saturation. Applied to the
-  // photograph itself (COMPOSITE_FS, right after sampling, before the
-  // terminator); this is the JS reference the GLSL mirrors.
+  // Task 19: Highlights / Shadows / Whites / Blacks -- a global luminance
+  // tone curve, each slider -100..100 (0 = no change). Pure, and mirrored
+  // exactly by TONE_GLSL in shaders.js (App.checkToneParity compares the
+  // two on the GPU).
+  //
+  // Highlights and Shadows bend the curve with a smooth bump that is 0 at
+  // both end points, so they never move black or white:
+  //   TONE_BUMP(y) = (256/27) y^3 (1 - y), peaking at 1 at y = 0.75;
+  // Highlights adds a * bump(y), Shadows adds a * bump(1 - y) (peak 0.25).
+  // At 0.1 the Highlights bump is 0.0085, so Highlights barely touch deep
+  // shadows (and mirrored for Shadows at 0.9).
+  // The strengths are asymmetric because the bump falls to 0 steeply on
+  // its outer side (slope -9.48 at y = 1 for Highlights), which bounds how
+  // far it can be pushed *up* before the curve would fold over; pushing it
+  // down is bounded by the gentle inner side (slope 2.37) instead. Monotonic
+  // needs a <= 1/9.48 = 0.105 upward and a <= 1/2.37 = 0.42 downward (and
+  // mirrored for Shadows), so: +Highlights 0.10, -Highlights 0.25,
+  // +Shadows 0.25, -Shadows 0.10 -- the strong directions are the usual
+  // recovery moves (pull highlights down, lift shadows).
+  // Whites and Blacks then move the end points with a linear levels map:
+  // +Whites pulls the input white point in (up to 0.75, clipping above it),
+  // -Whites lowers the output white (to 0.8); +Blacks lifts the output
+  // black (to 0.15), -Blacks pulls the input black point in (to 0.15,
+  // crushing below it). Every stage is monotonic and maps [0,1] into
+  // [0,1], so the whole curve is too.
+  const TONE_UP = 0.10, TONE_DOWN = 0.25;
+  const WHITE_IN = 0.25, WHITE_OUT = 0.2, BLACK_OUT = 0.15, BLACK_IN = 0.15;
+
+  function toneBump(y) {
+    return (256 / 27) * y * y * y * (1 - y);
+  }
+
+  function curveNonzero(tone) {
+    return !!(tone.highlights || tone.shadows || tone.whites || tone.blacks);
+  }
+
+  function toneCurve(y, tone) {
+    if (!curveNonzero(tone)) return y;
+    const h = (tone.highlights || 0) / 100, s = (tone.shadows || 0) / 100;
+    const w = (tone.whites || 0) / 100, b = (tone.blacks || 0) / 100;
+    const aS = s > 0 ? TONE_DOWN * s : TONE_UP * s;
+    const aH = h > 0 ? TONE_UP * h : TONE_DOWN * h;
+    y = y + aS * toneBump(1 - y);
+    y = y + aH * toneBump(y);
+    const wIn = 1 - WHITE_IN * Math.max(w, 0), wOut = 1 + WHITE_OUT * Math.min(w, 0);
+    const bIn = BLACK_IN * Math.max(-b, 0), bOut = BLACK_OUT * Math.max(b, 0);
+    const t = Math.min(1, Math.max(0, (y - bIn) / (wIn - bIn)));
+    return bOut + (wOut - bOut) * t;
+  }
+
+  // Task 10: global tone -- exposure, contrast, saturation -- plus (Task 19)
+  // the luminance curve above, applied after exposure and before contrast
+  // and saturation. Applied to the photograph itself (COMPOSITE_FS, right
+  // after sampling, before the terminator); this is the JS reference the
+  // GLSL mirrors. The curve is applied as a luminance *ratio* so hue and
+  // saturation are preserved: luminance L becomes L' = L + (curve(t) - t),
+  // t = clamp(L, 0, 1) -- exactly the curve inside [0, 1], a constant
+  // offset outside it (continuous, and still monotonic, for the >1 values
+  // exposure can produce) -- and every channel is scaled by L'/L. A
+  // near-black pixel (L <= 1e-5) has no ratio to scale, so it gets the
+  // change as neutral grey instead (that is how +Blacks lifts pure black).
+  // Missing curve keys (an old tone object) count as 0.
   function applyTone(rgb, tone) {
-    if (tone.exposureEv === 0 && tone.contrast === 0 && tone.saturation === 0) {
+    const curve = curveNonzero(tone);
+    if (tone.exposureEv === 0 && tone.contrast === 0 && tone.saturation === 0 && !curve) {
       return rgb.slice ? rgb.slice() : [rgb[0], rgb[1], rgb[2]];
     }
     const gain = Math.pow(2, tone.exposureEv);
     const k = 1 + tone.contrast;
     const out = [];
-    for (let i = 0; i < 3; i++) out[i] = (rgb[i] * gain - 0.5) * k + 0.5;
+    for (let i = 0; i < 3; i++) out[i] = rgb[i] * gain;
+    if (curve) {
+      const L = LUMA.r * out[0] + LUMA.g * out[1] + LUMA.b * out[2];
+      const t = Math.min(1, Math.max(0, L));
+      const L2 = L + (toneCurve(t, tone) - t);
+      if (L > 1e-5) { const r = L2 / L; for (let i = 0; i < 3; i++) out[i] *= r; }
+      else for (let i = 0; i < 3; i++) out[i] += L2 - L;
+    }
+    for (let i = 0; i < 3; i++) out[i] = (out[i] - 0.5) * k + 0.5;
     const luma = LUMA.r * out[0] + LUMA.g * out[1] + LUMA.b * out[2];
     const s = 1 + tone.saturation;
     for (let i = 0; i < 3; i++) out[i] = luma + (out[i] - luma) * s;
@@ -241,6 +309,6 @@
   return {
     DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight,
     PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS,
-    applyTone,
+    applyTone, toneCurve, toneBump,
   };
 });

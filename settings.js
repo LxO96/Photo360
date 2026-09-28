@@ -54,7 +54,8 @@
   //   0..4, edge.ringWidth 0.002..0.06, edge.dispersion 0..0.05,
   //   edge.glowSpreadDeg 0..45, edge.highlightKnee 0..1,
   //   edge.falloffStart 0.6..0.99, edge.falloffSoftness 0.3..4,
-  //   tone.exposureEv -3..3, tone.contrast/saturation -1..1.
+  //   tone.exposureEv -3..3, tone.contrast/saturation -1..1,
+  //   tone.highlights/shadows/whites/blacks -100..100.
   // thetaMaxDeg and the five edge keys with no slider (highlightExponent,
   // hazeWidth, hazeStrength, terminatorDesaturate, terminatorCoolShift) have
   // no UI control to mirror; their bounds below are chosen generously around
@@ -87,7 +88,11 @@
       terminatorDesaturate: [0, 1],
       terminatorCoolShift: [0, 1],
     },
-    tone: { exposureEv: [-3, 3], contrast: [-1, 1], saturation: [-1, 1] },
+    tone: {
+      exposureEv: [-3, 3], contrast: [-1, 1], saturation: [-1, 1],
+      // Task 19: the luminance-curve sliders (Edge.toneCurve).
+      highlights: [-100, 100], shadows: [-100, 100], whites: [-100, 100], blacks: [-100, 100],
+    },
     // Task 17: Kelvin/tint replaces the raw red/blue multipliers. Matches
     // Wb.KELVIN_MIN/MAX and Wb.TINT_MAX exactly.
     rawWb: {

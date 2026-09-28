@@ -127,6 +127,58 @@
     return demosaicAt(ivec2(px, py));
   }`;
 
+  // Global tone (Tasks 10 and 19), shared by COMPOSITE_FS and the
+  // browser-side TONE_PARITY_FS so the parity check exercises this exact
+  // source. Mirrors edge.js toneBump/toneCurve/applyTone line for line,
+  // including the pass-through guards, so uTone = vec3(0.0) and
+  // uToneCurve = vec4(0.0) are bit-identical to tone being absent. The
+  // strengths (0.10 / 0.25, 0.25 / 0.2 / 0.15 / 0.15) are Edge's
+  // TONE_UP/TONE_DOWN/WHITE_IN/WHITE_OUT/BLACK_OUT/BLACK_IN; see edge.js
+  // for why they are what they are (monotonicity bounds).
+  const TONE_GLSL = `
+  const vec3 TONE_LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+  float toneBump(float y) {
+    return (256.0 / 27.0) * y * y * y * (1.0 - y);
+  }
+
+  bool toneCurveNonzero(vec4 c) {
+    return c.x != 0.0 || c.y != 0.0 || c.z != 0.0 || c.w != 0.0;
+  }
+
+  // c = (highlights, shadows, whites, blacks), each -100..100.
+  float toneCurve(float y, vec4 c) {
+    if (!toneCurveNonzero(c)) return y;
+    float h = c.x / 100.0, s = c.y / 100.0, w = c.z / 100.0, b = c.w / 100.0;
+    float aS = s > 0.0 ? 0.25 * s : 0.10 * s;
+    float aH = h > 0.0 ? 0.10 * h : 0.25 * h;
+    y = y + aS * toneBump(1.0 - y);
+    y = y + aH * toneBump(y);
+    float wIn = 1.0 - 0.25 * max(w, 0.0), wOut = 1.0 + 0.2 * min(w, 0.0);
+    float bIn = 0.15 * max(-b, 0.0), bOut = 0.15 * max(b, 0.0);
+    float t = clamp((y - bIn) / (wIn - bIn), 0.0, 1.0);
+    return bOut + (wOut - bOut) * t;
+  }
+
+  // tone = (exposureEv, contrast, saturation); curve as toneCurve's c.
+  vec3 applyTone(vec3 rgb, vec3 tone, vec4 curve) {
+    bool cv = toneCurveNonzero(curve);
+    if (tone.x == 0.0 && tone.y == 0.0 && tone.z == 0.0 && !cv) return rgb;
+    float gain = pow(2.0, tone.x);
+    float k = 1.0 + tone.y;
+    vec3 v = rgb * gain;
+    if (cv) {
+      float L = dot(v, TONE_LUMA);
+      float t = clamp(L, 0.0, 1.0);
+      float L2 = L + (toneCurve(t, curve) - t);
+      if (L > 1e-5) v *= L2 / L; else v += vec3(L2 - L);
+    }
+    vec3 toned = (v - vec3(0.5)) * k + vec3(0.5);
+    float luma = dot(toned, TONE_LUMA);
+    float s = 1.0 + tone.z;
+    return luma + (toned - luma) * s;
+  }`;
+
   const COMPOSITE_FS = `#version 300 es
   precision highp float;
   uniform sampler2D uLens;      // one square lens frame, S x S
@@ -142,23 +194,12 @@
   uniform float uHazeWidth, uHazeStrength;
   uniform float uTerminatorDesaturate, uTerminatorCoolShift;
   uniform vec3  uTone;          // exposureEv, contrast, saturation
+  uniform vec4  uToneCurve;     // highlights, shadows, whites, blacks (-100..100)
   out vec4 fragColor;
-  ` + SAMPLE_LENS_GLSL + `
+  ` + SAMPLE_LENS_GLSL + TONE_GLSL + `
 
   const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
   const vec3 COOL = vec3(0.82, 0.92, 1.12);   // cast the last of the image picks up
-
-  // Mirrors edge.js applyTone exactly, including its pass-through guard, so
-  // uTone = vec3(0.0) is bit-identical to tone being absent.
-  vec3 applyTone(vec3 rgb, vec3 tone) {
-    if (tone.x == 0.0 && tone.y == 0.0 && tone.z == 0.0) return rgb;
-    float gain = pow(2.0, tone.x);
-    float k = 1.0 + tone.y;
-    vec3 toned = (rgb * gain - vec3(0.5)) * k + vec3(0.5);
-    float luma = dot(toned, LUMA);
-    float s = 1.0 + tone.z;
-    return luma + (toned - luma) * s;
-  }
 
   float terminator(float u) {
     if (u <= uFalloffStart) return 1.0;
@@ -190,7 +231,7 @@
     vec3 img = vec3(0.0);
     if (u < 1.0) {
       img = sampleLensAt(uLens, u, theta, uCropFrac, uRoll);
-      img = applyTone(img, uTone);
+      img = applyTone(img, uTone, uToneCurve);
       float term = terminator(u);
       float fade = 1.0 - term;
       img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);
@@ -324,10 +365,27 @@
   }
 
   const COMPOSITE_RAW_FS = toRawVariant(COMPOSITE_FS);
+
+  // Browser-side tone parity (app.js checkToneParity): TONE_GLSL's
+  // applyTone over 256 synthetic inputs, one per fragment along x, written
+  // to a float target so it can be compared with Edge.applyTone on the
+  // same inputs (TONE_PARITY_INPUT in app.js computes them identically;
+  // every value is exact in float32).
+  const TONE_PARITY_FS = `#version 300 es
+  precision highp float;
+  uniform vec3 uTone;
+  uniform vec4 uToneCurve;
+  out vec4 fragColor;
+  ` + TONE_GLSL + `
+  void main() {
+    float x = floor(gl_FragCoord.x);
+    vec3 rgb = vec3(x / 255.0, (255.0 - x) / 255.0 * 0.8 + 0.1, mod(x * 37.0, 256.0) / 255.0);
+    fragColor = vec4(applyTone(rgb, uTone, uToneCurve), 1.0);
+  }`;
   const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS);
 
   return {
     FULLSCREEN_VS, COMPOSITE_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
-    COMPOSITE_RAW_FS, PROFILE_BUILD_RAW_FS,
+    COMPOSITE_RAW_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS,
   };
 });
