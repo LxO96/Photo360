@@ -111,3 +111,22 @@ test('nudgeSliderValue keeps a usable native step (Camera roll stays at 0.1 deg)
   assert.strictEqual(Settings.nudgeSliderValue(0, -180, 180, 0.1, 'ArrowRight'), 0.1);
   assert.strictEqual(Settings.nudgeSliderValue(0, -180, 180, 0.1, 'ArrowRight', { fine: true }), 0.1);
 });
+
+// -- Scopes section (waveform / vectorscope) ------------------------------
+
+test('the scopes section is first and open by default', () => {
+  assert.strictEqual(Settings.PANEL_SECTIONS[0], 'scopes');
+  assert.strictEqual(Settings.DEFAULT_PANELS.scopes, true);
+});
+
+test('scope modes are persisted and validated as enums', () => {
+  assert.ok(Settings.PERSISTED_KEYS.includes('scopeMode'));
+  assert.ok(Settings.PERSISTED_KEYS.includes('waveformMode'));
+  const defs = { scopeMode: 'waveform', waveformMode: 'luma' };
+  const ok = Settings.sanitize(defs, { scopeMode: 'vectorscope', waveformMode: 'parade' });
+  assert.strictEqual(ok.scopeMode, 'vectorscope');
+  assert.strictEqual(ok.waveformMode, 'parade');
+  const bad = Settings.sanitize(defs, { scopeMode: 'histogram', waveformMode: 3 });
+  assert.strictEqual(bad.scopeMode, 'waveform');
+  assert.strictEqual(bad.waveformMode, 'luma');
+});

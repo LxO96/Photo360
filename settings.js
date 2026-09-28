@@ -25,7 +25,7 @@
   const PERSISTED_KEYS = [
     'fovDeg', 'thetaMaxDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone',
-    'rawWb', 'rawWbLinked', 'panels',
+    'rawWb', 'rawWbLinked', 'panels', 'scopeMode', 'waveformMode',
   ];
 
   // Task 18: the side panel's collapsible sections, in display order, and
@@ -37,12 +37,15 @@
   // hide a section for good or invent a new one. Edge starts closed: its
   // seven fitted parameters are the most specialised controls on the page
   // and the X1-classic preset is the intended starting point.
-  const PANEL_SECTIONS = ['framing', 'level', 'whiteBalance', 'edge', 'tone', 'output'];
+  const PANEL_SECTIONS = ['scopes', 'framing', 'level', 'whiteBalance', 'edge', 'tone', 'output'];
   const DEFAULT_PANELS = {
-    framing: true, level: true, whiteBalance: true, edge: false, tone: true, output: true,
+    scopes: true, framing: true, level: true, whiteBalance: true, edge: false, tone: true, output: true,
   };
 
-  const ENUMS = { sensors: ['A', 'B', 'both'], orientation: ['side', 'stacked'] };
+  const ENUMS = {
+    sensors: ['A', 'B', 'both'], orientation: ['side', 'stacked'],
+    scopeMode: ['waveform', 'vectorscope'], waveformMode: ['luma', 'parade'],
+  };
 
   // Single source of truth for the valid domain of every numeric field.
   // Shaped like the state itself so mergeValue can walk both trees together.

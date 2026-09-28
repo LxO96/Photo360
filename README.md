@@ -72,6 +72,18 @@ value. Shift makes the step coarser, Ctrl makes it finer, and Page Up/Down
 make a coarse step. **Export** sits at the bottom of the panel, next to the
 exact pixel size and aspect ratio it will write.
 
+### Scopes
+
+The **Scopes** section at the top of the panel stays in view while you
+scroll through the sliders. **Waveform** plots brightness (0–100%) across
+the image, column by column, as either **Luma** or an **RGB** parade.
+**Vectorscope** plots colour on the standard Rec.709 layout, with boxes for
+the 75% colour targets and a dashed skin-tone line; a neutral image sits in
+the centre, so an off-centre blob shows a colour cast. Both read the
+rendered preview, so they include white balance, tone and edge, and when
+zoomed they cover only the visible part. The black surround outside the
+image circles is left out.
+
 ### Preview and zoom
 
 The preview fills the stage at the composition's true aspect ratio, drawn at

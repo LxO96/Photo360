@@ -159,6 +159,10 @@
     // Task 18: which collapsible panel sections are open. A plain UI
     // preference, persisted and validated through Settings like the rest.
     panels: { ...Settings.DEFAULT_PANELS },
+    // Which scope the Scopes section shows, and the waveform's channels.
+    // Plain preferences, persisted as enums (Settings.ENUMS).
+    scopeMode: 'waveform',
+    waveformMode: 'luma',
   };
   let ctx = null;
 
@@ -478,6 +482,7 @@
     canvas.style.height = (canvas.height / m.dpr) + 'px';
     previewPlace = r.place;
     GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
+    sampleScopes();
     updateZoomControls(m, g);
     const c = Lens.coverage(state.fovDeg, state.thetaMaxDeg);
     readout.textContent = c.overlapDeg === 0
@@ -562,6 +567,199 @@
   // read exactly horizontal there regardless of source type -- using
   // Lens.rollFor(state, physical) directly (the same call circleDraw itself
   // makes, just without circleDraw's added sensor term) guarantees that.
+  // -- Scopes (waveform / vectorscope) ------------------------------------
+  // They read the rendered preview, so they show exactly what is on screen
+  // (white balance, tone and edge included; only the visible part when
+  // zoomed). The WebGL canvas keeps no drawing buffer between frames, so
+  // the sample has to be taken right after renderComposition, in the same
+  // task -- hence sampleScopes() inside render(). The small sample is kept
+  // so switching modes redraws without re-rendering. Pixels outside the
+  // image circles are left out; the black surround would otherwise pile up
+  // at 0%.
+  const scopeEl = document.getElementById('scope');
+  const waveformModesEl = document.getElementById('waveformModes');
+  const scopeSample = document.createElement('canvas');
+  const SCOPE_SAMPLE_MAX_PIXELS = 160000;
+  let scopePixels = null;  // { px, w, h, include, n } from the last render
+
+  function sampleScopes() {
+    if (!state.panels.scopes) { scopePixels = null; return; }
+    const plotW = Math.max(60, Math.round(scopeEl.clientWidth * (window.devicePixelRatio || 1)));
+    let w = Math.max(1, Math.min(canvas.width, plotW));
+    let h = Math.max(1, Math.round(w * canvas.height / canvas.width));
+    const k = Math.sqrt(SCOPE_SAMPLE_MAX_PIXELS / (w * h));
+    if (k < 1) { w = Math.max(1, Math.floor(w * k)); h = Math.max(1, Math.floor(h * k)); }
+    scopeSample.width = w;
+    scopeSample.height = h;
+    const g = scopeSample.getContext('2d', { willReadFrequently: true });
+    g.drawImage(canvas, 0, 0, w, h);
+    const sx = w / canvas.width, sy = h / canvas.height;
+    const include = Scopes.insideCircles(previewLayout().circles.map((c) => ({
+      cx: c.cx * sx, cy: c.cy * sy, radius: c.radius * Math.min(sx, sy),
+    })));
+    let n = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (include(x, y)) n++;
+    scopePixels = { px: g.getImageData(0, 0, w, h).data, w, h, include, n };
+    drawScope();
+  }
+
+  function sizeScopeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = Math.max(1, Math.round(scopeEl.clientWidth * dpr));
+    const h = Math.max(1, Math.round(scopeEl.clientHeight * dpr));
+    if (scopeEl.width !== w) scopeEl.width = w;
+    if (scopeEl.height !== h) scopeEl.height = h;
+    return { w, h, dpr };
+  }
+
+  // Paints count bins (cols x rows) into an offscreen canvas, each channel
+  // in its own colour and added together, for drawImage to scale.
+  // `flipRows` puts bin row 0 (level 0, black) at the bottom.
+  function binsToCanvas(channels, cols, rows, colours, ref, flipRows) {
+    const c = document.createElement('canvas');
+    c.width = cols; c.height = rows;
+    const g = c.getContext('2d');
+    const img = g.createImageData(cols, rows);
+    for (let row = 0; row < rows; row++) {
+      const srcRow = flipRows ? rows - 1 - row : row;
+      for (let x = 0; x < cols; x++) {
+        const o = (row * cols + x) * 4;
+        let r = 0, gg = 0, b = 0, a = 0;
+        for (let ch = 0; ch < channels.length; ch++) {
+          const v = Scopes.intensity(channels[ch][srcRow * cols + x], ref);
+          if (!v) continue;
+          r += colours[ch][0] * v; gg += colours[ch][1] * v; b += colours[ch][2] * v;
+          a = Math.max(a, v);
+        }
+        img.data[o] = Math.min(255, r / (a || 1));
+        img.data[o + 1] = Math.min(255, gg / (a || 1));
+        img.data[o + 2] = Math.min(255, b / (a || 1));
+        img.data[o + 3] = Math.round(a * 255);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return c;
+  }
+
+  const SCOPE_TRACE = [235, 235, 235];
+  const PARADE_COLOURS = [[255, 80, 70], [80, 230, 100], [80, 140, 255]];
+
+  function drawScope() {
+    const vector = state.scopeMode === 'vectorscope';
+    scopeEl.classList.toggle('square', vector);
+    waveformModesEl.classList.toggle('hidden', vector);
+    for (const b of document.querySelectorAll('[data-scope]')) {
+      b.setAttribute('aria-pressed', String(b.dataset.scope === state.scopeMode));
+    }
+    for (const b of document.querySelectorAll('[data-wf]')) {
+      b.setAttribute('aria-pressed', String(b.dataset.wf === state.waveformMode));
+    }
+    if (!state.panels.scopes) return;
+    const { w, h, dpr } = sizeScopeCanvas();
+    const g = scopeEl.getContext('2d');
+    g.clearRect(0, 0, w, h);
+    g.imageSmoothingEnabled = true;
+    const sp = scopePixels && scopePixels.n ? scopePixels : null;
+    if (vector) {
+      const size = 129;
+      if (sp) {
+        const bins = Scopes.vectorscope(sp.px, sp.w, sp.h, { size, include: sp.include });
+        const ref = Math.max(2, (sp.n / (size * size)) * 40);
+        g.drawImage(binsToCanvas([bins], size, size, [SCOPE_TRACE], ref, false), 0, 0, w, h);
+      }
+      drawVectorGraticule(g, w, size, dpr);
+    } else {
+      const parade = state.waveformMode === 'parade';
+      const levels = Math.min(256, h);
+      if (sp) {
+        const wf = Scopes.waveform(sp.px, sp.w, sp.h, { levels, mode: state.waveformMode, include: sp.include });
+        const ref = Math.max(2, (sp.n / (sp.w * levels)) * 12);
+        if (parade) {
+          wf.channels.forEach((ch, i) => {
+            g.drawImage(binsToCanvas([ch], wf.cols, levels, [PARADE_COLOURS[i]], ref, true),
+              (i * w) / 3, 0, w / 3, h);
+          });
+        } else {
+          g.drawImage(binsToCanvas(wf.channels, wf.cols, levels, [SCOPE_TRACE], ref, true), 0, 0, w, h);
+        }
+      }
+      drawWaveformGraticule(g, w, h, dpr, parade);
+    }
+  }
+
+  // 0-100% in 10% steps; 0, 50 and 100 are stronger and labelled.
+  function drawWaveformGraticule(g, w, h, dpr, parade) {
+    g.lineWidth = 1;
+    g.font = `${9 * dpr}px ui-monospace, Consolas, monospace`;
+    g.textBaseline = 'middle';
+    for (let p = 0; p <= 100; p += 10) {
+      const y = Math.round((1 - p / 100) * (h - 1)) + 0.5;
+      g.strokeStyle = p % 50 === 0 ? 'rgba(160,160,160,.35)' : 'rgba(160,160,160,.14)';
+      g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke();
+      if (p % 50 === 0) {
+        g.fillStyle = 'rgba(160,160,160,.6)';
+        g.fillText(String(p), 3 * dpr, Math.min(h - 6 * dpr, Math.max(6 * dpr, y)));
+      }
+    }
+    if (parade) {
+      g.strokeStyle = 'rgba(160,160,160,.3)';
+      for (const x of [w / 3, (2 * w) / 3]) {
+        g.beginPath(); g.moveTo(Math.round(x) + 0.5, 0); g.lineTo(Math.round(x) + 0.5, h); g.stroke();
+      }
+    }
+  }
+
+  // Outer ring, centre cross, the six 75% targets and the skin-tone line.
+  function drawVectorGraticule(g, w, size, dpr) {
+    const s = w / size;
+    const mid = w / 2;
+    g.lineWidth = 1;
+    g.strokeStyle = 'rgba(160,160,160,.22)';
+    g.beginPath(); g.arc(mid, mid, mid - 1, 0, Math.PI * 2); g.stroke();
+    g.beginPath();
+    g.moveTo(mid, 0); g.lineTo(mid, w); g.moveTo(0, mid); g.lineTo(w, mid);
+    g.stroke();
+    const skin = Scopes.skinLine(size);
+    g.strokeStyle = 'rgba(160,160,160,.35)';
+    g.setLineDash([3 * dpr, 3 * dpr]);
+    g.beginPath(); g.moveTo(skin.x1 * s, skin.y1 * s); g.lineTo(skin.x2 * s, skin.y2 * s); g.stroke();
+    g.setLineDash([]);
+    g.font = `${9 * dpr}px ui-monospace, Consolas, monospace`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    const box = 5 * dpr;
+    for (const t of Scopes.targets(size)) {
+      const x = t.x * s, y = t.y * s;
+      g.strokeStyle = 'rgba(160,160,160,.5)';
+      g.strokeRect(x - box / 2, y - box / 2, box, box);
+      const dx = x - mid, dy = y - mid, len = Math.hypot(dx, dy) || 1;
+      g.fillStyle = 'rgba(160,160,160,.7)';
+      g.fillText(t.name, x + (dx / len) * 11 * dpr, y + (dy / len) * 11 * dpr);
+    }
+    g.textAlign = 'start';
+  }
+
+  for (const b of document.querySelectorAll('[data-scope]')) {
+    b.addEventListener('click', () => {
+      state.scopeMode = b.dataset.scope;
+      drawScope();
+      scheduleSave();
+    });
+  }
+  for (const b of document.querySelectorAll('[data-wf]')) {
+    b.addEventListener('click', () => {
+      state.waveformMode = b.dataset.wf;
+      drawScope();
+      scheduleSave();
+    });
+  }
+  // Opening the section needs a fresh sample, which only a render can take.
+  // Deferred a frame so the panel listener has recorded panels.scopes.
+  document.getElementById('scopes').addEventListener('toggle', (e) => {
+    if (!e.target.open) return;
+    requestAnimationFrame(() => { if (state.sourceLensSize) render(); else drawScope(); });
+  });
+
   function drawGuides() {
     if (!ctx || !state.sourceLensSize) return;
     positionGuides();
@@ -979,6 +1177,7 @@
     // itself stays hidden until a raw file is loaded.
     syncWbControls();
     syncPanels();
+    drawScope();
   }
 
   sensorsEl.addEventListener('input', () => {

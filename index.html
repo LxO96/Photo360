@@ -124,6 +124,20 @@
     display: flex; flex-direction: column; min-height: 0;
     background: var(--panel); border-left: 1px solid var(--line);
   }
+  /* -- Scopes ----------------------------------------------------------- */
+  #scopes { flex: none; }
+  #scopes > .body { padding: 6px 12px 8px; }
+  .scope-modes { display: flex; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
+  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 3px; overflow: hidden; }
+  .seg button {
+    background: transparent; border: 0; color: var(--mut); font-size: 11px;
+    height: 20px; padding: 0 8px; cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--line-2); }
+  .seg button:hover { color: var(--fg); }
+  .seg button[aria-pressed="true"] { color: var(--accent); background: #232323; }
+  #scope { display: block; width: 100%; height: 150px; background: #0c0c0c; border: 1px solid var(--line); border-radius: 2px; }
+  #scope.square { height: auto; aspect-ratio: 1; width: 200px; margin: 0 auto; }
   #panelScroll { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: #3a3a3a transparent; }
 
   details.sec { border-bottom: 1px solid var(--line); }
@@ -265,6 +279,24 @@
   </div>
 
   <aside id="panel">
+    <!-- Scopes sit outside the scrolling list so they stay in view while
+         the sliders below are adjusted. -->
+    <details id="scopes" class="sec" data-panel="scopes" open>
+      <summary>Scopes</summary>
+      <div class="body">
+        <div class="scope-modes">
+          <div class="seg" role="group" aria-label="Scope">
+            <button type="button" data-scope="waveform">Waveform</button>
+            <button type="button" data-scope="vectorscope">Vectorscope</button>
+          </div>
+          <div id="waveformModes" class="seg" role="group" aria-label="Waveform channels">
+            <button type="button" data-wf="luma">Luma</button>
+            <button type="button" data-wf="parade">RGB</button>
+          </div>
+        </div>
+        <canvas id="scope" aria-label="Scope"></canvas>
+      </div>
+    </details>
     <div id="panelScroll">
 
     <details class="sec" data-panel="framing" open>
@@ -428,6 +460,7 @@
 
   <script src="lens.js"></script>
   <script src="view.js"></script>
+  <script src="scopes.js"></script>
   <script src="edge.js"></script>
   <script src="exif.js"></script>
   <script src="dng.js"></script>
