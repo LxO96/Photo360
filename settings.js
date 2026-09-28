@@ -24,7 +24,7 @@
   const PERSISTED_KEYS = [
     'fovDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone', 'detail',
-    'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels',
+    'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels', 'scopeScale',
   ];
 
   // Task 18: the side panel's collapsible sections, in display order, and
@@ -77,6 +77,8 @@
     gapFrac: [0, 0.25],
     marginFrac: [0, 0.25],
     background: [0, 1],
+    // The scopes overlay's zoom factor (1 = the 320px box).
+    scopeScale: [0.75, 2.5],
     edge: {
       edgeIntensity: [0, 4],
       ringWidth: [0.002, 0.06],
@@ -264,6 +266,17 @@
   // The physical lenses currently on screen -- what the lens-specific
   // controls (nudge, white balance) are shown for. Like dragSign, goes
   // through the injected GL.physicalLens so swap is honoured.
+  // The scopes overlay's scale, clamped to RANGES.scopeScale and so the box
+  // (boxW x boxH at scale 1) takes at most SCOPE_MAX_STAGE_SHARE of the
+  // stage's width and height. The range minimum wins over the stage limit,
+  // so a tiny window still gets a usable box.
+  const SCOPE_MAX_STAGE_SHARE = 0.6;
+  function fitScopeScale(scale, boxW, boxH, stageW, stageH) {
+    const [lo, hi] = RANGES.scopeScale;
+    const room = Math.min(stageW * SCOPE_MAX_STAGE_SHARE / boxW, stageH * SCOPE_MAX_STAGE_SHARE / boxH);
+    return Math.max(lo, Math.min(hi, room, scale));
+  }
+
   function visibleLenses(state, physicalLensFn) {
     if (state.sensors === 'both') return ['A', 'B'];
     return [physicalLensFn(state, state.sensors)];
@@ -337,7 +350,7 @@
   }
 
   return {
-    valueAt, visibleLenses, STORAGE_KEY, PERSISTED_KEYS, RANGES, PANEL_SECTIONS, DEFAULT_PANELS,
+    valueAt, visibleLenses, fitScopeScale, STORAGE_KEY, PERSISTED_KEYS, RANGES, PANEL_SECTIONS, DEFAULT_PANELS,
     sanitize, serialize, save, load,
     normalizeAngleDeltaDeg, rollForDrag, dragSign, resolveSwapForLoad,
     parseReadout, decimalsForStep, nudgeSliderValue,

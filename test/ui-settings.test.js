@@ -134,6 +134,29 @@ test('scope modes are persisted and validated as enums', () => {
   assert.strictEqual(Settings.sanitize(defs, { scopeMode: 'histogram' }).scopeMode, 'histogram');
 });
 
+test('scope scale is persisted and clamped', () => {
+  assert.ok(Settings.PERSISTED_KEYS.includes('scopeScale'));
+  const defs = { scopeScale: 1 };
+  assert.strictEqual(Settings.sanitize(defs, { scopeScale: 1.5 }).scopeScale, 1.5);
+  assert.strictEqual(Settings.sanitize(defs, { scopeScale: 9 }).scopeScale, Settings.RANGES.scopeScale[1]);
+  assert.strictEqual(Settings.sanitize(defs, { scopeScale: 0.1 }).scopeScale, Settings.RANGES.scopeScale[0]);
+  assert.strictEqual(Settings.sanitize(defs, { scopeScale: 'big' }).scopeScale, 1);
+});
+
+test('fitScopeScale keeps the scopes within 60% of the stage and within range', () => {
+  const [lo, hi] = Settings.RANGES.scopeScale;
+  // A 320 x 220 box on a roomy stage: only the range limits apply.
+  assert.strictEqual(Settings.fitScopeScale(1.5, 320, 220, 4000, 3000), 1.5);
+  assert.strictEqual(Settings.fitScopeScale(99, 320, 220, 4000, 3000), hi);
+  assert.strictEqual(Settings.fitScopeScale(0, 320, 220, 4000, 3000), lo);
+  // Width-bound: 60% of 800 = 480 px -> 1.5x.
+  assert.strictEqual(Settings.fitScopeScale(2, 320, 220, 800, 3000), 1.5);
+  // Height-bound: 60% of 550 = 330 px -> 1.5x.
+  assert.strictEqual(Settings.fitScopeScale(2, 320, 220, 4000, 550), 1.5);
+  // A stage too small for even the minimum still gets the minimum.
+  assert.strictEqual(Settings.fitScopeScale(1, 320, 220, 200, 200), lo);
+});
+
 // -- Detail (sharpening / noise reduction) ---------------------------------
 
 test('detail is persisted, clamped, and has its own panel section after Tone', () => {

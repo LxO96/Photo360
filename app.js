@@ -168,6 +168,7 @@
     // the histogram and waveform. Plain preferences, persisted
     // (Settings.ENUMS for the two modes).
     scopesShown: true,
+    scopeScale: 1,
     scopeMode: 'histogram',
     scopeChannels: 'luma',
   };
@@ -607,7 +608,7 @@
 
   function sampleScopes() {
     if (!state.scopesShown) { scopePixels = null; return; }
-    const plotW = Math.max(60, Math.round(scopeEl.clientWidth * (window.devicePixelRatio || 1)));
+    const plotW = Math.max(60, Math.round(scopeEl.getBoundingClientRect().width * (window.devicePixelRatio || 1)));
     let w = Math.max(1, Math.min(canvas.width, plotW));
     let h = Math.max(1, Math.round(w * canvas.height / canvas.width));
     const k = Math.sqrt(SCOPE_SAMPLE_MAX_PIXELS / (w * h));
@@ -628,9 +629,12 @@
   }
 
   function sizeScopeCanvas() {
-    const dpr = window.devicePixelRatio || 1;
-    const w = Math.max(1, Math.round(scopeEl.clientWidth * dpr));
-    const h = Math.max(1, Math.round(scopeEl.clientHeight * dpr));
+    // The on-screen size, which includes the box's zoom (scopeScale), so the
+    // plot is drawn at its real resolution instead of being stretched.
+    const r = scopeEl.getBoundingClientRect();
+    const dpr = (window.devicePixelRatio || 1) * (r.width / (scopeEl.clientWidth || r.width || 1));
+    const w = Math.max(1, Math.round(r.width * (window.devicePixelRatio || 1)));
+    const h = Math.max(1, Math.round(r.height * (window.devicePixelRatio || 1)));
     if (scopeEl.width !== w) scopeEl.width = w;
     if (scopeEl.height !== h) scopeEl.height = h;
     return { w, h, dpr };
@@ -668,8 +672,26 @@
   const SCOPE_TRACE = [235, 235, 235];
   const RGB_COLOURS = [[255, 80, 70], [80, 230, 100], [80, 140, 255]];
 
+  // Applies state.scopeScale as the box's CSS zoom, first fitted to the
+  // current stage (Settings.fitScopeScale) so a smaller window can't be
+  // covered by it. The fitted value is only applied, not stored, so the
+  // chosen size comes back when the window grows again.
+  function applyScopeScale() {
+    const fitted = Settings.fitScopeScale(state.scopeScale, SCOPE_BOX_W, scopeBoxH1(),
+      stageEl.clientWidth || Infinity, stageEl.clientHeight || Infinity);
+    if (scopeBoxEl.style.zoom !== String(fitted)) scopeBoxEl.style.zoom = String(fitted);
+    return fitted;
+  }
+  const SCOPE_BOX_W = 320;
+  // The box's height at scale 1 (it changes with the mode).
+  function scopeBoxH1() {
+    const z = parseFloat(scopeBoxEl.style.zoom) || 1;
+    return (scopeBoxEl.getBoundingClientRect().height / z) || 220;
+  }
+
   function syncScopeControls() {
     const mode = state.scopeMode;
+    applyScopeScale();
     scopeBoxEl.classList.toggle('hidden', !state.scopesShown);
     scopesToggleEl.setAttribute('aria-pressed', String(state.scopesShown));
     scopeEl.classList.toggle('square', mode === 'vectorscope');
@@ -851,6 +873,47 @@
   for (const type of ['pointerdown', 'wheel', 'dblclick']) {
     scopeBoxEl.addEventListener(type, (e) => e.stopPropagation());
   }
+
+  // Resizing: drag the grip (top-left; the box is anchored bottom-right),
+  // double-click it to reset. Scales the whole box -- plot, buttons, text.
+  const scopeGripEl = document.getElementById('scopeGrip');
+  let scopeResize = null;
+  scopeGripEl.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const r = scopeBoxEl.getBoundingClientRect();
+    scopeResize = { id: e.pointerId, x: e.clientX, y: e.clientY, w: r.width, h: r.height, scale: applyScopeScale() };
+    scopeGripEl.setPointerCapture(e.pointerId);
+    scopeBoxEl.classList.add('resizing');
+  });
+  scopeGripEl.addEventListener('pointermove', (e) => {
+    if (!scopeResize || e.pointerId !== scopeResize.id) return;
+    // Growing is up and to the left; follow whichever direction the
+    // pointer has moved further, relative to the box's size.
+    const kx = (scopeResize.w - (e.clientX - scopeResize.x)) / scopeResize.w;
+    const ky = (scopeResize.h - (e.clientY - scopeResize.y)) / scopeResize.h;
+    const k = Math.abs(kx - 1) >= Math.abs(ky - 1) ? kx : ky;
+    state.scopeScale = Settings.fitScopeScale(scopeResize.scale * k, SCOPE_BOX_W, scopeBoxH1(),
+      stageEl.clientWidth || Infinity, stageEl.clientHeight || Infinity);
+    applyScopeScale();
+    drawScope();
+  });
+  function endScopeResize(e) {
+    if (!scopeResize || e.pointerId !== scopeResize.id) return;
+    scopeResize = null;
+    scopeBoxEl.classList.remove('resizing');
+    // A bigger plot wants a finer sample of the image.
+    if (state.sourceLensSize) render();
+    scheduleSave();
+  }
+  scopeGripEl.addEventListener('pointerup', endScopeResize);
+  scopeGripEl.addEventListener('pointercancel', endScopeResize);
+  scopeGripEl.addEventListener('dblclick', () => {
+    state.scopeScale = DEFAULTS.scopeScale;
+    applyScopeScale();
+    if (state.sourceLensSize) render(); else drawScope();
+    scheduleSave();
+  });
 
   function drawGuides() {
     if (!ctx || !state.sourceLensSize) return;

@@ -131,6 +131,17 @@
     padding: 6px; backdrop-filter: blur(6px); touch-action: none; cursor: default;
   }
   body:not(.loaded) #scopeBox { display: none; }
+  /* Resize grip: the box is anchored bottom-right, so it grows up and to
+     the left from here. app.js scales the whole box with CSS zoom. */
+  #scopeGrip {
+    position: absolute; left: -4px; top: -4px; width: 16px; height: 16px; z-index: 1;
+    cursor: nwse-resize;
+  }
+  #scopeGrip::before {
+    content: ""; position: absolute; left: 3px; top: 3px; width: 8px; height: 8px;
+    border-left: 2px solid var(--fg-2); border-top: 2px solid var(--fg-2); border-top-left-radius: 3px;
+  }
+  #scopeGrip:hover::before, #scopeBox.resizing #scopeGrip::before { border-color: var(--accent); }
   .scope-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
   .scope-head .spring { flex: 1; }
   .seg { flex: none; display: inline-flex; border: 1px solid var(--line-2); border-radius: 3px; overflow: hidden; }
@@ -318,6 +329,7 @@
     <canvas id="view"></canvas>
     <canvas id="guides"></canvas>
     <div id="scopeBox">
+      <div id="scopeGrip" title="Drag to resize the scopes; double-click to reset"></div>
       <div class="scope-head">
         <div class="seg" role="group" aria-label="Scope">
           <button type="button" data-scope="histogram">Histogram</button>

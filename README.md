@@ -77,7 +77,10 @@ exact pixel size and aspect ratio it will write.
 
 The scopes float over the bottom-right corner of the image, where a fisheye
 composition is usually black. **Scopes** in the header (or the × on the box)
-shows and hides them.
+shows and hides them. Drag the bracket at the box's top-left corner to
+scale it (plot, buttons and text together, 0.75–2.5×, never more than 60%
+of the image area's width or height); double-click the bracket to reset.
+The size is remembered.
 
 - **Histogram** (the default): how many pixels sit at each brightness, as
   **Luma** or overlaid **RGB** curves. The readout under it gives the share
