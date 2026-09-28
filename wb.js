@@ -251,8 +251,29 @@
     return sign * Math.sqrt(Math.abs(clamped) / TINT_MAX);
   }
 
+  // White-balance pipette. `srgb` is a spot's rendered linear-sRGB colour
+  // (before tone), `camToSrgb` the row-major matrix that rendered it and
+  // `neutral` the white balance in effect. The raw shader computes
+  // srgb = camToSrgb . (camera / neutral), so the spot's camera colour is
+  // neutral * inv(camToSrgb) . srgb; using that colour (green = 1) as the
+  // new neutral makes the spot render grey. Null if the spot has no usable
+  // colour (black, or a channel at or below zero).
+  function neutralFromRendered(srgb, camToSrgb, neutral) {
+    const inv = mat3Invert(camToSrgb);
+    if (!inv) return null;
+    const cam = [0, 1, 2].map((r) =>
+      neutral[r] * (inv[r * 3] * srgb[0] + inv[r * 3 + 1] * srgb[1] + inv[r * 3 + 2] * srgb[2]));
+    if (!cam.every((v) => v > 1e-6)) return null;
+    return [cam[0] / cam[1], 1, cam[2] / cam[1]];
+  }
+
+  function srgbDecode(v) {
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  }
+
   return {
-    kelvinToXyOnLocus, kelvinTintToXy, xyToKelvinTint,
+    kelvinToXyOnLocus,
+    neutralFromRendered, srgbDecode, kelvinTintToXy, xyToKelvinTint,
     xyToUv, uvToXy, xyToXyz,
     neutralFromKelvinTint, kelvinTintFromNeutral,
     sliderToKelvin, kelvinToSlider, sliderToTint, tintToSlider,

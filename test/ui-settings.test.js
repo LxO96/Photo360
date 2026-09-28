@@ -166,3 +166,14 @@ test('valueAt reads a dotted path, or undefined when absent', () => {
   assert.strictEqual(Settings.valueAt(o, 'tone.nope'), undefined);
   assert.strictEqual(Settings.valueAt(o, 'edge.ringWidth'), undefined);
 });
+
+// -- Settings follow the visible lens ---------------------------------------
+
+test('visibleLenses lists the physical lenses on screen, honouring swap', () => {
+  const phys = (s, slot) => (s.swap ? (slot === 'A' ? 'B' : 'A') : slot);
+  assert.deepStrictEqual(Settings.visibleLenses({ sensors: 'both', swap: false }, phys), ['A', 'B']);
+  assert.deepStrictEqual(Settings.visibleLenses({ sensors: 'both', swap: true }, phys), ['A', 'B']);
+  assert.deepStrictEqual(Settings.visibleLenses({ sensors: 'A', swap: false }, phys), ['A']);
+  assert.deepStrictEqual(Settings.visibleLenses({ sensors: 'A', swap: true }, phys), ['B']);
+  assert.deepStrictEqual(Settings.visibleLenses({ sensors: 'B', swap: false }, phys), ['B']);
+});

@@ -101,7 +101,10 @@
   #view { position: absolute; left: 16px; top: 16px; background: #000000; }
   /* Until a file is loaded the canvas is an empty 300x150 default. */
   body:not(.loaded) #view { visibility: hidden; }
-  #guides { position: absolute; pointer-events: none; }
+  /* Guides fade in while levelling (or always, if chosen) and fade out
+     after (app.js pokeGuides). */
+  #guides { position: absolute; pointer-events: none; opacity: 0; transition: opacity .45s; }
+  #guides.show { opacity: 1; transition: opacity .1s; }
   #stage.zoomed { cursor: grab; }
   #stage.zoomed.panning { cursor: grabbing; }
   #drop {
@@ -232,6 +235,10 @@
   .note { color: var(--mut); font-size: 11px; line-height: 1.4; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
   .note:empty { display: none; }
   .actions { display: flex; justify-content: flex-end; margin-top: 6px; gap: 6px; }
+  .actions.tools { justify-content: flex-start; margin: 0 0 4px; }
+  /* A tool that is waiting for input on the image (Straighten, Pick). */
+  .btn.ghost[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-soft); }
+  #stage.tool-active, #stage.tool-active.zoomed { cursor: crosshair; }
 
   /* -- Export footer ---------------------------------------------------- */
   #panelFoot { flex: none; border-top: 1px solid var(--line-2); background: var(--bar); padding: 10px 12px 12px; }
@@ -345,19 +352,24 @@
     <details class="sec" data-panel="level" open>
       <summary>Level</summary>
       <div class="body">
-        <label class="check"><input id="showGuides" type="checkbox" checked> Show horizon guides</label>
+        <div class="actions tools">
+          <button id="straightenBtn" class="btn ghost" type="button" aria-pressed="false"
+            title="Drag along something that should be level or upright; the camera roll follows. Esc cancels.">Straighten</button>
+        </div>
         <div class="row"><label for="roll">Camera roll</label>
           <input id="roll" type="range" min="-180" max="180" step="0.1" value="0">
           <span class="val"><input id="rollOut" class="num" type="text" inputmode="decimal" aria-label="Camera roll, degrees"><i>°</i></span></div>
-        <div class="row"><label for="nudgeA">Lens A nudge</label>
+        <div class="row" data-lens="A"><label for="nudgeA">Lens A nudge</label>
           <input id="nudgeA" type="range" min="-10" max="10" step="0.1" value="0">
           <span class="val"><input id="nudgeAOut" class="num" type="text" inputmode="decimal" aria-label="Lens A nudge, degrees"><i>°</i></span></div>
-        <div class="row"><label for="nudgeB">Lens B nudge</label>
+        <div class="row" data-lens="B"><label for="nudgeB">Lens B nudge</label>
           <input id="nudgeB" type="range" min="-10" max="10" step="0.1" value="0">
           <span class="val"><input id="nudgeBOut" class="num" type="text" inputmode="decimal" aria-label="Lens B nudge, degrees"><i>°</i></span></div>
-        <div class="note">Drag a circle on the image to roll it (Shift-drag when zoomed in;
-          a plain drag then pans). Scroll to zoom, double-click for Fit / 100%. Arrow keys
-          adjust a focused slider; Shift is coarse, Ctrl is fine.</div>
+        <label class="check"><input id="showGuides" type="checkbox"> Always show guides</label>
+        <div class="note">Guides appear while you level. Straighten: drag along a horizon,
+          edge or upright. Or drag a circle to roll it (Shift-drag when zoomed in; a plain
+          drag then pans). Scroll to zoom, double-click for Fit / 100%. Arrow keys adjust a
+          focused slider; Shift is coarse, Ctrl is fine; double-click a slider to reset it.</div>
       </div>
     </details>
 
@@ -367,6 +379,7 @@
         <div class="note">Kelvin + tint per lens, as in Lightroom. Kelvin is the colour
           temperature being corrected for; raising it warms the image. Positive tint adds
           magenta, negative adds green.</div>
+        <div data-lens="A">
         <div class="sub-h">Lens A</div>
         <div class="row"><label for="kelvinA">Temperature</label>
           <input id="kelvinA" type="range" min="0" max="1" step="0.0001">
@@ -374,6 +387,8 @@
         <div class="row"><label for="tintA">Tint</label>
           <input id="tintA" type="range" min="-1" max="1" step="0.0001">
           <span class="val"><input id="tintAOut" class="num" type="text" inputmode="numeric" aria-label="Lens A tint"><i></i></span></div>
+        </div>
+        <div data-lens="B">
         <div class="sub-h">Lens B</div>
         <div class="row"><label for="kelvinB">Temperature</label>
           <input id="kelvinB" type="range" min="0" max="1" step="0.0001">
@@ -381,8 +396,14 @@
         <div class="row"><label for="tintB">Tint</label>
           <input id="tintB" type="range" min="-1" max="1" step="0.0001">
           <span class="val"><input id="tintBOut" class="num" type="text" inputmode="numeric" aria-label="Lens B tint"><i></i></span></div>
-        <label class="check"><input id="wbLink" type="checkbox" checked> Link A and B</label>
-        <div class="actions"><button id="wbReset" class="btn ghost" type="button">Reset to as-shot</button></div>
+        </div>
+        <label class="check" data-lens="both"><input id="wbLink" type="checkbox" checked> Link A and B</label>
+        <div class="actions">
+          <button id="wbPick" class="btn ghost" type="button" aria-pressed="false"
+            title="Click a spot that should be neutral grey or white. Esc cancels.">Pick neutral</button>
+          <button id="wbReset" class="btn ghost" type="button">Reset to as-shot</button>
+        </div>
+        <div id="wbPickNote" class="note hidden"></div>
       </div>
     </details>
 

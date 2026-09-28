@@ -177,3 +177,37 @@ test('Dng.parse exposes the raw ColorMatrix1 (independently verified values)', (
   const want = [0.9312, -0.1238, -0.0846, -0.5823, 1.4648, 0.3586, -0.0969, 0.1790, 0.8560];
   want.forEach((w, i) => assert.ok(Math.abs(cm[i] - w) < 1e-4, `cm[${i}]=${cm[i]}`));
 });
+
+// -- White-balance pipette ----------------------------------------------
+
+test('neutralFromRendered recovers the camera colour of a rendered spot', () => {
+  const Dng = require('../dng.js');
+  const M1 = [0.9312, -0.1238, -0.0846, -0.5823, 1.4648, 0.3586, -0.0969, 0.179, 0.856];
+  const current = [0.5, 1, 0.55];
+  const m = Dng.camToSrgbForNeutral(M1, current);
+  // A grey card under a warmer light: camera colour (0.3, 0.5, 0.2).
+  const cam = [0.3, 0.5, 0.2];
+  const wbd = cam.map((v, i) => v / current[i]);
+  const s = [0, 1, 2].map((r) => m[r * 3] * wbd[0] + m[r * 3 + 1] * wbd[1] + m[r * 3 + 2] * wbd[2]);
+  const n = Wb.neutralFromRendered(s, m, current);
+  const want = [0.3 / 0.5, 1, 0.2 / 0.5];
+  n.forEach((v, i) => assert.ok(Math.abs(v - want[i]) < 1e-9, `${i}: ${v} vs ${want[i]}`));
+  // Picking with that neutral renders the spot grey.
+  const m2 = Dng.camToSrgbForNeutral(M1, n);
+  const w2 = cam.map((v, i) => v / n[i]);
+  const s2 = [0, 1, 2].map((r) => m2[r * 3] * w2[0] + m2[r * 3 + 1] * w2[1] + m2[r * 3 + 2] * w2[2]);
+  assert.ok(Math.abs(s2[0] - s2[1]) < 1e-6 && Math.abs(s2[2] - s2[1]) < 1e-6, JSON.stringify(s2));
+});
+
+test('neutralFromRendered rejects black or impossible spots', () => {
+  const I = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+  assert.strictEqual(Wb.neutralFromRendered([0, 0, 0], I, [1, 1, 1]), null);
+  assert.strictEqual(Wb.neutralFromRendered([0.5, 0, 0.5], I, [1, 1, 1]), null);
+  assert.strictEqual(Wb.neutralFromRendered([0.5, 0.5, -0.1], I, [1, 1, 1]), null);
+});
+
+test('srgbDecode inverts the sRGB curve', () => {
+  assert.strictEqual(Wb.srgbDecode(0), 0);
+  assert.ok(Math.abs(Wb.srgbDecode(1) - 1) < 1e-12);
+  assert.ok(Math.abs(Wb.srgbDecode(0.5) - 0.214041) < 1e-6);
+});

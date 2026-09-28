@@ -188,6 +188,45 @@
     return base + state.nudgeDeg[lens];
   }
 
+  // Straighten tool. `a` and `b` are the two ends of a line the user drew
+  // on one displayed circle, in units of that circle's radius (x right,
+  // y up, centre 0); `halfFovDeg` is the angle at the circle's edge
+  // (fovDeg / 2). Returns { deltaDeg, kind }: how far to rotate the
+  // displayed image counter-clockwise so the line becomes truly level
+  // ('horizontal') or plumb ('vertical'), whichever is the smaller turn.
+  // Null for a line too short to have a direction.
+  //
+  // A fisheye bends straight lines, so the on-screen angle of the drawn
+  // segment is not the answer away from the centre. Instead each end is
+  // unprojected (equidistant model) to a ray; the two rays span the plane
+  // containing the real 3D line, with normal n. Assuming the lens axis is
+  // level (roll is the only correction this tool makes), a vertical line's
+  // plane contains "up", and a horizontal line facing the camera (or the
+  // horizon) contains the image-plane horizontal. After a rotation D those
+  // are n'.(0,1,0) = n_x sin D + n_y cos D = 0 and n'.(1,0,0) =
+  // n_x cos D - n_y sin D = 0.
+  function straightenDelta(a, b, halfFovDeg) {
+    const ray = (p) => {
+      const t = Math.hypot(p.x, p.y) * halfFovDeg * Math.PI / 180;
+      const psi = Math.atan2(p.y, p.x);
+      return [Math.sin(t) * Math.cos(psi), Math.sin(t) * Math.sin(psi), Math.cos(t)];
+    };
+    const r1 = ray(a), r2 = ray(b);
+    const n = [
+      r1[1] * r2[2] - r1[2] * r2[1],
+      r1[2] * r2[0] - r1[0] * r2[2],
+      r1[0] * r2[1] - r1[1] * r2[0],
+    ];
+    if (Math.hypot(n[0], n[1]) < 1e-9) return null;
+    const deg = 180 / Math.PI;
+    const vertical = Math.atan2(-n[1], n[0]);
+    const horizontal = Math.atan2(n[0], n[1]);
+    // Both are defined modulo 180 degrees; take the smallest turn.
+    const wrap = (r) => { let d = r * deg; while (d > 90) d -= 180; while (d <= -90) d += 180; return d; };
+    const v = wrap(vertical), h = wrap(horizontal);
+    return Math.abs(h) <= Math.abs(v) ? { deltaDeg: h, kind: 'horizontal' } : { deltaDeg: v, kind: 'vertical' };
+  }
+
   function exportFilename(sourceName, lensLabel, fovDeg, ext) {
     const stem = sourceName.replace(/\.[^.]+$/, '');
     const fov = String(Math.round(fovDeg * 10) / 10).replace('.', '-');
@@ -196,6 +235,6 @@
 
   return {
     THETA_MAX_DEG, radiusForFov, fovForRadius, coverage, detectLayout, exportLayout,
-    exportFilename, rollFor, CALIBRATIONS, calibrationFor, fovRangeFor, calibrationNote,
+    exportFilename, rollFor, straightenDelta, CALIBRATIONS, calibrationFor, fovRangeFor, calibrationNote,
   };
 });

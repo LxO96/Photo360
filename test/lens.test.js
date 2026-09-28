@@ -337,3 +337,52 @@ test('calibrationNote says so when the Calibration slider has moved off the mode
   assert.strictEqual(Lens.calibrationNote(Lens.calibrationFor('Insta360 One2'), 97.5),
     'ONE X · 190° full · user-reported · set to 195°');
 });
+
+// -- Straighten tool ------------------------------------------------------
+// Builds a 3D line, projects its two ends through the equidistant lens
+// (half-FOV `half`), rolls the displayed image by `rollDeg` (counter-
+// clockwise, y up), and checks straightenDelta recovers the roll.
+function project(v, halfDeg) {
+  const len = Math.hypot(v[0], v[1], v[2]);
+  const theta = Math.acos(v[2] / len) * 180 / Math.PI;
+  const psi = Math.atan2(v[1], v[0]);
+  const r = theta / halfDeg;
+  return { x: r * Math.cos(psi), y: r * Math.sin(psi) };
+}
+function rotate(p, deg) {
+  const a = deg * Math.PI / 180;
+  return { x: p.x * Math.cos(a) - p.y * Math.sin(a), y: p.x * Math.sin(a) + p.y * Math.cos(a) };
+}
+
+test('straightenDelta levels a vertical line, even off-centre where it curves', () => {
+  for (const roll of [-20, -3, 0, 7.5, 30]) {
+    for (const x of [0, 0.4, -1.2]) {
+      const a = rotate(project([x, -0.6, 1], 90), roll);
+      const b = rotate(project([x, 0.8, 1], 90), roll);
+      const s = Lens.straightenDelta(a, b, 90);
+      assert.strictEqual(s.kind, 'vertical');
+      assert.ok(Math.abs(s.deltaDeg + roll) < 1e-9, `roll ${roll} x ${x}: ${s.deltaDeg}`);
+    }
+  }
+});
+
+test('straightenDelta levels a horizontal line and the horizon', () => {
+  for (const roll of [-25, 4, 12]) {
+    // A horizontal edge facing the camera, above centre.
+    let a = rotate(project([-0.9, 0.5, 1], 95), roll);
+    let b = rotate(project([0.7, 0.5, 1], 95), roll);
+    let s = Lens.straightenDelta(a, b, 95);
+    assert.strictEqual(s.kind, 'horizontal');
+    assert.ok(Math.abs(s.deltaDeg + roll) < 1e-9, `edge roll ${roll}: ${s.deltaDeg}`);
+    // The horizon: horizontal directions at any depth.
+    a = rotate(project([-1, 0, 0.3], 95), roll);
+    b = rotate(project([1, 0, 2], 95), roll);
+    s = Lens.straightenDelta(a, b, 95);
+    assert.strictEqual(s.kind, 'horizontal');
+    assert.ok(Math.abs(s.deltaDeg + roll) < 1e-9, `horizon roll ${roll}: ${s.deltaDeg}`);
+  }
+});
+
+test('straightenDelta returns null for a zero-length line', () => {
+  assert.strictEqual(Lens.straightenDelta({ x: 0.2, y: 0.1 }, { x: 0.2, y: 0.1 }, 90), null);
+});

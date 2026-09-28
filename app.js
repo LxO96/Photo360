@@ -499,6 +499,7 @@
           `${(c.duplicatedAreaFraction * 100).toFixed(0)}% of this image also appears in the other lens.`
         : `${(-c.overlapDeg).toFixed(1)}° short of the hemisphere — a gap between the two lenses.`;
     drawGuides();
+    updateLensControls();
     updateExportSize();
   }
 
@@ -849,7 +850,7 @@
     positionGuides();
     const g = guidesCanvas.getContext('2d');
     g.clearRect(0, 0, guidesCanvas.width, guidesCanvas.height);
-    if (!showGuidesEl.checked) return;
+    updateGuidesVisibility();
     // Same layout render() drew with -- guidesCanvas has #view's own pixel
     // size (positionGuides), so it tracks fit, zoom and pan exactly.
     const layout = previewLayout();
@@ -890,9 +891,176 @@
       g.lineTo(circ.cx + dx * circ.radius, circ.cy + dy * circ.radius);
       g.stroke();
     }
+    // The line being drawn with the Straighten tool.
+    if (straightenLine && straightenLine.end) {
+      const { start, end } = straightenLine;
+      g.lineWidth = Math.max(1, (window.devicePixelRatio || 1) * 1.5);
+      g.strokeStyle = 'rgba(240,160,75,0.95)';
+      g.beginPath(); g.moveTo(start.x, start.y); g.lineTo(end.x, end.y); g.stroke();
+      g.fillStyle = 'rgba(240,160,75,0.95)';
+      for (const q of [start, end]) { g.beginPath(); g.arc(q.x, q.y, g.lineWidth * 2, 0, Math.PI * 2); g.fill(); }
+    }
+  }
+
+  // Guides show while the user is levelling -- moving a roll or nudge
+  // control, dragging a circle, or using Straighten -- and fade out a
+  // moment after, unless "Always show guides" is on.
+  const GUIDES_LINGER_MS = 1000;
+  let guidesUntil = 0;
+  let guidesTimer = null;
+  function updateGuidesVisibility() {
+    const levelling = (drag && drag.kind === 'roll') || tool === 'straighten';
+    const show = showGuidesEl.checked || levelling || performance.now() < guidesUntil;
+    guidesCanvas.classList.toggle('show', show);
+  }
+  function pokeGuides() {
+    guidesUntil = performance.now() + GUIDES_LINGER_MS;
+    updateGuidesVisibility();
+    clearTimeout(guidesTimer);
+    guidesTimer = setTimeout(updateGuidesVisibility, GUIDES_LINGER_MS + 20);
   }
 
   showGuidesEl.addEventListener('input', () => drawGuides());
+
+  // -- Controls follow the visible lens -----------------------------------
+  // Lens-specific controls ([data-lens="A"|"B"]: nudge, white balance) are
+  // shown only for lenses on screen; [data-lens="both"] (Link A and B) only
+  // when both are.
+  const lensEls = Array.from(document.querySelectorAll('[data-lens]'));
+  function updateLensControls() {
+    const shown = Settings.visibleLenses(state, GL.physicalLens);
+    for (const el of lensEls) {
+      const want = el.dataset.lens;
+      el.classList.toggle('hidden', want === 'both' ? shown.length < 2 : !shown.includes(want));
+    }
+  }
+
+  // -- Tools: Straighten and Pick neutral ---------------------------------
+  // A tool waits for input on the image: the next drag (Straighten) or
+  // click (Pick) goes to it instead of rolling or panning, then it turns
+  // itself off. Esc, or its button again, cancels.
+  const straightenBtnEl = document.getElementById('straightenBtn');
+  const wbPickEl = document.getElementById('wbPick');
+  const wbPickNoteEl = document.getElementById('wbPickNote');
+  let tool = null;             // null | 'straighten' | 'pick'
+  let straightenLine = null;   // { circ, start, end } in canvas pixels
+
+  function setTool(name) {
+    tool = name;
+    straightenLine = null;
+    straightenBtnEl.setAttribute('aria-pressed', String(tool === 'straighten'));
+    wbPickEl.setAttribute('aria-pressed', String(tool === 'pick'));
+    stageEl.classList.toggle('tool-active', !!tool);
+    if (tool === 'pick') wbPickNoteEl.classList.add('hidden');
+    drawGuides();
+  }
+  straightenBtnEl.addEventListener('click', () => setTool(tool === 'straighten' ? null : 'straighten'));
+  wbPickEl.addEventListener('click', () => setTool(tool === 'pick' ? null : 'pick'));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && tool) { setTool(null); pokeGuides(); }
+  });
+
+  // The circle under a canvas point, or null.
+  function circleAt(p) {
+    for (const c of previewLayout().circles) {
+      if (Math.hypot(p.x - c.cx, p.y - c.cy) <= c.radius) return c;
+    }
+    return null;
+  }
+
+  // Straighten: the drawn line, in circle units (x right, y up), goes
+  // through Lens.straightenDelta, which says how far to turn the displayed
+  // image counter-clockwise. Settings.rollForDrag (clockwise on screen,
+  // with the lens's sign) applies a turn exactly as a drag of that angle
+  // would, so a turn of -delta is what makes the line level or plumb.
+  function applyStraighten() {
+    const { circ, start, end } = straightenLine;
+    const toUnit = (q) => ({ x: (q.x - circ.cx) / circ.radius, y: -(q.y - circ.cy) / circ.radius });
+    const s = Lens.straightenDelta(toUnit(start), toUnit(end), state.fovDeg / 2);
+    if (!s) return;
+    const { sign } = Settings.dragSign(state, circ.lens, GL.physicalLens);
+    state.rollDeg = Settings.rollForDrag(state.rollDeg, sign, -s.deltaDeg);
+    reflectNum(NUM.roll, true);
+    render();
+    scheduleSave();
+  }
+
+  // Pick neutral: renders the preview with tone and detail off (so those
+  // sliders cannot skew the pick), averages a small patch around the click,
+  // turns it back into linear sRGB and asks Wb.neutralFromRendered for the
+  // white balance that makes it grey. Going through Kelvin/tint is not
+  // exact, so this measures and solves again a couple of times; it
+  // converges in two or three passes. Clipped or black spots are refused
+  // with a note rather than applied.
+  const PICK_HALF = 3;       // a 7 x 7 device-pixel patch
+  const PICK_PASSES = 3;
+
+  // Mean linear sRGB of the patch at p as rendered with tone and detail
+  // off, or { error } for a clipped or too-dark spot.
+  function measurePick(p) {
+    const saved = { tone: state.tone, detail: state.detail };
+    state.tone = { ...DEFAULTS.tone };
+    state.detail = { ...DEFAULTS.detail };
+    GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
+    const size = PICK_HALF * 2 + 1;
+    const c2 = document.createElement('canvas');
+    c2.width = size; c2.height = size;
+    const g = c2.getContext('2d', { willReadFrequently: true });
+    g.drawImage(canvas, Math.round(p.x) - PICK_HALF, Math.round(p.y) - PICK_HALF, size, size, 0, 0, size, size);
+    const px = g.getImageData(0, 0, size, size).data;
+    state.tone = saved.tone;
+    state.detail = saved.detail;
+    const lin = [0, 0, 0];
+    let clipped = false, bright = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      for (let c = 0; c < 3; c++) {
+        if (px[i + c] >= 250) clipped = true;
+        bright = Math.max(bright, px[i + c]);
+        lin[c] += Wb.srgbDecode(px[i + c] / 255);
+      }
+    }
+    if (clipped) return { error: 'That spot is clipped. Pick something bright but not blown out.' };
+    if (bright <= 8) return { error: 'That spot is too dark to judge. Pick a mid or light grey.' };
+    return { srgb: lin.map((v) => v / (size * size)) };
+  }
+
+  function pickNeutralAt(p, circ) {
+    const physical = GL.physicalLens(state, circ.lens);
+    const lenses = state.rawWbLinked ? ['A', 'B'] : [physical];
+    const rk = Settings.RANGES.rawWb[physical];
+    let kelvin = null, tint = null, atLimit = false;
+    for (let pass = 0; pass < PICK_PASSES; pass++) {
+      const m = measurePick(p);
+      const mat = state.rawCamToSrgb && state.rawCamToSrgb[physical];
+      const neutral = m.srgb && mat ? Wb.neutralFromRendered(m.srgb, mat, state.rawWhiteBalance[physical]) : null;
+      if (!neutral) {
+        // A spot that is fine on the first pass stays fine; if the very
+        // first measurement is unusable, nothing has been changed yet.
+        if (pass === 0) {
+          render();
+          showPickNote(m.error || 'That spot has no usable colour. Pick a neutral grey or white.');
+          return;
+        }
+        break;
+      }
+      const kt = Wb.kelvinTintFromNeutral(neutral, state.rawMeta && state.rawMeta.colorMatrix1);
+      kelvin = Math.max(rk.kelvin[0], Math.min(rk.kelvin[1], kt.kelvin));
+      tint = Math.max(rk.tint[0], Math.min(rk.tint[1], kt.tint));
+      atLimit = kelvin !== kt.kelvin || tint !== kt.tint;
+      for (const l of lenses) state.rawWb[l] = { kelvin, tint };
+      syncWbControls();   // also recomputes the neutral and matrix used next pass
+      if (atLimit) break;
+    }
+    render();
+    scheduleSave();
+    showPickNote(`Set ${Math.round(kelvin)} K, tint ${tint > 0 ? '+' : ''}${Math.round(tint)}` +
+      (lenses.length === 1 ? ` on lens ${physical}` : '') + (atLimit ? ' (at the slider limit)' : '') + '.');
+  }
+  function showPickNote(text) {
+    wbPickNoteEl.textContent = text;
+    wbPickNoteEl.classList.remove('hidden');
+  }
+
 
   // -- Drag-to-roll ----------------------------------------------------------
   // Converts a pointer event's client coordinates into #view's own canvas
@@ -995,6 +1163,16 @@
   stageEl.addEventListener('pointerdown', (e) => {
     if (!ctx || !state.sourceLensSize) return;
     if (e.button !== 0) return;
+    if (tool) {
+      const p = pointerToCanvas(e);
+      const circ = circleAt(p);
+      if (!circ) return;
+      if (tool === 'pick') { setTool(null); pickNeutralAt(p, circ); return; }
+      straightenLine = { circ, start: p, end: null };
+      drag = { kind: 'straighten', pointerId: e.pointerId };
+      e.target.setPointerCapture(e.pointerId);
+      return;
+    }
     if (isZoomedIn() && !e.shiftKey) {
       drag = {
         kind: 'pan', pointerId: e.pointerId, x: e.clientX, y: e.clientY,
@@ -1032,6 +1210,11 @@
 
   stageEl.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.pointerId) return;
+    if (drag.kind === 'straighten') {
+      straightenLine.end = pointerToCanvas(e);
+      drawGuides();
+      return;
+    }
     if (drag.kind === 'pan') {
       const { m, g } = zoomContext();
       zoom = View.clampPan({
@@ -1052,10 +1235,24 @@
     scheduleSave();
   });
 
+  // A Straighten line shorter than this (device pixels) is treated as a
+  // stray click and ignored.
+  const STRAIGHTEN_MIN_PX = 12;
   function endDrag(e) {
     if (!drag || e.pointerId !== drag.pointerId) return;
+    const kind = drag.kind;
     drag = null;
     stageEl.classList.remove('panning');
+    if (kind === 'straighten') {
+      const l = straightenLine;
+      const ok = e.type === 'pointerup' && l && l.end &&
+        Math.hypot(l.end.x - l.start.x, l.end.y - l.start.y) >= STRAIGHTEN_MIN_PX;
+      if (ok) applyStraighten();
+      setTool(ok ? null : 'straighten');
+      pokeGuides();
+    } else if (kind === 'roll') {
+      pokeGuides();
+    }
   }
   stageEl.addEventListener('pointerup', endDrag);
   stageEl.addEventListener('pointercancel', endDrag);
@@ -1184,11 +1381,13 @@
     if (force || document.activeElement !== d.out) d.out.value = d.fmt(v);
   }
 
+  const LEVEL_IDS = ['roll', 'nudgeA', 'nudgeB'];
   function commitNum(d, v) {
     if (d.apply) { d.apply(v); return; }
     d.set(v);
     reflectNum(d, true);
     if (d.live) { render(); scheduleSave(); }
+    if (LEVEL_IDS.includes(d.id)) pokeGuides();
   }
 
   // Applies what was typed into a readout: parsed and clamped through the
@@ -1276,6 +1475,7 @@
     syncWbControls();
     syncPanels();
     drawScope();
+    updateLensControls();
   }
 
   sensorsEl.addEventListener('input', () => {
@@ -1718,6 +1918,7 @@
   window.App = {
     loadFile, state, render, rollFor: Lens.rollFor, checkParity, checkToneParity, checkDetailParity,
     setZoom, zoomToFit, getZoom: () => (zoom ? Object.assign({}, zoom) : null),
+    previewLayout,
     saveSettings, loadSettings, exportImage,
   };
 })();

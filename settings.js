@@ -261,6 +261,14 @@
   // has exactly one implementation of this decision to regress, and it is
   // unit-testable without a DOM. For a dual (or not-yet-loaded) file,
   // `swap` is left exactly as it was.
+  // The physical lenses currently on screen -- what the lens-specific
+  // controls (nudge, white balance) are shown for. Like dragSign, goes
+  // through the injected GL.physicalLens so swap is honoured.
+  function visibleLenses(state, physicalLensFn) {
+    if (state.sensors === 'both') return ['A', 'B'];
+    return [physicalLensFn(state, state.sensors)];
+  }
+
   function resolveSwapForLoad(currentSwap, lensCount) {
     return lensCount === 1 ? false : currentSwap;
   }
@@ -329,7 +337,7 @@
   }
 
   return {
-    valueAt, STORAGE_KEY, PERSISTED_KEYS, RANGES, PANEL_SECTIONS, DEFAULT_PANELS,
+    valueAt, visibleLenses, STORAGE_KEY, PERSISTED_KEYS, RANGES, PANEL_SECTIONS, DEFAULT_PANELS,
     sanitize, serialize, save, load,
     normalizeAngleDeltaDeg, rollForDrag, dragSign, resolveSwapForLoad,
     parseReadout, decimalsForStep, nudgeSliderValue,
