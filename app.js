@@ -531,7 +531,7 @@
     exportDimsEl.textContent = `${g.width} × ${g.height} px`;
     // Kept current here rather than set when printing: a print started
     // from the browser's menu picks the page size before `beforeprint`.
-    printPageEl.textContent = `@page { size: ${Lens.printOrientation(g.width, g.height)}; margin: 8mm; }`;
+    printPageEl.textContent = `@page { size: ${Lens.printOrientation(g.width, g.height)}; margin: 0; }`;
     const ratioEl = document.createElement('span');
     ratioEl.className = 'ratio';
     ratioEl.textContent = ratio;

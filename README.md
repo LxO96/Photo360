@@ -276,8 +276,9 @@ two.
 - **Print** (or **Ctrl+P** / **Cmd+P**) — renders the same full-resolution
   image Export would (same size and padding, no JPEG/PNG encode) and opens
   the browser's print dialog with only that image on the page, scaled to
-  fit inside an 8 mm margin and centred. The page is landscape for a wider
-  than tall image (both lenses side by side) and portrait otherwise; the
+  fit the page and centred. The page itself has no margin; the printer's
+  own unprintable edge is left to the printer. The page is landscape for a
+  wider than tall image (both lenses side by side) and portrait otherwise; the
   dialog can still change paper, orientation and scale. Printing from the
   browser's own menu gets the same page. With no file loaded, Ctrl+P prints
   the page as usual.
