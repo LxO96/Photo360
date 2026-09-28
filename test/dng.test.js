@@ -97,3 +97,45 @@ test('a compressed DNG is rejected with a reason mentioning compression', () => 
   assert.ok(/compression/i.test(Dng.lastRejectionReason()),
     'rejection reason should mention compression: ' + Dng.lastRejectionReason());
 });
+
+// -- camToSrgbForNeutral: the DNG-spec camera -> linear sRGB matrix -------
+// Reference values computed independently in NumPy from the DNG spec's
+// no-ForwardMatrix path: inv(ColorMatrix1) . diag(neutral), Bradford-adapted
+// from the neutral's own white to D65, then XYZ(D65) -> sRGB, scaled so a
+// white-balanced (1,1,1) lands at (1,1,1).
+const ONE_X_CM1 = [0.9312000274337828, -0.12380000163046644, -0.08460000114729628,
+  -0.5823000071487855, 1.4648000003224972, 0.35859999030763284,
+  -0.09690000074771232, 0.17900000474369154, 0.8560000061318278];
+
+function mulVec(m, v) {
+  return [0, 1, 2].map((r) => m[r * 3] * v[0] + m[r * 3 + 1] * v[1] + m[r * 3 + 2] * v[2]);
+}
+
+test('camToSrgbForNeutral matches the DNG-spec reference matrix', () => {
+  const cases = [
+    { n: [0.5031940935885519, 1, 0.5459149478808779],
+      want: [1.8543, -0.8303, -0.024, -0.1631, 1.5069, -0.3438, 0.0278, -0.5362, 1.5083] },
+    { n: [0.7, 1, 0.4],
+      want: [1.9533, -0.9629, 0.0096, -0.1876, 1.4422, -0.2546, 0.0867, -0.7402, 1.6535] },
+  ];
+  for (const { n, want } of cases) {
+    const m = Dng.camToSrgbForNeutral(ONE_X_CM1, n);
+    m.forEach((v, i) => assert.ok(Math.abs(v - want[i]) < 1e-3, `m[${i}] = ${v}, want ${want[i]}`));
+  }
+});
+
+test('camToSrgbForNeutral maps a white-balanced neutral to exactly white', () => {
+  for (const n of [[0.5, 1, 0.53], [0.7, 1, 0.4], [0.4, 1, 0.8]]) {
+    mulVec(Dng.camToSrgbForNeutral(ONE_X_CM1, n), [1, 1, 1])
+      .forEach((v) => assert.ok(Math.abs(v - 1) < 1e-6, String(v)));
+  }
+});
+
+test('camToSrgbForNeutral falls back to identity without a usable matrix', () => {
+  assert.deepStrictEqual(Dng.camToSrgbForNeutral(null, [0.5, 1, 0.5]), [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+});
+
+test('parse seeds camToSrgb from the file\'s own AsShotNeutral', () => {
+  const d = Dng.parse(load(FILES[2]));
+  assert.deepStrictEqual(d.camToSrgb, Dng.camToSrgbForNeutral(d.colorMatrix1, d.asShotNeutral));
+});

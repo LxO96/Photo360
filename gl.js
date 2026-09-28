@@ -129,7 +129,10 @@
     // uCamToSrgb is row-major (dng.js); WebGL2 allows `transpose: true` on
     // uniformMatrix3fv (unlike WebGL1), so it can be uploaded as-is instead
     // of being transposed into GLSL's column-major convention by hand.
-    gl.uniformMatrix3fv(u('uCamToSrgb'), true, meta.camToSrgb);
+    // The matrix depends on the neutral (Dng.camToSrgbForNeutral), so it is
+    // per lens, like the white balance itself.
+    const camToSrgb = (state.rawCamToSrgb && state.rawCamToSrgb[physicalLens]) || meta.camToSrgb;
+    gl.uniformMatrix3fv(u('uCamToSrgb'), true, camToSrgb);
   }
 
   // Renders the two rim-profile passes (build, then angular blur) for one

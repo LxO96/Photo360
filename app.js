@@ -147,6 +147,11 @@
     // task changes how the neutral is produced, never the shader path that
     // consumes it.
     rawWhiteBalance: { A: [1, 1, 1], B: [1, 1, 1] },
+    // Per-lens camera -> linear sRGB matrix built for that lens's neutral
+    // (Dng.camToSrgbForNeutral); derived alongside rawWhiteBalance, never
+    // persisted. Null until a raw file is loaded (gl.js then uses
+    // rawMeta.camToSrgb).
+    rawCamToSrgb: null,
     // Whether moving one lens's white-balance sliders moves both. A plain
     // user preference, persisted the same way, with no file ever overriding
     // it (unlike rawWb itself).
@@ -231,6 +236,10 @@
       A: Wb.neutralFromKelvinTint(state.rawWb.A.kelvin, state.rawWb.A.tint, m),
       B: Wb.neutralFromKelvinTint(state.rawWb.B.kelvin, state.rawWb.B.tint, m),
     };
+    state.rawCamToSrgb = m ? {
+      A: Dng.camToSrgbForNeutral(m, state.rawWhiteBalance.A),
+      B: Dng.camToSrgbForNeutral(m, state.rawWhiteBalance.B),
+    } : null;
   }
 
   // Reflects state.rawWb into the Kelvin/tint sliders and their editable

@@ -147,15 +147,21 @@
   }
 
   // -- Colour matrix ----------------------------------------------------------
-  // DNG's ColorMatrix1 maps CIE XYZ (D50) -> camera-native RGB, i.e. the
-  // opposite direction from what a renderer needs. Invert it, then chain
-  // with a fixed Bradford-adapted XYZ(D50)->linear-sRGB matrix (Lindbloom's
-  // widely used constants) to get camera-native RGB -> linear sRGB in one
-  // 3x3, computed once here on the CPU -- never per fragment.
-  const XYZ_D50_TO_SRGB = [
-    3.1338561, -1.6168667, -0.4906146,
-    -0.9787684, 1.9161415, 0.0334540,
-    0.0719453, -0.2289914, 1.4052427,
+  // DNG's ColorMatrix1 maps CIE XYZ -> camera-native RGB (these files
+  // calibrate it under D65, CalibrationIlluminant1 = 21). Rendering goes the
+  // other way, so the matrix is inverted and then chained with the fixed
+  // XYZ(D65) -> linear-sRGB matrix below (IEC 61966-2-1 constants).
+  const XYZ_D65_TO_SRGB = [
+    3.2404542, -1.5371385, -0.4985314,
+    -0.9692660, 1.8760108, 0.0415560,
+    0.0556434, -0.2040259, 1.0572252,
+  ];
+  const D65_WHITE = [0.95047, 1, 1.08883];
+  // Bradford cone-response matrix, for white-point adaptation.
+  const BRADFORD = [
+    0.8951, 0.2664, -0.1614,
+    -0.7502, 1.7135, 0.0367,
+    0.0389, -0.0685, 1.0296,
   ];
 
   function mat3Det(m) {
@@ -202,40 +208,38 @@
     ];
   }
 
-  // Computes white-balanced camera-native-RGB -> linear-sRGB, row-major, or
-  // null if ColorMatrix1 is missing/degenerate (caller falls back to
-  // identity).
+  const IDENTITY3 = [1, 0, 0, 0, 1, 0, 0, 0, 1];
+
+  // White-balanced camera RGB (camera RGB divided by `neutral`, as the raw
+  // shader does) -> linear sRGB, row-major. This is the DNG spec's path for
+  // files without ForwardMatrix: undo the white balance (diag(neutral)),
+  // camera -> XYZ via inv(ColorMatrix1), Bradford-adapt from the scene
+  // white (the neutral's own XYZ) to D65, then XYZ -> sRGB. Scaled so a
+  // white-balanced (1,1,1) renders exactly (1,1,1) -- a uniform scale, so it
+  // never tints. The matrix depends on the neutral, so it must be rebuilt
+  // whenever white balance changes. Identity if ColorMatrix1 is missing or
+  // degenerate.
   //
-  // Chaining invert(ColorMatrix1) with the fixed D50 XYZ->sRGB matrix alone
-  // is *not* enough to guarantee a neutral subject renders neutral: these
-  // files carry no ForwardMatrix/CameraCalibration/AnalogBalance tags, so
-  // there is nothing pinning the calibration illuminant's white to the D50
-  // PCS white the fixed matrix assumes. Measured directly against these
-  // three files: feeding a perfectly white-balanced neutral (1,1,1) through
-  // invert(ColorMatrix1) then XYZ_D50_TO_SRGB alone lands at roughly
-  // (2.03, 0.54, 1.46) -- nowhere near neutral. The fix applied here is a
-  // one-time per-channel normalization, folded into the same 3x3: scale
-  // each output row so that this specific matrix's own neutral point (its
-  // row sums, i.e. what (1,1,1) maps to) lands at exactly (1,1,1). This
-  // guarantees the stated requirement (a white-balanced neutral renders
-  // neutral) by construction, at the cost of not being a fully rigorous
-  // chromatic adaptation for saturated colors -- acceptable given this
-  // renderer is deliberately neutral-only ("finish in Lightroom"), and
-  // verified numerically in the task report.
-  function computeCamToSrgb(colorMatrix1) {
-    if (!colorMatrix1 || colorMatrix1.length !== 9) return null;
-    const xyzFromCam = colorMatrix1; // XYZ -> camera
-    const camToXyz = mat3Invert(xyzFromCam);
-    if (!camToXyz) return null;
-    const base = mat3Mul(XYZ_D50_TO_SRGB, camToXyz);
-    const neutralOut = mat3MulVec(base, [1, 1, 1]);
-    if (neutralOut.some((v) => Math.abs(v) < 1e-9)) return base; // degenerate; skip normalization
-    const scale = neutralOut.map((v) => 1 / v);
-    return [
-      base[0] * scale[0], base[1] * scale[0], base[2] * scale[0],
-      base[3] * scale[1], base[4] * scale[1], base[5] * scale[1],
-      base[6] * scale[2], base[7] * scale[2], base[8] * scale[2],
-    ];
+  // The previous version skipped diag(neutral) and the adaptation, then
+  // forced neutrals back to white by scaling each output row separately.
+  // That left a green row of about 2.5G - 0.5R - 1.0B, which crushed green
+  // in anything bluish and rendered skies and fringes purple.
+  function camToSrgbForNeutral(colorMatrix1, neutral) {
+    if (!colorMatrix1 || colorMatrix1.length !== 9 || !neutral) return IDENTITY3.slice();
+    const camToXyz = mat3Invert(colorMatrix1);
+    if (!camToXyz) return IDENTITY3.slice();
+    const white = mat3MulVec(camToXyz, neutral);
+    const src = mat3MulVec(BRADFORD, white);
+    const dst = mat3MulVec(BRADFORD, D65_WHITE);
+    if (src.some((v) => Math.abs(v) < 1e-12)) return IDENTITY3.slice();
+    const gain = [dst[0] / src[0], 0, 0, 0, dst[1] / src[1], 0, 0, 0, dst[2] / src[2]];
+    const adapt = mat3Mul(mat3Invert(BRADFORD), mat3Mul(gain, BRADFORD));
+    const diagN = [neutral[0], 0, 0, 0, neutral[1], 0, 0, 0, neutral[2]];
+    const m = mat3Mul(XYZ_D65_TO_SRGB, mat3Mul(adapt, mat3Mul(camToXyz, diagN)));
+    const out = mat3MulVec(m, [1, 1, 1]);
+    const k = (out[0] + out[1] + out[2]) / 3;
+    if (!(Math.abs(k) > 1e-12)) return IDENTITY3.slice();
+    return m.map((v) => v / k);
   }
 
   // -- Main entry point ---------------------------------------------------
@@ -351,8 +355,10 @@
         ? asShotNeutralVals.slice() : [1, 1, 1];
 
       const colorMatrix1Vals = tagValues(bytes, r, tiffStart, rawFound[TAG_COLOR_MATRIX1]);
-      const camToSrgb = computeCamToSrgb(colorMatrix1Vals) ||
-        [1, 0, 0, 0, 1, 0, 0, 0, 1]; // identity fallback if the tag is absent/degenerate
+      // As-shot default; app.js rebuilds it per lens whenever white balance
+      // changes (see camToSrgbForNeutral).
+      const camToSrgb = camToSrgbForNeutral(
+        colorMatrix1Vals && colorMatrix1Vals.length === 9 ? colorMatrix1Vals : null, asShotNeutral);
 
       return {
         width: width[0],
@@ -389,5 +395,5 @@
     return s;
   }
 
-  return { parse, lastRejectionReason };
+  return { parse, lastRejectionReason, camToSrgbForNeutral };
 });
