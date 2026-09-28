@@ -233,8 +233,15 @@
     return `${stem}_${lensLabel}_${fov}deg.${ext}`;
   }
 
+  // Paper orientation for printing a w x h image: landscape only when it is
+  // wider than tall (the 2:1 dual layout); a single square lens prints
+  // portrait, which is what print dialogs default to anyway.
+  function printOrientation(w, h) {
+    return w > h ? 'landscape' : 'portrait';
+  }
+
   return {
     THETA_MAX_DEG, radiusForFov, fovForRadius, coverage, detectLayout, exportLayout,
-    exportFilename, rollFor, straightenDelta, CALIBRATIONS, calibrationFor, fovRangeFor, calibrationNote,
+    exportFilename, printOrientation, rollFor, straightenDelta, CALIBRATIONS, calibrationFor, fovRangeFor, calibrationNote,
   };
 });

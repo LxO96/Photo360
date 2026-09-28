@@ -260,7 +260,36 @@
   #export:active { filter: brightness(.94); }
   #export:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
   #export:disabled { background: #2b2b2b; color: var(--dim); cursor: default; filter: none; }
+  #print {
+    flex: none; height: 34px; padding: 0 12px; border-radius: 3px; cursor: pointer;
+    background: transparent; color: var(--fg-2); border: 1px solid var(--line-2);
+    font-weight: 600; font-size: 12px;
+  }
+  #print:hover { color: var(--fg); border-color: var(--fg-2); }
+  #print:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+  #print:disabled { color: var(--dim); border-color: var(--line); cursor: default; }
+
+  /* -- Printing ---------------------------------------------------------
+     app.js renders the full-resolution image into #printBox before the
+     print dialog opens and sets body.print-ready; only then does a print
+     show the image alone, scaled to fit the page. Without it (no file
+     loaded) the page prints as it is. Page orientation is written into
+     #printPage by app.js. */
+  #printBox { display: none; }
+  @media print {
+    /* color-scheme: dark would paint the page margins dark too. */
+    :root { color-scheme: light; }
+    html, body.print-ready { background: #fff !important; }
+    body.print-ready { display: block !important; overflow: visible; }
+    body.print-ready > :not(#printBox) { display: none !important; }
+    body.print-ready #printBox {
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; height: 100vh; overflow: hidden; break-inside: avoid;
+    }
+    #printBox canvas { width: 100%; height: 100%; object-fit: contain; }
+  }
 </style>
+<style id="printPage"></style>
 </head>
 <body>
   <header id="bar">
@@ -505,10 +534,13 @@
       <div id="error"></div>
       <div class="exportRow">
         <div id="exportSize"><span id="exportDims">—</span><span id="exportNote">No file loaded</span></div>
+        <button id="print" type="button" disabled title="Print the full-resolution image (Ctrl+P)">Print</button>
         <button id="export" type="button" disabled>Export</button>
       </div>
     </div>
   </aside>
+
+  <div id="printBox" aria-hidden="true"></div>
 
   <script src="lens.js"></script>
   <script src="view.js"></script>

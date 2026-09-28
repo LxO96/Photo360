@@ -22,6 +22,9 @@
   const fileNameEl = document.getElementById('fileName');
   const fileMetaEl = document.getElementById('fileMeta');
   const exportBtn = document.getElementById('export');
+  const printBtn = document.getElementById('print');
+  const printBoxEl = document.getElementById('printBox');
+  const printPageEl = document.getElementById('printPage');
   const whiteBalanceGroupEl = document.getElementById('whiteBalanceGroup');
   const swapHintEl = document.getElementById('swapHint');
   const kelvinAEl = document.getElementById('kelvinA');
@@ -370,6 +373,7 @@
     syncWbControls();
     updateFileHeader();
     exportBtn.disabled = false;
+    printBtn.disabled = false;
     document.body.classList.add('loaded');
     render();
     scheduleSave();
@@ -525,6 +529,9 @@
     // provenance note under it. The full sentence the old single-line
     // readout carried stays available as the tooltip.
     exportDimsEl.textContent = `${g.width} × ${g.height} px`;
+    // Kept current here rather than set when printing: a print started
+    // from the browser's menu picks the page size before `beforeprint`.
+    printPageEl.textContent = `@page { size: ${Lens.printOrientation(g.width, g.height)}; margin: 8mm; }`;
     const ratioEl = document.createElement('span');
     ratioEl.className = 'ratio';
     ratioEl.textContent = ratio;
@@ -1649,6 +1656,54 @@
   // whatever drawing-buffer allocation limit the visible canvas has (this
   // GPU/browser clamps that well below MAX_TEXTURE_SIZE; an offscreen FBO
   // is not -- see the task report for how that was found and confirmed).
+  // Renders `renderState` at full export resolution into a new 2D canvas
+  // and returns it, or reports why it can't (fail) and returns null.
+  // Synchronous, so a print can use it from inside `beforeprint`.
+  function renderFullCanvas(renderState, verb) {
+    const g = GL.exportGeometry(renderState);
+    const gl = ctx.gl;
+    let target = null;
+    const smaller = `Try a smaller FOV, remove padding, or ${verb} one lens at a time.`;
+    try {
+      const limit = Math.min(ctx.maxTextureSize, ctx.maxRenderbufferSize);
+      if (g.width > limit || g.height > limit) {
+        fail(`This GPU caps render targets at ${limit}px; the requested ${verb} ` +
+          `(${g.width}x${g.height}) exceeds it. ` + smaller);
+        return null;
+      }
+      // The 2D canvas's own (browser-specific, but generous) area limit is
+      // distinct from the WebGL drawing-buffer clamp checked above; checked
+      // here, *before* the full-resolution render below, so a browser that
+      // would silently shrink the canvas is caught before spending time on
+      // a render whose result can't be read back anyway.
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = g.width;
+      outCanvas.height = g.height;
+      if (outCanvas.width !== g.width || outCanvas.height !== g.height) {
+        fail(`This browser's 2D canvas cannot hold a ${g.width}x${g.height} image ` +
+          `(it gave ${outCanvas.width}x${outCanvas.height} instead). ` + smaller);
+        return null;
+      }
+      target = GL.makeExportTarget(gl, g.width, g.height);
+      if (!target.complete) {
+        fail(`This GPU could not allocate a ${g.width}x${g.height} render target ` +
+          `(framebuffer status ${target.status}). ` + smaller);
+        return null;
+      }
+      GL.renderComposition(ctx, renderState, g.width, g.height, target.fbo);
+
+      const c2d = outCanvas.getContext('2d');
+      GL.readCompositionStrips(gl, target.fbo, g.width, g.height, EXPORT_STRIP_ROWS,
+        (rowsRGBA, outY, rows) => {
+          const clamped = new Uint8ClampedArray(rowsRGBA.buffer, rowsRGBA.byteOffset, rowsRGBA.length);
+          c2d.putImageData(new ImageData(clamped, g.width, rows), 0, outY);
+        });
+      return outCanvas;
+    } finally {
+      if (target) GL.deleteExportTarget(gl, target);
+    }
+  }
+
   async function exportImage(opts) {
     clearMessages();
     // Deliberately does not write opts back into `state`: this used to mean
@@ -1662,45 +1717,9 @@
       format: opts.format, quality: opts.quality, padToSensorSquare: opts.padToSensorSquare,
     });
     const g = GL.exportGeometry(exportState);
-    const gl = ctx.gl;
-    let target = null;
     try {
-      const limit = Math.min(ctx.maxTextureSize, ctx.maxRenderbufferSize);
-      if (g.width > limit || g.height > limit) {
-        fail(`This GPU caps render targets at ${limit}px; the requested export ` +
-          `(${g.width}x${g.height}) exceeds it. Try a smaller FOV, remove padding, ` +
-          'or export one lens at a time.');
-        return;
-      }
-      // The 2D canvas's own (browser-specific, but generous) area limit is
-      // distinct from the WebGL drawing-buffer clamp checked above; checked
-      // here, *before* the full-resolution render below, so a browser that
-      // would silently shrink the canvas is caught before spending time on
-      // a render whose result can't be read back anyway.
-      const outCanvas = document.createElement('canvas');
-      outCanvas.width = g.width;
-      outCanvas.height = g.height;
-      if (outCanvas.width !== g.width || outCanvas.height !== g.height) {
-        fail(`This browser's 2D canvas cannot hold a ${g.width}x${g.height} image ` +
-          `(it gave ${outCanvas.width}x${outCanvas.height} instead). Try a smaller FOV, ` +
-          'remove padding, or export one lens at a time.');
-        return;
-      }
-      target = GL.makeExportTarget(gl, g.width, g.height);
-      if (!target.complete) {
-        fail(`This GPU could not allocate a ${g.width}x${g.height} render target ` +
-          `(framebuffer status ${target.status}). Try a smaller FOV, remove padding, ` +
-          'or export one lens at a time.');
-        return;
-      }
-      GL.renderComposition(ctx, exportState, g.width, g.height, target.fbo);
-
-      const c2d = outCanvas.getContext('2d');
-      GL.readCompositionStrips(gl, target.fbo, g.width, g.height, EXPORT_STRIP_ROWS,
-        (rowsRGBA, outY, rows) => {
-          const clamped = new Uint8ClampedArray(rowsRGBA.buffer, rowsRGBA.byteOffset, rowsRGBA.length);
-          c2d.putImageData(new ImageData(clamped, g.width, rows), 0, outY);
-        });
+      const outCanvas = renderFullCanvas(exportState, 'export');
+      if (!outCanvas) return;
 
       const blob = await new Promise((resolve, reject) => {
         outCanvas.toBlob(
@@ -1723,8 +1742,6 @@
         ? `The browser could not encode a ${g.width}x${g.height} image. ` +
           'Try PNG, a smaller FOV, or exporting one lens at a time.'
         : 'Export failed: ' + e.message);
-    } finally {
-      if (target) GL.deleteExportTarget(gl, target);
     }
   }
 
@@ -1740,6 +1757,45 @@
     if (!ctx || !state.sourceLensSize) return;
     exportImage({ format: state.format, quality: state.quality, padToSensorSquare: state.padToSensorSquare });
   });
+
+  // Print: the same full-resolution render as Export (same geometry and
+  // padding, no encode), shown alone on the page by the print stylesheet
+  // in index.html. The Print button and Ctrl/Cmd+P prepare it and then open
+  // the dialog; a print started from the browser's menu is caught in
+  // `beforeprint`, which is synchronous, and prepared there. The canvas
+  // (hundreds of MB for a dual frame) is dropped once the dialog closes.
+  function preparePrint() {
+    if (!ctx || !state.sourceLensSize) return false;
+    if (document.body.classList.contains('print-ready')) return true;
+    clearMessages();
+    let c = null;
+    try {
+      c = renderFullCanvas(state, 'print');
+    } catch (e) {
+      fail('Print failed: ' + e.message);
+    }
+    if (!c) return false;
+    printBoxEl.replaceChildren(c);
+    document.body.classList.add('print-ready');
+    return true;
+  }
+  function releasePrint() {
+    printBoxEl.replaceChildren();
+    document.body.classList.remove('print-ready');
+  }
+  function printImage() {
+    if (preparePrint()) window.print();
+  }
+  printBtn.addEventListener('click', printImage);
+  document.addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p' &&
+        ctx && state.sourceLensSize) {
+      e.preventDefault();
+      printImage();
+    }
+  });
+  window.addEventListener('beforeprint', preparePrint);
+  window.addEventListener('afterprint', releasePrint);
 
   loadSettings();
   updateExportLabel();
@@ -1961,6 +2017,6 @@
     loadFile, state, render, rollFor: Lens.rollFor, checkParity, checkToneParity, checkDetailParity,
     setZoom, zoomToFit, getZoom: () => (zoom ? Object.assign({}, zoom) : null),
     previewLayout,
-    saveSettings, loadSettings, exportImage,
+    saveSettings, loadSettings, exportImage, preparePrint, releasePrint,
   };
 })();

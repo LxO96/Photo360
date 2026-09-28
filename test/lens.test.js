@@ -386,3 +386,9 @@ test('straightenDelta levels a horizontal line and the horizon', () => {
 test('straightenDelta returns null for a zero-length line', () => {
   assert.strictEqual(Lens.straightenDelta({ x: 0.2, y: 0.1 }, { x: 0.2, y: 0.1 }, 90), null);
 });
+
+test('print orientation follows the image: wide is landscape, square or tall is portrait', () => {
+  assert.strictEqual(Lens.printOrientation(11904, 5952), 'landscape');
+  assert.strictEqual(Lens.printOrientation(5952, 5952), 'portrait');
+  assert.strictEqual(Lens.printOrientation(4000, 6000), 'portrait');
+});
