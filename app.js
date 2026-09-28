@@ -400,8 +400,13 @@
       builtTextures = [];
       try {
         if (descriptor.kind === 'dng') {
+          const meta = descriptor.rawMeta;
           for (const plane of descriptor.planes) {
-            builtTextures.push(GL.makeBayerTexture(gl, plane, descriptor.lensSize, descriptor.lensSize));
+            const built = GL.makeBayerTexture(gl, plane, descriptor.lensSize, descriptor.lensSize);
+            builtTextures.push(built);
+            // The sensor's noise model, for noise reduction (noise.js).
+            built.noise = Noise.fitProfile(plane, descriptor.lensSize, descriptor.lensSize,
+              meta.cfaPattern, meta.blackLevel, meta.whiteLevel);
           }
         } else {
           for (const bitmap of descriptor.bitmaps) {
@@ -494,7 +499,16 @@
     canvas.style.width = (canvas.width / m.dpr) + 'px';
     canvas.style.height = (canvas.height / m.dpr) + 'px';
     previewPlace = r.place;
-    GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
+    // Detail off: free the developed frames (GL.developLens) it held.
+    if (!Detail.isActive(state.detail)) GL.releaseDeveloped(ctx);
+    try {
+      GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
+    } catch (e) {
+      if (e.message !== 'DEVELOP_TARGET_INCOMPLETE') throw e;
+      GL.releaseDeveloped(ctx);
+      fail('This GPU could not allocate the memory noise reduction and sharpening need ' +
+        'at this image size. Set Detail to 0 to go on.');
+    }
     sampleScopes();
     updateZoomControls(m, g);
     const c = Lens.coverage(state.fovDeg, state.thetaMaxDeg);
@@ -2121,15 +2135,15 @@
     return { maxDiff, cases: TONE_PARITY_CASES.length, worst };
   }
 
-  // Shaders.DETAIL_PARITY_FS's synthetic pixel, computed identically (every
-  // value is exact in float32).
-  function detailParityPixel(x, y) {
-    const edge = x + y < 64 ? 0.25 : 0.7;
+  // Shaders.DEV_PARITY_INPUT_FS's synthetic opponent pixel, computed
+  // identically (every value is exact in float16).
+  function detailParityInput(x, y) {
+    const edge = x + y < 64 ? 0.25 : 0.625;
     const m = (v, n) => ((v % n) + n) % n;
     return [
-      edge + m(x * 37 + y * 91, 17) / 255,
-      edge + m(x * 53 + y * 29, 13) / 255,
-      edge + m(x * 71 + y * 43, 19) / 255,
+      edge + m(x * 37 + y * 91, 17) / 256,
+      (m(x * 53 + y * 29, 13) - 6) / 256,
+      (m(x * 71 + y * 43, 19) - 9) / 256,
     ];
   }
   const DETAIL_PARITY_CASES = [
@@ -2140,46 +2154,45 @@
     { sharpenAmount: 0, sharpenRadius: 1, lumaNoise: 0, colorNoise: 100 },
     { sharpenAmount: 60, sharpenRadius: 1.2, lumaNoise: 35, colorNoise: 50 },
   ];
+  const DETAIL_PARITY_SIGMAS = [1, 0.5, 0.25, 0.12, 0.06].map((f) => [0.02 * f, 0.012 * f, 0.012 * f]);
 
-  // Compares DETAIL_GLSL (via DETAIL_PARITY_FS) with Detail.apply over a
-  // 64 x 64 synthetic image for each case above.
+  // Compares the develop passes (GL.runDevelop, JPEG mode) with
+  // Detail.develop over a 64 x 64 synthetic image for each case above. The
+  // passes work in float16, so agreement is to ~1e-3, not float32's 1e-6.
   function checkDetailParity() {
     if (!ctx) ctx = GL.create(canvas);
     const gl = ctx.gl;
-    const prog = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.DETAIL_PARITY_FS);
-    const tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 64, 64, 0, gl.RGBA, gl.FLOAT, null);
-    const fbo = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    gl.bindVertexArray(ctx.vao);
-    gl.disable(gl.BLEND);
-    gl.viewport(0, 0, 64, 64);
-    gl.useProgram(prog);
-    const out = new Float32Array(64 * 64 * 4);
+    const n = 64;
+    const inputProg = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_PARITY_INPUT_FS);
+    const scratch = [0, 1, 2].map(() => GL.makeDevTarget(gl, n, n));
+    const img = new Float32Array(n * n * 3);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) img.set(detailParityInput(x, y), (y * n + x) * 3);
+    const out = new Float32Array(n * n * 4);
     let maxDiff = 0, worst = null;
     for (const p of DETAIL_PARITY_CASES) {
-      gl.uniform4f(gl.getUniformLocation(prog, 'uDetail'),
-        p.sharpenAmount, p.sharpenRadius, p.lumaNoise, p.colorNoise);
+      gl.bindVertexArray(ctx.vao);
+      gl.disable(gl.BLEND);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, scratch[0].fbo);
+      gl.viewport(0, 0, n, n);
+      gl.useProgram(inputProg);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
-      gl.readPixels(0, 0, 64, 64, gl.RGBA, gl.FLOAT, out);
-      for (let y = 0; y < 64; y++) {
-        for (let x = 0; x < 64; x++) {
-          const want = Detail.apply((dx, dy) => detailParityPixel(x + dx, y + dy), p);
-          for (let c = 0; c < 3; c++) {
-            const d = Math.abs(out[(y * 64 + x) * 4 + c] - want[c]);
-            if (d > maxDiff) { maxDiff = d; worst = { detail: p, x, y, c, gpu: out[(y * 64 + x) * 4 + c], js: want[c] }; }
-          }
+      const r = GL.runDevelop(ctx, scratch, p, DETAIL_PARITY_SIGMAS, 0, null);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, r.out.fbo);
+      gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, out);
+      const js = Detail.develop(img, n, n, p, DETAIL_PARITY_SIGMAS);
+      for (let i = 0; i < n * n; i++) {
+        const want = Detail.fromOpp(js[i * 3], js[i * 3 + 1], js[i * 3 + 2]).map((v) => Math.min(1, Math.max(0, v)));
+        for (let c = 0; c < 3; c++) {
+          const d = Math.abs(out[i * 4 + c] - want[c]);
+          if (d > maxDiff) maxDiff = d, worst = { detail: p, x: i % n, y: Math.floor(i / n), c, gpu: out[i * 4 + c], js: want[c] };
         }
       }
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(fbo); gl.deleteTexture(tex); gl.deleteProgram(prog);
+    for (const t of scratch) GL.freeDevTarget(gl, t);
+    gl.deleteProgram(inputProg);
     console.log('detail parity: ' + DETAIL_PARITY_CASES.length + ' settings x 4096 pixels, max abs diff =', maxDiff,
-      maxDiff < 1e-4 ? '(OK, below 1e-4)' : '(FAIL, exceeds 1e-4)');
+      maxDiff < 4e-3 ? '(OK, below 4e-3)' : '(FAIL, exceeds 4e-3)');
     return { maxDiff, cases: DETAIL_PARITY_CASES.length, worst };
   }
 
@@ -2188,5 +2201,8 @@
     setZoom, zoomToFit, getZoom: () => (zoom ? Object.assign({}, zoom) : null),
     previewLayout,
     saveSettings, loadSettings, exportImage, preparePrint, releasePrint,
+    // The measured noise per lens slot (raw profile, per-layer sigmas once
+    // noise reduction has run), for checking the measurement.
+    noiseInfo: () => (ctx ? ctx.lensInfo.map((i) => i && { noise: i.noise, sigmas: i.sigmas }) : null),
   };
 })();

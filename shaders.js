@@ -1,6 +1,6 @@
 (function (root, factory) {
   'use strict';
-  // DETAIL_GLSL bakes in detail.js's constants, so it loads first
+  // The develop shaders bake in detail.js's constants, so it loads first
   // (index.html orders the script tags accordingly).
   const node = typeof module !== 'undefined' && module.exports;
   const api = factory(node ? require('./detail.js') : root.Detail);
@@ -28,9 +28,9 @@
     return texture(lens, vec2(0.5) + off).rgb;
   }
 
-  // The lens texture position for (u, theta), and single-pixel access
-  // around it -- what DETAIL_GLSL's neighbourhood reads. RAW_SAMPLE_GLSL
-  // defines the same three functions over the raw plane.
+  // The lens texture position for (u, theta), and the pixel there -- what
+  // COMPOSITE_FS reads. RAW_SAMPLE_GLSL defines the same functions over the
+  // raw plane.
   vec2 lensUv(float u, float theta, float cropFrac, float roll) {
     float a = theta + roll;
     return vec2(0.5) + vec2(cos(a), sin(a)) * (u * cropFrac * 0.5);
@@ -78,7 +78,7 @@
   }
 
   float linearizeRaw(float v) {
-    return clamp((v - uBlackLevel) / (uWhiteLevel - uBlackLevel), 0.0, 1.0);
+    return (v - uBlackLevel) / (uWhiteLevel - uBlackLevel);
   }
 
   vec3 srgbEncode(vec3 c) {
@@ -88,8 +88,9 @@
   }
 
   // Linearised camera RGB at p (0 = black, 1 = the sensor's white level),
-  // before white balance or the colour matrix. The DNG export writes these.
-  vec3 rawCameraAt(ivec2 p) {
+  // before white balance or the colour matrix, not clamped -- noise takes
+  // it a little below 0. The develop input pass reads this.
+  vec3 rawCameraLinearAt(ivec2 p) {
     int c = cfaColorAt(p);
     float here = fetchRaw(p);
     float rRaw, gRaw, bRaw;
@@ -109,6 +110,22 @@
     }
     return vec3(linearizeRaw(rRaw), linearizeRaw(gRaw), linearizeRaw(bRaw));
   }
+
+  // The same, clamped to [0, 1]: what the image is made from and the DNG
+  // export writes. With DEVELOPED defined (COMPOSITE_RAW_DEV_FS) it comes
+  // from the lens's developed frame (noise reduced and sharpened, same
+  // pixel grid) instead of the raw plane.
+#ifdef DEVELOPED
+  uniform sampler2D uDeveloped;
+  vec3 rawCameraAt(ivec2 p) {
+    ivec2 c = clamp(p, ivec2(0), uLensSize - ivec2(1));
+    return clamp(texelFetch(uDeveloped, c, 0).rgb, 0.0, 1.0);
+  }
+#else
+  vec3 rawCameraAt(ivec2 p) {
+    return clamp(rawCameraLinearAt(p), 0.0, 1.0);
+  }
+#endif
 
   vec3 demosaicAt(ivec2 p) {
     vec3 lin = rawCameraAt(p);
@@ -212,53 +229,125 @@
     return luma + (toned - luma) * s;
   }`;
 
-  // Sharpening and noise reduction, mirroring detail.js's apply() line for
-  // line (see that file for the method). Reads a 5 x 5 neighbourhood of
-  // source pixels through lensTexel, so it needs the lens sampler snippet
-  // included before it. uDetail = (sharpenAmount 0..150, sharpenRadius
-  // pixels, lumaNoise 0..100, colorNoise 0..100); all zero returns the
-  // centre sample untouched. The constants are detail.js's.
-  const DETAIL_GLSL = `
-  uniform vec4 uDetail;
-  const vec3 DETAIL_LUMA = vec3(0.2126, 0.7152, 0.0722);
+  // The develop passes (noise reduction and sharpening), mirroring
+  // detail.js step for step; see that file for the method and gl.js
+  // developLens for the order they run in. Each renders one whole lens
+  // frame, pixel for pixel, into an RGBA16F target: `rgb` holds the
+  // opponent triple (luma, chroma 1, chroma 2) of detail.js's toOpp.
+  const DEV_OPP_GLSL = `
+  vec3 toOpp(vec3 c) { return vec3((c.r + 2.0 * c.g + c.b) / 4.0, (c.r - c.b) / 2.0, (2.0 * c.g - c.r - c.b) / 4.0); }
+  vec3 fromOpp(vec3 o) { return vec3(o.x + o.y - o.z, o.x + o.z, o.x - o.y - o.z); }`;
 
-  vec3 detailAt(vec2 uv) {
-    vec3 c0 = lensTexel(uv);
-    if (!(uDetail.x > 0.0 || uDetail.z > 0.0 || uDetail.w > 0.0)) return c0;
-    vec2 texel = lensTexelSize();
-    float y0 = dot(c0, DETAIL_LUMA);
-    vec3 k0 = c0 - y0;
-    float sigY = ${Detail.RANGE_FLOOR.toFixed(6)} + ${Detail.LUMA_RANGE.toFixed(6)} * (uDetail.z / 100.0);
-    float sigC = ${Detail.RANGE_FLOOR.toFixed(6)} + ${Detail.CHROMA_RANGE.toFixed(6)} * (uDetail.w / 100.0);
-    float radius = uDetail.y;
-    float sumY = 0.0, wY = 0.0, wC = 0.0, blur = 0.0, wBlur = 0.0;
-    vec3 sumC = vec3(0.0);
-    for (int dy = -${Detail.R}; dy <= ${Detail.R}; dy++) {
-      for (int dx = -${Detail.R}; dx <= ${Detail.R}; dx++) {
-        vec3 c = lensTexel(uv + vec2(float(dx), float(dy)) * texel);
-        float y = dot(c, DETAIL_LUMA);
-        vec3 k = c - y;
-        float d2 = float(dx * dx + dy * dy);
-        float ws = exp(-d2 / (2.0 * ${Detail.NR_SIGMA.toFixed(6)} * ${Detail.NR_SIGMA.toFixed(6)}));
-        float ey = y - y0;
-        float wy = ws * exp(-(ey * ey) / (2.0 * sigY * sigY));
-        vec3 ek = k - k0;
-        float wc = ws * exp(-dot(ek, ek) / (2.0 * sigC * sigC));
-        sumY += wy * y; wY += wy;
-        sumC += wc * k; wC += wc;
-        float wb = exp(-d2 / (2.0 * radius * radius));
-        blur += wb * y; wBlur += wb;
+  // Raw input: linear camera RGB (demosaiced, not clamped at black, so the
+  // noise around it stays symmetric), variance-stabilised with the lens's
+  // measured noise profile uVst = (a, b) (noise.js vst, linear below 0).
+  const DEV_INPUT_RAW_FS = `#version 300 es
+  precision highp float;
+  uniform vec2 uVst;
+  out vec4 fragColor;
+  ` + RAW_SAMPLE_GLSL + DEV_OPP_GLSL + `
+  void main() {
+    vec3 x = rawCameraLinearAt(ivec2(gl_FragCoord.xy));
+    float y0 = (2.0 / uVst.x) * sqrt(uVst.y);
+    vec3 v = mix((2.0 / uVst.x) * sqrt(max(uVst.x * x + uVst.y, 0.0)),
+                 y0 + x / sqrt(uVst.y), lessThan(x, vec3(0.0)));
+    fragColor = vec4(toOpp(v), 1.0);
+  }`;
+
+  // JPEG input: the display-encoded pixels as they are.
+  const DEV_INPUT_RGB_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uSrc;
+  out vec4 fragColor;
+  ` + DEV_OPP_GLSL + `
+  void main() {
+    fragColor = vec4(toOpp(texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0).rgb), 1.0);
+  }`;
+
+  // One a-trous step (detail.js blur): B3 spline taps uStep px apart,
+  // clamped at the frame edge.
+  const DEV_BLUR_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uC;
+  uniform int uStep;
+  out vec4 fragColor;
+  const float B3[5] = float[5](${Detail.B3.map((v) => v.toFixed(8)).join(', ')});
+  void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    ivec2 hi = textureSize(uC, 0) - ivec2(1);
+    vec3 acc = vec3(0.0);
+    for (int j = -2; j <= 2; j++) {
+      for (int i = -2; i <= 2; i++) {
+        ivec2 q = clamp(p + ivec2(i, j) * uStep, ivec2(0), hi);
+        acc += B3[i + 2] * B3[j + 2] * texelFetch(uC, q, 0).rgb;
       }
     }
-    float outY = uDetail.z > 0.0 ? sumY / wY : y0;
-    vec3 outK = uDetail.w > 0.0 ? sumC / wC : k0;
-    if (uDetail.x > 0.0) {
-      float detail = y0 - blur / wBlur;
-      float th = ${Detail.SHARPEN_THRESHOLD.toFixed(6)} + ${Detail.SHARPEN_THRESHOLD_NR.toFixed(6)} * (uDetail.z / 100.0);
-      float dd = detail * detail;
-      outY += (uDetail.x / 100.0) * detail * (dd / (dd + th * th));
+    fragColor = vec4(acc, 1.0);
+  }`;
+
+  // One layer's thresholded coefficient (detail.js detailCoef, with the
+  // neighbourhood energy of develop), added into the accumulator by
+  // blending. uThresh per opponent channel, uBoost the luma sharpening,
+  // uSigmaY the layer's luma noise, uStep the layer's tap spacing.
+  const DEV_DETAIL_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uC, uNext;
+  uniform vec3 uThresh;
+  uniform float uBoost, uSigmaY;
+  uniform int uStep;
+  out vec4 fragColor;
+  float shrink(float d, float e, float t) {
+    if (t <= 0.0) return d;
+    float f = e / (e + t * t);
+    return d * f * f;
+  }
+  vec3 coefAt(ivec2 q) {
+    return texelFetch(uC, q, 0).rgb - texelFetch(uNext, q, 0).rgb;
+  }
+  void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    ivec2 hi = textureSize(uC, 0) - ivec2(1);
+    vec3 e = vec3(0.0);
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec3 n = coefAt(clamp(p + ivec2(i, j) * uStep, ivec2(0), hi));
+        e += n * n;
+      }
     }
-    return clamp(vec3(outY) + outK, 0.0, 1.0);
+    e /= 9.0;
+    vec3 d = coefAt(p);
+    float y = shrink(d.x, e.x, uThresh.x);
+    float c1 = shrink(d.y, e.y, uThresh.y);
+    float c2 = shrink(d.z, e.z, uThresh.z);
+    if (uBoost > 0.0) {
+      float y2 = y * y;
+      float sy = ${Detail.SHARPEN_FLOOR.toFixed(6)} * uSigmaY;
+      y *= 1.0 + uBoost * (y2 / (y2 + sy * sy + 1e-12));
+    }
+    fragColor = vec4(y, c1, c2, 0.0);
+  }`;
+
+  // Coarse residual + the thresholded layers, back to working RGB. uMode 0:
+  // display-encoded (JPEG), clamped to [0, 1]. uMode 1: raw, inverse
+  // variance-stabilising transform back to linear camera RGB.
+  const DEV_FINAL_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uAcc, uCoarse;
+  uniform int uMode;
+  uniform vec2 uVst;
+  out vec4 fragColor;
+  ` + DEV_OPP_GLSL + `
+  void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    vec3 rgb = fromOpp(texelFetch(uCoarse, p, 0).rgb + texelFetch(uAcc, p, 0).rgb);
+    if (uMode == 1) {
+      float y0 = (2.0 / uVst.x) * sqrt(uVst.y);
+      vec3 s = uVst.x * rgb / 2.0;
+      rgb = mix((s * s - uVst.y) / uVst.x, (rgb - y0) * sqrt(uVst.y), lessThan(rgb, vec3(y0)));
+    } else {
+      rgb = clamp(rgb, 0.0, 1.0);
+    }
+    fragColor = vec4(rgb, 1.0);
   }`;
 
   // The lens edge: the terminator that runs the image out at the rim, and
@@ -321,7 +410,7 @@
   uniform vec3  uTone;          // exposureEv, contrast, saturation
   uniform vec4  uToneCurve;     // highlights, shadows, whites, blacks (-100..100)
   out vec4 fragColor;
-  ` + SAMPLE_LENS_GLSL + DETAIL_GLSL + TONE_GLSL + EDGE_GLSL + `
+  ` + SAMPLE_LENS_GLSL + TONE_GLSL + EDGE_GLSL + `
 
   void main() {
     // gl_FragCoord.xy is in absolute framebuffer pixels, not relative to the
@@ -336,7 +425,7 @@
     // --- image, with the terminator running it out at the lens edge ---
     vec3 img = vec3(0.0);
     if (u < 1.0) {
-      img = detailAt(lensUv(u, theta, uCropFrac, uRoll));
+      img = lensTexel(lensUv(u, theta, uCropFrac, uRoll));
       img = applyTone(img, uTone, uToneCurve);
       float term = terminator(u);
       float fade = 1.0 - term;
@@ -514,8 +603,8 @@
   // shader makes at `sampleRawLensAt(...)`, which needs no texture argument
   // of its own -- it reads uLens itself, declared alongside it.
   // COMPOSITE_FS no longer calls sampleLensAt directly (it samples through
-  // detailAt/lensTexel, which RAW_SAMPLE_GLSL also defines), so only the
-  // profile shader needs that call repointed.
+  // lensTexel, which RAW_SAMPLE_GLSL also defines), so only the profile
+  // shader needs that call repointed.
   function toRawVariant(source, repointSample) {
     let s = replaceOrThrow(source, SAMPLE_LENS_GLSL, RAW_SAMPLE_GLSL);
     s = replaceOrThrow(s, 'uniform sampler2D uLens;',
@@ -528,6 +617,9 @@
   }
 
   const COMPOSITE_RAW_FS = toRawVariant(COMPOSITE_FS, false);
+  // Reads the developed frame (see RAW_SAMPLE_GLSL's rawCameraAt).
+  const COMPOSITE_RAW_DEV_FS = replaceOrThrow(COMPOSITE_RAW_FS, '#version 300 es',
+    '#version 300 es\n  #define DEVELOPED 1');
 
   // Browser-side tone parity (app.js checkToneParity): TONE_GLSL's
   // applyTone over 256 synthetic inputs, one per fragment along x, written
@@ -547,29 +639,24 @@
   }`;
   const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS, true);
 
-  // Browser-side detail parity (app.js checkDetailParity): DETAIL_GLSL over
-  // a 64 x 64 synthetic image, with lensTexel swapped for an exact
-  // integer pattern (App's detailParityPixel computes the same values), so
-  // the shader can be compared with Detail.apply without a real photo.
-  const DETAIL_PARITY_FS = `#version 300 es
+  // Browser-side detail parity (app.js checkDetailParity): writes a 64 x 64
+  // synthetic opponent image (App's detailParityInput computes the same
+  // values, exact in float16) for the develop passes to run over.
+  const DEV_PARITY_INPUT_FS = `#version 300 es
   precision highp float;
   out vec4 fragColor;
-  vec2 lensTexelSize() { return vec2(1.0 / 64.0); }
-  vec3 lensTexel(vec2 uv) {
-    vec2 p = floor(uv * 64.0);
-    float edge = p.x + p.y < 64.0 ? 0.25 : 0.7;
-    return vec3(
-      edge + mod(p.x * 37.0 + p.y * 91.0, 17.0) / 255.0,
-      edge + mod(p.x * 53.0 + p.y * 29.0, 13.0) / 255.0,
-      edge + mod(p.x * 71.0 + p.y * 43.0, 19.0) / 255.0);
-  }
-  ` + DETAIL_GLSL + `
   void main() {
-    fragColor = vec4(detailAt((floor(gl_FragCoord.xy) + 0.5) / 64.0), 1.0);
+    vec2 p = floor(gl_FragCoord.xy);
+    float edge = p.x + p.y < 64.0 ? 0.25 : 0.625;
+    fragColor = vec4(
+      edge + mod(p.x * 37.0 + p.y * 91.0, 17.0) / 256.0,
+      (mod(p.x * 53.0 + p.y * 29.0, 13.0) - 6.0) / 256.0,
+      (mod(p.x * 71.0 + p.y * 43.0, 19.0) - 9.0) / 256.0, 1.0);
   }`;
 
   return {
     FULLSCREEN_VS, COMPOSITE_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
-    COMPOSITE_RAW_FS, COMPOSITE_DNG_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS, DETAIL_GLSL, DETAIL_PARITY_FS,
+    COMPOSITE_RAW_FS, COMPOSITE_RAW_DEV_FS, COMPOSITE_DNG_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS,
+    DEV_INPUT_RAW_FS, DEV_INPUT_RGB_FS, DEV_BLUR_FS, DEV_DETAIL_FS, DEV_FINAL_FS, DEV_PARITY_INPUT_FS,
   };
 });

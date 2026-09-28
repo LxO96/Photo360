@@ -57,9 +57,19 @@
       // it -- the JPEG path samples with normalized UVs via `texture()`,
       // not `texelFetch`, so it never needs to know pixel dimensions).
       textureSize: [null, null],
+      // Per lens slot: { id, noise: {a, b} (raw) | null, sigmas } -- what
+      // the develop passes need to know about the frame (see developLens).
+      lensInfo: [null, null],
+      dev: { scratch: [], out: [null, null], key: [null, null] },
       composite: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_FS),
       compositeRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_RAW_FS),
       compositeDng: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_DNG_FS),
+      compositeRawDev: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_RAW_DEV_FS),
+      devInputRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_INPUT_RAW_FS),
+      devInputRgb: program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_INPUT_RGB_FS),
+      devBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_BLUR_FS),
+      devDetail: program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_DETAIL_FS),
+      devFinal: program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_FINAL_FS),
       profileBuild: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_FS),
       profileBuildRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_RAW_FS),
       profileBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BLUR_FS),
@@ -243,7 +253,7 @@
     // on ImageBitmap sources in this engine -- verified empirically with an
     // isolated 2x2-texel texture.
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, bitmap);
-    return { tex: t, size: null };
+    return { tex: t, size: { width: bitmap.width, height: bitmap.height } };
   }
 
   // Creates one lens's raw CFA (Bayer) plane texture -- a Uint16Array of
@@ -280,6 +290,12 @@
     if (ctx.textures[i]) ctx.gl.deleteTexture(ctx.textures[i]);
     ctx.textures[i] = null;
     ctx.textureSize[i] = null;
+    ctx.lensInfo[i] = null;
+    if (ctx.dev) {
+      freeDevTarget(ctx.gl, ctx.dev.out[i]);
+      ctx.dev.out[i] = null;
+      ctx.dev.key[i] = null;
+    }
   }
 
   // Atomically replaces every uploaded lens texture. `built` is an array (as
@@ -292,12 +308,15 @@
   // array first, so a throw while decoding/uploading a later lens never
   // reaches here and never touches ctx.textures at all, leaving whatever
   // file was loaded before (if any) fully intact.
+  let lensSerial = 0;
+
   function commitLenses(ctx, built) {
     for (let i = 0; i < 2; i++) {
       if (i < built.length) {
         releaseLens(ctx, i);
         ctx.textures[i] = built[i].tex;
         ctx.textureSize[i] = built[i].size;
+        ctx.lensInfo[i] = { id: ++lensSerial, noise: built[i].noise || null, sigmas: null };
       } else {
         releaseLens(ctx, i);
       }
@@ -320,6 +339,195 @@
     if (ctx.textures[index]) ctx.gl.deleteTexture(ctx.textures[index]);
     ctx.textures[index] = built.tex;
     ctx.textureSize[index] = built.size;
+  }
+
+  // -- Develop: noise reduction and sharpening (detail.js) ---------------
+  // Each lens's whole source frame is developed once into an RGBA16F
+  // texture (ctx.dev.out[i]) that the composite then samples instead of the
+  // source: raw -> linear camera RGB, JPEG -> display-encoded RGB. It is
+  // redone only when the Detail settings or the file change (ctx.dev.key),
+  // so panning, zooming, white balance, tone and exports reuse it. The
+  // passes: input (to opponent values; raw is variance-stabilised first),
+  // then per wavelet layer a blur and a thresholded-detail pass blended
+  // into an accumulator, then the final pass back to RGB. Three scratch
+  // targets the size of the frame, kept while Detail is on.
+  const DEV_CROP = 256;
+
+  function makeDevTarget(gl, w, h) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // LINEAR for the JPEG composite, which samples with texture() the way
+    // it samples the source; the passes themselves use texelFetch.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, w, h, complete };
+  }
+
+  function freeDevTarget(gl, t) {
+    if (!t) return;
+    gl.deleteTexture(t.tex);
+    gl.deleteFramebuffer(t.fbo);
+  }
+
+  // Frees every develop texture (Detail turned off, or a new file).
+  function releaseDeveloped(ctx) {
+    const gl = ctx.gl, dev = ctx.dev;
+    for (const t of dev.scratch) freeDevTarget(gl, t);
+    for (const t of dev.out) freeDevTarget(gl, t);
+    dev.scratch = [];
+    dev.out = [null, null];
+    dev.key = [null, null];
+  }
+
+  function devScratch(ctx, w, h) {
+    const gl = ctx.gl, dev = ctx.dev;
+    if (dev.scratch.length !== 3 || dev.scratch[0].w !== w || dev.scratch[0].h !== h) {
+      for (const t of dev.scratch) freeDevTarget(gl, t);
+      dev.scratch = [makeDevTarget(gl, w, h), makeDevTarget(gl, w, h), makeDevTarget(gl, w, h)];
+    }
+    if (!dev.scratch.every((t) => t.complete)) throw new Error('DEVELOP_TARGET_INCOMPLETE');
+    return dev.scratch;
+  }
+
+  function devPass(ctx, prog, target, setup) {
+    const gl = ctx.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    gl.viewport(0, 0, target.w, target.h);
+    gl.useProgram(prog);
+    setup((n) => gl.getUniformLocation(prog, n));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
+  function bindTex(gl, unit, tex) {
+    gl.activeTexture(gl.TEXTURE0 + unit);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+  }
+
+  // Five crops inside the image circle, for measuring the noise.
+  function devCrops(w, h) {
+    const c = Math.min(DEV_CROP, Math.floor(w / 4), Math.floor(h / 4));
+    return [[0.5, 0.5], [0.3, 0.5], [0.7, 0.5], [0.5, 0.3], [0.5, 0.7]].map(([fx, fy]) => ({
+      x: Math.round(fx * w - c / 2), y: Math.round(fy * h - c / 2), w: c, h: c,
+    }));
+  }
+
+  function readDevRect(gl, target, r) {
+    const out = new Float32Array(r.w * r.h * 4);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
+    gl.readPixels(r.x, r.y, r.w, r.h, gl.RGBA, gl.FLOAT, out);
+    return out;
+  }
+
+  // The wavelet passes over scratch[0], which holds the input (opponent
+  // values). `sigmas` is null to measure each layer's noise on the way
+  // (a JPEG: Noise.estimateSigma over devCrops, then capLuma and
+  // jpegSigma), else detail.js-shaped. `mode` and
+  // `vst` are DEV_FINAL_FS's. Returns { out, sigmas }: `out` is the
+  // scratch target holding the result.
+  function runDevelop(ctx, scratch, params, sigmas, mode, vst) {
+    const gl = ctx.gl;
+    const [A, B, acc] = scratch;
+    const w = A.w, h = A.h;
+    const measured = sigmas ? sigmas.slice() : [];
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, acc.fbo);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    let cur = A, next = B;
+    for (let k = 0; k < Detail.LEVELS; k++) {
+      devPass(ctx, ctx.devBlur, next, (u) => {
+        bindTex(gl, 0, cur.tex);
+        gl.uniform1i(u('uC'), 0);
+        gl.uniform1i(u('uStep'), 1 << k);
+      });
+      if (!sigmas) {
+        const crops = devCrops(w, h).map((r) => {
+          const c = readDevRect(gl, cur, r), n = readDevRect(gl, next, r);
+          for (let i = 0; i < c.length; i++) c[i] -= n[i];
+          return { d: c, w: r.w, h: r.h, stride: 4 };
+        });
+        measured[k] = Noise.jpegSigma(k, Noise.capLuma(Noise.estimateSigma(crops, 3), measured[k - 1]));
+      }
+      while (measured.length < Detail.LEVELS) measured.push([0, 0, 0]);
+      const lp = Detail.levelParams(params, measured)[k];
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      devPass(ctx, ctx.devDetail, acc, (u) => {
+        bindTex(gl, 0, cur.tex);
+        bindTex(gl, 1, next.tex);
+        gl.uniform1i(u('uC'), 0);
+        gl.uniform1i(u('uNext'), 1);
+        gl.uniform3f(u('uThresh'), lp.thresh[0], lp.thresh[1], lp.thresh[2]);
+        gl.uniform1f(u('uBoost'), lp.boost);
+        gl.uniform1f(u('uSigmaY'), lp.sigma[0]);
+        gl.uniform1i(u('uStep'), 1 << k);
+      });
+      gl.disable(gl.BLEND);
+      const t = cur; cur = next; next = t;
+    }
+    // `cur` holds the coarse residual; `next` is free for the result.
+    devPass(ctx, ctx.devFinal, next, (u) => {
+      bindTex(gl, 0, acc.tex);
+      bindTex(gl, 1, cur.tex);
+      gl.uniform1i(u('uAcc'), 0);
+      gl.uniform1i(u('uCoarse'), 1);
+      gl.uniform1i(u('uMode'), mode);
+      gl.uniform2f(u('uVst'), vst ? vst.a : 1, vst ? vst.b : 0);
+    });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { out: next, sigmas: measured.slice(0, Detail.LEVELS) };
+  }
+
+  // Develops lens texture `texIndex` for state.detail, unless the one
+  // already there is current. Returns its texture, or null if there is no
+  // lens there.
+  function developLens(ctx, state, texIndex) {
+    const gl = ctx.gl, dev = ctx.dev;
+    const info = ctx.lensInfo[texIndex];
+    const size = ctx.textureSize[texIndex];
+    if (!ctx.textures[texIndex] || !info || !size) return null;
+    if (state.isRaw && !info.noise) return null;
+    const d = state.detail;
+    const key = [info.id, d.sharpenAmount, d.sharpenRadius, d.lumaNoise, d.colorNoise].join('|');
+    if (dev.key[texIndex] === key && dev.out[texIndex]) return dev.out[texIndex].tex;
+    const scratch = devScratch(ctx, size.width, size.height);
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    const raw = !!state.isRaw;
+    const input = raw ? ctx.devInputRaw : ctx.devInputRgb;
+    devPass(ctx, input, scratch[0], (u) => {
+      bindTex(gl, 0, ctx.textures[texIndex]);
+      if (raw) {
+        gl.uniform1i(u('uLens'), 0);
+        setRawUniforms(gl, input, ctx, texIndex, state, 'A');
+        gl.uniform2f(u('uVst'), info.noise.a, info.noise.b);
+      } else {
+        gl.uniform1i(u('uSrc'), 0);
+      }
+    });
+    // Raw: the layers' noise is known exactly after the transform
+    // (Noise.rawLevelSigmas). JPEG: measured on the first run.
+    if (raw && !info.sigmas) info.sigmas = Noise.rawLevelSigmas(Detail);
+    const r = runDevelop(ctx, scratch, d, info.sigmas, raw ? 1 : 0, raw ? info.noise : null);
+    info.sigmas = r.sigmas;
+    // Keep the result: it trades places with this lens's previous output
+    // (or a fresh target), which becomes scratch.
+    const i = scratch.indexOf(r.out);
+    const old = dev.out[texIndex];
+    dev.out[texIndex] = r.out;
+    scratch[i] = old && old.w === r.out.w && old.h === r.out.h ? old : makeDevTarget(gl, r.out.w, r.out.h);
+    if (old && scratch[i] !== old) freeDevTarget(gl, old);
+    dev.key[texIndex] = key;
+    return r.out.tex;
   }
 
   const GLOW_HEADROOM = 0.08;   // fraction of the circle radius reserved outside the edge
@@ -345,8 +553,23 @@
     const layout = placedLayout(state, targetW, targetH, place);
     // state.dngOutput (raw only; set on the DNG export's own state copy)
     // renders linear camera RGB for DngWrite instead of the display image.
+    // Noise reduction / sharpening: develop each lens drawn first (cached;
+    // see developLens). Not for the DNG export, which is left to the raw
+    // converter.
+    const developed = [null, null];
+    if (!state.dngOutput && state.detail && Detail.isActive(state.detail)) {
+      for (const c of layout.circles) {
+        const ti = circleDraw(state, c.lens).texIndex;
+        if (!developed[ti]) developed[ti] = developLens(ctx, state, ti);
+      }
+    }
+    // All or nothing: one composite program serves every circle.
+    const anyDeveloped = layout.circles.length > 0 && layout.circles.every((c) => {
+      const ti = circleDraw(state, c.lens).texIndex;
+      return !ctx.textures[ti] || developed[ti];
+    }) && !!(developed[0] || developed[1]);
     const compositeProgram = state.isRaw
-      ? (state.dngOutput ? ctx.compositeDng : ctx.compositeRaw)
+      ? (state.dngOutput ? ctx.compositeDng : (anyDeveloped ? ctx.compositeRawDev : ctx.compositeRaw))
       : ctx.composite;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
     gl.bindVertexArray(ctx.vao);
@@ -380,12 +603,21 @@
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
       gl.viewport(cv.viewport[0], cv.viewport[1], cv.viewport[2], cv.viewport[3]);
+      // A JPEG lens's developed frame simply stands in for its source; a
+      // raw one's is read beside the raw plane (uDeveloped, see
+      // RAW_SAMPLE_GLSL).
+      const dev = anyDeveloped ? developed[draw.texIndex] : null;
       gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, ctx.textures[draw.texIndex]);
+      gl.bindTexture(gl.TEXTURE_2D, dev && !state.isRaw ? dev : ctx.textures[draw.texIndex]);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, profileTex);
       const u = (n) => gl.getUniformLocation(compositeProgram, n);
       gl.uniform1i(u('uLens'), 0);
+      if (state.isRaw && dev) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, dev);
+        gl.uniform1i(u('uDeveloped'), 2);
+      }
       if (state.isRaw) setRawUniforms(gl, compositeProgram, ctx, draw.texIndex, state, physical);
       // gl_FragCoord is in absolute framebuffer pixels (see shaders.js), so
       // the shader needs this cell's origin to recover local
@@ -411,9 +643,6 @@
       gl.uniform3f(u('uTone'), state.tone.exposureEv, state.tone.contrast, state.tone.saturation);
       gl.uniform4f(u('uToneCurve'), state.tone.highlights || 0, state.tone.shadows || 0,
         state.tone.whites || 0, state.tone.blacks || 0);
-      const d = state.detail || {};
-      gl.uniform4f(u('uDetail'), d.sharpenAmount || 0, d.sharpenRadius || 1,
-        d.lumaNoise || 0, d.colorNoise || 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.BLEND);
@@ -684,5 +913,6 @@
     physicalLens, circleDraw, exportLabel, program, buildProfile, readProfile, makeProfileTarget,
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
     makeFloatExportTarget, readCompositionStripsFloat,
+    developLens, releaseDeveloped, runDevelop, makeDevTarget, freeDevTarget,
   };
 });

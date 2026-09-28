@@ -262,20 +262,37 @@ on the GPU.
 
 **Sharpening** (Amount 0–150, Radius 0.5–2 px) and **Noise reduction**
 (Luminance and Colour, 0–100). All four default to off, and at zero they
-cost nothing. They work on the source pixels, before tone: noise reduction
-first, so the sharpening does not amplify noise.
+cost nothing. They run first, on each lens's whole source frame, before
+white balance, tone and the fisheye mapping: noise reduction, then
+sharpening on what is left. The result is kept and reused, so it is only
+redone when a Detail slider or the file changes.
 
-- Noise reduction is an edge-preserving (bilateral) filter over each pixel's
-  5×5 neighbourhood. Luminance smooths grain; Colour smooths the coloured
-  speckle, which is mostly a raw (DNG) problem. Edges survive because
-  neighbours that differ a lot from the centre are left out of the average.
-- Sharpening is an unsharp mask on luminance only, so it adds no colour
-  fringes. Very small differences are faded out so flat, noisy areas are
-  not sharpened, more so as Luminance noise reduction goes up.
+- **The noise is measured, not guessed.** For a DNG, the raw plane gives the
+  sensor's noise model on load: read noise from the black around the image
+  circle, and shot noise from how the noise grows with brightness (about
+  6 DN read noise and 1.6–2 DN per DN on the ONE X / One2 at ISO 100). A
+  variance-stabilising transform then makes the noise the same size at
+  every brightness, so one setting works in shadows and highlights alike.
+  A camera JPEG is already denoised in camera; there the noise is measured
+  in the flattest parts of the frame, with a floor of about one 8-bit step.
+- **Noise reduction** is multi-scale: the frame is split into five wavelet
+  layers, from pixel-fine grain to 32-pixel blotches. In each layer,
+  detail about the size of the measured noise is shrunk and larger detail
+  (edges, texture) kept. The test looks at each point's small
+  neighbourhood, so a lone noise spike goes with the noise around it
+  instead of being left as a speck. Luminance and Colour set how hard, in
+  units of the measured noise; Colour reaches the coarse layers, where a
+  JPEG's colour blotches are. 50 is a strong setting.
+- **Sharpening** boosts the fine luminance layers that survived the noise
+  reduction (Radius picks which), and only detail well above the noise
+  level, so it neither brings the noise back nor adds colour fringes.
 
-They act at pixel level, so judge them at 100% zoom. `detail.js` is the
-reference and the shader mirrors it; `App.checkDetailParity()` compares the
-two.
+They act at pixel level, so judge them at 100% zoom. `detail.js` and
+`noise.js` are the reference and the develop shaders mirror them;
+`App.checkDetailParity()` compares the two, and `App.noiseInfo()` shows the
+measured noise. While Detail is on, they hold a few float copies of the
+source frame on the GPU (about 75 MB each for a ONE X lens). The DNG export
+leaves them out, like tone, for the raw converter to apply.
 
 ### Output
 
