@@ -535,6 +535,7 @@
           <select id="format">
             <option value="jpeg">JPEG</option>
             <option value="png">PNG (lossless)</option>
+            <option value="dng" disabled>DNG (linear raw, raw sources)</option>
           </select></div>
         <div class="row"><label for="quality">JPEG quality</label>
           <input id="quality" type="range" min="60" max="100" step="1" value="95">
@@ -566,6 +567,7 @@
   <script src="autotone.js"></script>
   <script src="exif.js"></script>
   <script src="dng.js"></script>
+  <script src="dngwrite.js"></script>
   <script src="wb.js"></script>
   <script src="shaders.js"></script>
   <script src="gl.js"></script>

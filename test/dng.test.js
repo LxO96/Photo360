@@ -139,3 +139,11 @@ test('parse seeds camToSrgb from the file\'s own AsShotNeutral', () => {
   const d = Dng.parse(load(FILES[2]));
   assert.deepStrictEqual(d.camToSrgb, Dng.camToSrgbForNeutral(d.colorMatrix1, d.asShotNeutral));
 });
+
+test('it reads Make and CalibrationIlluminant1 for the DNG export', () => {
+  for (const f of FILES) {
+    const d = Dng.parse(load(f));
+    assert.strictEqual(typeof d.make, 'string');
+    assert.ok(Number.isInteger(d.calibrationIlluminant1) && d.calibrationIlluminant1 > 0, f);
+  }
+});

@@ -18,6 +18,7 @@
   const TAG_BITS_PER_SAMPLE = 258;
   const TAG_COMPRESSION = 259;
   const TAG_PHOTOMETRIC = 262;
+  const TAG_MAKE = 271;
   const TAG_MODEL = 272;
   const TAG_STRIP_OFFSETS = 273;
   const TAG_SAMPLES_PER_PIXEL = 277;
@@ -29,6 +30,8 @@
   const TAG_WHITE_LEVEL = 50717; // 0xC61D
   const TAG_COLOR_MATRIX1 = 50721; // 0xC621
   const TAG_AS_SHOT_NEUTRAL = 50728; // 0xC628
+  const TAG_CALIBRATION_ILLUMINANT1 = 50778; // 0xC65A
+  const ILLUMINANT_D65 = 21;
 
   const PHOTOMETRIC_CFA = 32803;
 
@@ -265,6 +268,7 @@
         TAG_PHOTOMETRIC, TAG_MODEL, TAG_STRIP_OFFSETS, TAG_SAMPLES_PER_PIXEL,
         TAG_STRIP_BYTE_COUNTS, TAG_DATETIME, TAG_SUB_IFDS, TAG_CFA_PATTERN,
         TAG_BLACK_LEVEL, TAG_WHITE_LEVEL, TAG_COLOR_MATRIX1, TAG_AS_SHOT_NEUTRAL,
+        TAG_MAKE, TAG_CALIBRATION_ILLUMINANT1,
       ]);
 
       const found0 = scanIfd(bytes, r, ifd0Offset, wanted);
@@ -272,6 +276,7 @@
       // Metadata (model/date) usually lives in IFD0 even when the raw CFA
       // data itself sits in a SubIFD.
       const modelVals = found0[TAG_MODEL] && readAscii(bytes, r, found0[TAG_MODEL], tiffStart);
+      const makeVals = found0[TAG_MAKE] && readAscii(bytes, r, found0[TAG_MAKE], tiffStart);
       const dateVals = (found0[TAG_DATETIME] && readAscii(bytes, r, found0[TAG_DATETIME], tiffStart)) || '';
 
       // Decide which IFD actually holds the CFA plane: IFD0 itself if its
@@ -355,6 +360,10 @@
         ? asShotNeutralVals.slice() : [1, 1, 1];
 
       const colorMatrix1Vals = tagValues(bytes, r, tiffStart, rawFound[TAG_COLOR_MATRIX1]);
+      // The illuminant ColorMatrix1 was measured under, carried into the DNG
+      // export; D65 when the file doesn't say. It may sit in either IFD.
+      const illumEntry = rawFound[TAG_CALIBRATION_ILLUMINANT1] || found0[TAG_CALIBRATION_ILLUMINANT1];
+      const illumVals = illumEntry && tagValues(bytes, r, tiffStart, illumEntry);
       // As-shot default; app.js rebuilds it per lens whenever white balance
       // changes (see camToSrgbForNeutral).
       const camToSrgb = camToSrgbForNeutral(
@@ -375,6 +384,8 @@
         colorMatrix1: (colorMatrix1Vals && colorMatrix1Vals.length === 9) ? Array.from(colorMatrix1Vals) : null,
         stripOffset,
         stripByteCount,
+        make: makeVals ? makeVals.replace(/\0+$/, '').trim() : '',
+        calibrationIlluminant1: illumVals && illumVals[0] > 0 ? illumVals[0] : ILLUMINANT_D65,
         model: modelVals ? modelVals.replace(/\0+$/, '').trim() : '',
         dateTimeOriginal: dateVals ? String(dateVals).replace(/\0+$/, '').trim() : '',
       };
@@ -395,5 +406,5 @@
     return s;
   }
 
-  return { parse, lastRejectionReason, camToSrgbForNeutral };
+  return { parse, lastRejectionReason, camToSrgbForNeutral, mat3Invert };
 });

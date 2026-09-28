@@ -284,6 +284,19 @@ two.
   (capture time, camera model) forward into the output — a PNG export has
   none, since `Exif.reattach` only knows how to splice APP1 metadata into a
   JPEG container.
+- **DNG (linear raw)** — raw (DNG) sources only; greyed out otherwise. Writes
+  a 16-bit linear-raw DNG (`dngwrite.js`) for Lightroom, ACR, darktable and
+  the like: the same framing, roll, FOV, layout and padding as the other
+  formats, with the lens edge (falloff, fade, rim glow) baked in, but **no
+  Tone or Detail** — you finish it in the raw converter. The pixels are the
+  camera's own demosaiced linear data; white balance goes in as
+  `AsShotNeutral` (the first shown lens's; with unlinked lenses the other
+  lens's pixels are re-expressed so it keeps its own balance), alongside the
+  source's `ColorMatrix1`, illuminant, make, model and date. Pixels at
+  sensor saturation are clipped to white after white balance, as the
+  preview does, so blown sky doesn't turn magenta; everything below that is
+  left alone, so bright colours keep their latitude. Uncompressed: about
+  67 MB per ONE X lens.
 - **Pad to sensor square** — see "Export sizing" below.
 - **Export** — renders at full resolution to an offscreen buffer (so the
   on-screen preview is never touched) and downloads the result. The

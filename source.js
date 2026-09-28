@@ -129,6 +129,9 @@
         cfaPattern: d.cfaPattern, blackLevel: d.blackLevel,
         whiteLevel: d.whiteLevel, camToSrgb: d.camToSrgb,
         colorMatrix1,
+        // For the DNG export's tags.
+        make: d.make, model: d.model, dateTime: d.dateTimeOriginal,
+        calibrationIlluminant1: d.calibrationIlluminant1,
       },
       // Magnitude and sign (GL.circleDraw applies -90 to physical A, +90 to
       // physical B) verified in the browser against all three supplied raw

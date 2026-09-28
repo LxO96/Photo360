@@ -87,7 +87,9 @@
     return mix(hi, lo, step(c, vec3(0.0031308)));
   }
 
-  vec3 demosaicAt(ivec2 p) {
+  // Linearised camera RGB at p (0 = black, 1 = the sensor's white level),
+  // before white balance or the colour matrix. The DNG export writes these.
+  vec3 rawCameraAt(ivec2 p) {
     int c = cfaColorAt(p);
     float here = fetchRaw(p);
     float rRaw, gRaw, bRaw;
@@ -105,7 +107,11 @@
       gRaw = orth;
       if (c == 0) { rRaw = here; bRaw = diag; } else { bRaw = here; rRaw = diag; }
     }
-    vec3 lin = vec3(linearizeRaw(rRaw), linearizeRaw(gRaw), linearizeRaw(bRaw));
+    return vec3(linearizeRaw(rRaw), linearizeRaw(gRaw), linearizeRaw(bRaw));
+  }
+
+  vec3 demosaicAt(ivec2 p) {
+    vec3 lin = rawCameraAt(p);
     // Clamp *before* the colour matrix, not just after: a channel that hit
     // the sensor's white level is genuinely unknown past 1.0, and the white
     // balance gain (up to ~2x on this camera's blue channel) pushes clipped
@@ -146,9 +152,12 @@
     return vec2(0.5) + vec2(cos(a), sin(a)) * (u * cropFrac * 0.5);
   }
   vec2 lensTexelSize() { return 1.0 / vec2(uLensSize); }
+  ivec2 lensPixel(vec2 uv) {
+    return ivec2(int(floor(uv.x * float(uLensSize.x))),
+                 int(floor((1.0 - uv.y) * float(uLensSize.y))));
+  }
   vec3 lensTexel(vec2 uv) {
-    return demosaicAt(ivec2(int(floor(uv.x * float(uLensSize.x))),
-                            int(floor((1.0 - uv.y) * float(uLensSize.y)))));
+    return demosaicAt(lensPixel(uv));
   }`;
 
   // Global tone (Tasks 10 and 19), shared by COMPOSITE_FS and the
@@ -252,25 +261,11 @@
     return clamp(vec3(outY) + outK, 0.0, 1.0);
   }`;
 
-  const COMPOSITE_FS = `#version 300 es
-  precision highp float;
-  uniform sampler2D uLens;      // one square lens frame, S x S
-  uniform vec2  uCellOrigin;    // viewport origin in absolute framebuffer pixels
-  uniform vec2  uCellSize;      // viewport size in pixels
-  uniform float uCircleRadius;  // output circle radius in pixels
-  uniform float uCropFrac;      // crop radius as a fraction of the image circle
-  uniform float uRoll;          // radians
-  uniform sampler2D uProfile;   // per-azimuth rim profile from the Task 7 passes
-  uniform float uBins;
-  uniform float uFalloffStart, uFalloffSoftness;
-  uniform float uEdgeIntensity, uRingWidth, uDispersion;
-  uniform float uHazeWidth, uHazeStrength;
-  uniform float uTerminatorDesaturate, uTerminatorCoolShift;
-  uniform vec3  uTone;          // exposureEv, contrast, saturation
-  uniform vec4  uToneCurve;     // highlights, shadows, whites, blacks (-100..100)
-  out vec4 fragColor;
-  ` + SAMPLE_LENS_GLSL + DETAIL_GLSL + TONE_GLSL + `
-
+  // The lens edge: the terminator that runs the image out at the rim, and
+  // the rim light (glow + haze, display units) derived from the per-azimuth
+  // profile. Shared by COMPOSITE_FS and COMPOSITE_DNG_FS; expects their
+  // uProfile/uBins/edge uniforms.
+  const EDGE_GLSL = `
   const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
   const vec3 COOL = vec3(0.82, 0.92, 1.12);   // cast the last of the image picks up
 
@@ -289,6 +284,44 @@
     float t = (u - peak) / width;
     return exp(-t * t);
   }
+
+  // Rim glow and haze at (u, theta), derived from the image next to it.
+  vec3 rimLight(float u, float theta) {
+    float bin = mod(theta / 6.283185307179586, 1.0) * uBins;
+    vec4 prof = texture(uProfile, vec2((floor(bin) + 0.5) / uBins, 0.5));
+    float intensity = prof.r * uEdgeIntensity;
+    vec3 tint = prof.gba;
+    float tmax = max(max(tint.r, tint.g), tint.b);
+    tint = tmax > 0.0 ? tint / tmax : vec3(1.0);
+
+    vec3 glow = vec3(
+      rimBell(u, 1.0 - uDispersion, uRingWidth),
+      rimBell(u, 1.0,               uRingWidth),
+      rimBell(u, 1.0 + uDispersion, uRingWidth)
+    ) * intensity * tint;
+
+    float haze = rimBell(u, 1.0, uHazeWidth) * intensity * uHazeStrength;
+    return glow + vec3(haze) * tint;
+  }`;
+
+  const COMPOSITE_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uLens;      // one square lens frame, S x S
+  uniform vec2  uCellOrigin;    // viewport origin in absolute framebuffer pixels
+  uniform vec2  uCellSize;      // viewport size in pixels
+  uniform float uCircleRadius;  // output circle radius in pixels
+  uniform float uCropFrac;      // crop radius as a fraction of the image circle
+  uniform float uRoll;          // radians
+  uniform sampler2D uProfile;   // per-azimuth rim profile from the Task 7 passes
+  uniform float uBins;
+  uniform float uFalloffStart, uFalloffSoftness;
+  uniform float uEdgeIntensity, uRingWidth, uDispersion;
+  uniform float uHazeWidth, uHazeStrength;
+  uniform float uTerminatorDesaturate, uTerminatorCoolShift;
+  uniform vec3  uTone;          // exposureEv, contrast, saturation
+  uniform vec4  uToneCurve;     // highlights, shadows, whites, blacks (-100..100)
+  out vec4 fragColor;
+  ` + SAMPLE_LENS_GLSL + DETAIL_GLSL + TONE_GLSL + EDGE_GLSL + `
 
   void main() {
     // gl_FragCoord.xy is in absolute framebuffer pixels, not relative to the
@@ -312,23 +345,75 @@
       img *= term;
     }
 
-    // --- rim glow, derived from the image next to it ---
-    float bin = mod(theta / 6.283185307179586, 1.0) * uBins;
-    vec4 prof = texture(uProfile, vec2((floor(bin) + 0.5) / uBins, 0.5));
-    float intensity = prof.r * uEdgeIntensity;
-    vec3 tint = prof.gba;
-    float tmax = max(max(tint.r, tint.g), tint.b);
-    tint = tmax > 0.0 ? tint / tmax : vec3(1.0);
+    fragColor = vec4(img + rimLight(u, theta), 1.0);
+  }`;
 
-    vec3 glow = vec3(
-      rimBell(u, 1.0 - uDispersion, uRingWidth),
-      rimBell(u, 1.0,               uRingWidth),
-      rimBell(u, 1.0 + uDispersion, uRingWidth)
-    ) * intensity * tint;
+  // DNG export (raw sources): the same geometry and lens edge as
+  // COMPOSITE_FS, but written as linear *camera* RGB for a linear-raw DNG.
+  // Tone and detail are not applied -- the raw converter does that. The
+  // edge is applied in linear sRGB (camera -> sRGB with this lens's white
+  // balance, edge, then exactly back), so away from the edge the output is
+  // the demosaiced camera data itself, unclamped by white balance or gamut.
+  // The preview applies the edge to display-encoded values; the linear
+  // equivalents here are pow(term, 2.2) for the fade, COOL^2.2 for the cast,
+  // and the display-space rim light decoded before it is added.
+  const COMPOSITE_DNG_FS = `#version 300 es
+  precision highp float;
+  uniform vec2  uCellOrigin;
+  uniform vec2  uCellSize;
+  uniform float uCircleRadius;
+  uniform float uCropFrac;
+  uniform float uRoll;
+  uniform sampler2D uProfile;
+  uniform float uBins;
+  uniform float uFalloffStart, uFalloffSoftness;
+  uniform float uEdgeIntensity, uRingWidth, uDispersion;
+  uniform float uHazeWidth, uHazeStrength;
+  uniform float uTerminatorDesaturate, uTerminatorCoolShift;
+  uniform mat3  uSrgbToCam;     // linear sRGB -> camera for uNeutralOut
+  uniform vec3  uNeutralOut;    // the DNG's AsShotNeutral
+  out vec4 fragColor;
+  ` + RAW_SAMPLE_GLSL + EDGE_GLSL + `
 
-    float haze = rimBell(u, 1.0, uHazeWidth) * intensity * uHazeStrength;
+  vec3 srgbDecode(vec3 c) {
+    c = max(c, vec3(0.0));
+    vec3 lo = c / 12.92;
+    vec3 hi = pow((c + 0.055) / 1.055, vec3(2.4));
+    return mix(hi, lo, step(c, vec3(0.04045)));
+  }
 
-    fragColor = vec4(img + glow + vec3(haze) * tint, 1.0);
+  void main() {
+    vec2 p = gl_FragCoord.xy - uCellOrigin - uCellSize * 0.5;
+    float r = length(p);
+    float u = r / uCircleRadius;
+    float theta = atan(p.y, p.x);
+
+    vec3 lin = vec3(0.0);   // linear sRGB, unclamped
+    if (u < 1.0) {
+      vec3 cam = rawCameraAt(lensPixel(lensUv(u, theta, uCropFrac, uRoll)));
+      // Where the sensor clipped, the pixel's colour is unknown and raw
+      // converters render it magenta after white balance (blown sky goes
+      // pink). Near saturation, blend to what the preview shows there --
+      // each channel clipped at white after white balance -- and leave
+      // everything below it untouched, so bright unclipped colours keep
+      // their latitude.
+      float sat = max(max(cam.r, cam.g), cam.b);
+      vec3 clipped = uWhiteBalance * clamp(cam / uWhiteBalance, 0.0, 1.0);
+      cam = mix(cam, clipped, smoothstep(0.9, 0.99, sat));
+      lin = uCamToSrgb * (cam / uWhiteBalance);
+      float term = terminator(u);
+      float fade = 1.0 - term;
+      lin = mix(lin, vec3(dot(lin, LUMA)), fade * uTerminatorDesaturate);
+      lin = mix(lin, lin * pow(COOL, vec3(2.2)), fade * uTerminatorCoolShift);
+      lin *= pow(term, 2.2);
+    }
+    lin += srgbDecode(rimLight(u, theta));
+    // Back to camera RGB for the file's single AsShotNeutral. For the lens
+    // whose white balance that is, this undoes the forward step exactly;
+    // the other lens (unlinked, different balance) is re-expressed so the
+    // raw converter renders it with its own balance, as the preview does.
+    vec3 camOut = uNeutralOut * (uSrgbToCam * lin);
+    fragColor = vec4(clamp(camOut, 0.0, 1.0), 1.0);
   }`;
 
   const PROFILE_BUILD_FS = `#version 300 es
@@ -485,6 +570,6 @@
 
   return {
     FULLSCREEN_VS, COMPOSITE_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
-    COMPOSITE_RAW_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS, DETAIL_GLSL, DETAIL_PARITY_FS,
+    COMPOSITE_RAW_FS, COMPOSITE_DNG_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS, DETAIL_GLSL, DETAIL_PARITY_FS,
   };
 });

@@ -49,6 +49,9 @@
       canvas,
       maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
       maxRenderbufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE),
+      // Blending into an RGBA32F target (the DNG export) needs this; without
+      // it the export falls back to RGBA16F (11-bit mantissa).
+      floatBlend: !!gl.getExtension('EXT_float_blend'),
       textures: [null, null],
       // Per-texture size, populated by uploadBayer (uploadLens doesn't need
       // it -- the JPEG path samples with normalized UVs via `texture()`,
@@ -56,6 +59,7 @@
       textureSize: [null, null],
       composite: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_FS),
       compositeRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_RAW_FS),
+      compositeDng: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_DNG_FS),
       profileBuild: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_FS),
       profileBuildRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_RAW_FS),
       profileBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BLUR_FS),
@@ -133,6 +137,15 @@
     // per lens, like the white balance itself.
     const camToSrgb = (state.rawCamToSrgb && state.rawCamToSrgb[physicalLens]) || meta.camToSrgb;
     gl.uniformMatrix3fv(u('uCamToSrgb'), true, camToSrgb);
+    // DNG export only (COMPOSITE_DNG_FS): the way back to camera RGB, for
+    // the file's one neutral (state.dngNeutral).
+    const back = u('uSrgbToCam');
+    if (back) {
+      const n = state.dngNeutral || wb;
+      const m = Dng.camToSrgbForNeutral(meta.colorMatrix1, n);
+      gl.uniformMatrix3fv(back, true, Dng.mat3Invert(m) || [1, 0, 0, 0, 1, 0, 0, 0, 1]);
+      gl.uniform3f(u('uNeutralOut'), n[0], n[1], n[2]);
+    }
   }
 
   // Renders the two rim-profile passes (build, then angular blur) for one
@@ -330,7 +343,11 @@
   function renderComposition(ctx, state, targetW, targetH, targetFbo, place) {
     const gl = ctx.gl;
     const layout = placedLayout(state, targetW, targetH, place);
-    const compositeProgram = state.isRaw ? ctx.compositeRaw : ctx.composite;
+    // state.dngOutput (raw only; set on the DNG export's own state copy)
+    // renders linear camera RGB for DngWrite instead of the display image.
+    const compositeProgram = state.isRaw
+      ? (state.dngOutput ? ctx.compositeDng : ctx.compositeRaw)
+      : ctx.composite;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
     gl.bindVertexArray(ctx.vao);
     gl.useProgram(compositeProgram);
@@ -543,6 +560,43 @@
     return { tex, fbo, width: w, height: h, complete: status === gl.FRAMEBUFFER_COMPLETE, status };
   }
 
+  // A float export target for the DNG export's linear values: RGBA32F when
+  // it can be blended into (`full`), else RGBA16F.
+  function makeFloatExportTarget(gl, w, h, full) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, full ? gl.RGBA32F : gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return { tex, fbo, width: w, height: h, complete: status === gl.FRAMEBUFFER_COMPLETE, status };
+  }
+
+  // readCompositionStrips for a float target: `rowsRGBA` is a Float32Array.
+  function readCompositionStripsFloat(gl, fbo, w, h, stripRows, onStrip) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    const buf = new Float32Array(w * stripRows * 4);
+    const rowLen = w * 4;
+    const tmp = new Float32Array(rowLen);
+    for (let outY = 0; outY < h; outY += stripRows) {
+      const rows = Math.min(stripRows, h - outY);
+      const glY = h - outY - rows;
+      const view = rows === stripRows ? buf : buf.subarray(0, rowLen * rows);
+      gl.readPixels(0, glY, w, rows, gl.RGBA, gl.FLOAT, view);
+      for (let i = 0, j = rows - 1; i < j; i++, j--) {
+        tmp.set(view.subarray(i * rowLen, i * rowLen + rowLen));
+        view.set(view.subarray(j * rowLen, j * rowLen + rowLen), i * rowLen);
+        view.set(tmp, j * rowLen);
+      }
+      onStrip(view, outY, rows);
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
   function deleteExportTarget(gl, target) {
     gl.deleteTexture(target.tex);
     gl.deleteFramebuffer(target.fbo);
@@ -629,5 +683,6 @@
     lensTextureIndex,
     physicalLens, circleDraw, exportLabel, program, buildProfile, readProfile, makeProfileTarget,
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
+    makeFloatExportTarget, readCompositionStripsFloat,
   };
 });

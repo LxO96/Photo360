@@ -375,6 +375,7 @@
     updateFileHeader();
     exportBtn.disabled = false;
     printBtn.disabled = false;
+    updateExportLabel();
     document.body.classList.add('loaded');
     render();
     scheduleSave();
@@ -1724,8 +1725,15 @@
   }
   document.getElementById('resetEdge').addEventListener('click', applyEdgePreset);
 
+  // DNG is only offered for raw sources; loading a JPEG/.insp while it is
+  // selected falls back to JPEG.
   function updateExportLabel() {
-    exportBtn.textContent = state.format === 'png' ? 'Export PNG' : 'Export JPEG';
+    const dngOpt = formatEl.querySelector('option[value="dng"]');
+    dngOpt.disabled = !state.isRaw;
+    if (state.format === 'dng' && !state.isRaw) state.format = 'jpeg';
+    formatEl.value = state.format;
+    exportBtn.textContent = { png: 'Export PNG', dng: 'Export DNG' }[state.format] || 'Export JPEG';
+    qualityEl.disabled = state.format !== 'jpeg';
   }
 
   formatEl.addEventListener('input', () => {
@@ -1817,6 +1825,7 @@
     const exportState = Object.assign({}, state, {
       format: opts.format, quality: opts.quality, padToSensorSquare: opts.padToSensorSquare,
     });
+    if (opts.format === 'dng') { exportDng(exportState); return; }
     const g = GL.exportGeometry(exportState);
     try {
       const outCanvas = renderFullCanvas(exportState, 'export');
@@ -1843,6 +1852,66 @@
         ? `The browser could not encode a ${g.width}x${g.height} image. ` +
           'Try PNG, a smaller FOV, or exporting one lens at a time.'
         : 'Export failed: ' + e.message);
+    }
+  }
+
+  // DNG export (raw sources): renders linear camera RGB with the lens edge
+  // (COMPOSITE_DNG_FS) into a float target at full export size and writes
+  // a 16-bit linear-raw DNG. Tone and detail are left to the raw converter;
+  // white balance goes in as AsShotNeutral -- the first shown lens's, with
+  // the other lens's pixels re-expressed so it keeps its own balance.
+  function exportDng(exportState) {
+    const physical = Settings.visibleLenses(state, GL.physicalLens)[0];
+    const neutral = state.rawWhiteBalance[physical];
+    const meta = state.rawMeta;
+    // The background colour is display sRGB; the file wants camera RGB.
+    const bgLin = state.background.map(Wb.srgbDecode);
+    const toCam = Dng.mat3Invert(Dng.camToSrgbForNeutral(meta.colorMatrix1, neutral));
+    const bgCam = toCam
+      ? [0, 1, 2].map((i) => Math.min(1, Math.max(0,
+        neutral[i] * (toCam[i * 3] * bgLin[0] + toCam[i * 3 + 1] * bgLin[1] + toCam[i * 3 + 2] * bgLin[2]))))
+      : [0, 0, 0];
+    const dngState = Object.assign({}, exportState, {
+      dngOutput: true, dngNeutral: neutral, background: bgCam,
+    });
+    const g = GL.exportGeometry(dngState);
+    const gl = ctx.gl;
+    const smaller = 'Try a smaller FOV, remove padding, or export one lens at a time.';
+    const limit = Math.min(ctx.maxTextureSize, ctx.maxRenderbufferSize);
+    if (g.width > limit || g.height > limit) {
+      fail(`This GPU caps render targets at ${limit}px; the requested export ` +
+        `(${g.width}x${g.height}) exceeds it. ` + smaller);
+      return;
+    }
+    let target = null;
+    try {
+      target = GL.makeFloatExportTarget(gl, g.width, g.height, ctx.floatBlend);
+      if (!target.complete) {
+        fail(`This GPU could not allocate a ${g.width}x${g.height} float render target ` +
+          `(framebuffer status ${target.status}). ` + smaller);
+        return;
+      }
+      GL.renderComposition(ctx, dngState, g.width, g.height, target.fbo);
+      const data = new Uint16Array(g.width * g.height * 3);
+      GL.readCompositionStripsFloat(gl, target.fbo, g.width, g.height, 64, (rows, outY, n) => {
+        let o = outY * g.width * 3;
+        for (let i = 0; i < g.width * n * 4; i += 4) {
+          data[o++] = Math.round(rows[i] * 65535);
+          data[o++] = Math.round(rows[i + 1] * 65535);
+          data[o++] = Math.round(rows[i + 2] * 65535);
+        }
+      });
+      const bytes = DngWrite.write({
+        width: g.width, height: g.height, data,
+        colorMatrix1: meta.colorMatrix1, calibrationIlluminant1: meta.calibrationIlluminant1,
+        asShotNeutral: neutral, make: meta.make, model: meta.model, dateTime: meta.dateTime,
+      });
+      download(new Blob([bytes], { type: 'image/x-adobe-dng' }),
+        Lens.exportFilename(state.sourceName, GL.exportLabel(state), state.fovDeg, 'dng'));
+    } catch (e) {
+      fail('DNG export failed: ' + e.message);
+    } finally {
+      if (target) GL.deleteExportTarget(gl, target);
     }
   }
 
