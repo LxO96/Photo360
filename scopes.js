@@ -78,7 +78,7 @@
   function waveform(px, w, h, opts) {
     const levels = opts.levels;
     const include = opts.include;
-    const parade = opts.mode === 'parade';
+    const parade = opts.mode === 'parade' || opts.mode === 'rgb';
     const channels = parade
       ? [new Uint32Array(w * levels), new Uint32Array(w * levels), new Uint32Array(w * levels)]
       : [new Uint32Array(w * levels)];
@@ -98,6 +98,47 @@
       }
     }
     return { cols: w, levels, channels };
+  }
+
+  // Level counts over the whole (masked) image. mode 'luma' gives one
+  // channel; 'rgb' gives R, G and B. clipLow / clipHigh are the fractions of
+  // counted pixels at 0 or 255: in luma mode by luma, in rgb mode a pixel
+  // counts as clipped high if any channel is at 255 and clipped low only if
+  // every channel is at 0.
+  function histogram(px, w, h, opts) {
+    const bins = opts.bins;
+    const include = opts.include;
+    const rgb = opts.mode === 'rgb';
+    const channels = rgb
+      ? [new Uint32Array(bins), new Uint32Array(bins), new Uint32Array(bins)]
+      : [new Uint32Array(bins)];
+    const top = bins - 1;
+    let total = 0, low = 0, high = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (include && !include(x, y)) continue;
+        const i = (y * w + x) * 4;
+        const r = px[i], g = px[i + 1], b = px[i + 2];
+        total++;
+        if (rgb) {
+          channels[0][Math.round(r / 255 * top)]++;
+          channels[1][Math.round(g / 255 * top)]++;
+          channels[2][Math.round(b / 255 * top)]++;
+          if (r === 255 || g === 255 || b === 255) high++;
+          if (r === 0 && g === 0 && b === 0) low++;
+        } else {
+          const lum = (LUMA[0] * r + LUMA[1] * g + LUMA[2] * b) / 255;
+          channels[0][Math.round(lum * top)]++;
+          if (lum >= 1 - 1e-9) high++;
+          if (lum <= 1e-9) low++;
+        }
+      }
+    }
+    return {
+      bins, channels, total,
+      clipLow: total ? low / total : 0,
+      clipHigh: total ? high / total : 0,
+    };
   }
 
   // Predicate for "pixel (x, y) lies inside one of these circles", tested
@@ -122,6 +163,6 @@
 
   return {
     LUMA, chroma, vectorPoint, vectorscope, targets, skinLine,
-    waveform, insideCircles, intensity,
+    waveform, histogram, insideCircles, intensity,
   };
 });

@@ -394,6 +394,9 @@
       gl.uniform3f(u('uTone'), state.tone.exposureEv, state.tone.contrast, state.tone.saturation);
       gl.uniform4f(u('uToneCurve'), state.tone.highlights || 0, state.tone.shadows || 0,
         state.tone.whites || 0, state.tone.blacks || 0);
+      const d = state.detail || {};
+      gl.uniform4f(u('uDetail'), d.sharpenAmount || 0, d.sharpenRadius || 1,
+        d.lumaNoise || 0, d.colorNoise || 0);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.BLEND);

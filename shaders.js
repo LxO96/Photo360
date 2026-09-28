@@ -1,9 +1,12 @@
 (function (root, factory) {
   'use strict';
-  const api = factory();
-  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  // DETAIL_GLSL bakes in detail.js's constants, so it loads first
+  // (index.html orders the script tags accordingly).
+  const node = typeof module !== 'undefined' && module.exports;
+  const api = factory(node ? require('./detail.js') : root.Detail);
+  if (node) module.exports = api;
   else root.Shaders = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Detail) {
   'use strict';
 
   const FULLSCREEN_VS = `#version 300 es
@@ -23,7 +26,17 @@
     float a = theta + roll;
     vec2 off = vec2(cos(a), sin(a)) * (u * cropFrac * 0.5);
     return texture(lens, vec2(0.5) + off).rgb;
-  }`;
+  }
+
+  // The lens texture position for (u, theta), and single-pixel access
+  // around it -- what DETAIL_GLSL's neighbourhood reads. RAW_SAMPLE_GLSL
+  // defines the same three functions over the raw plane.
+  vec2 lensUv(float u, float theta, float cropFrac, float roll) {
+    float a = theta + roll;
+    return vec2(0.5) + vec2(cos(a), sin(a)) * (u * cropFrac * 0.5);
+  }
+  vec2 lensTexelSize() { return 1.0 / vec2(textureSize(uLens, 0)); }
+  vec3 lensTexel(vec2 uv) { return texture(uLens, uv).rgb; }`;
 
   // Shared by COMPOSITE_RAW_FS and PROFILE_BUILD_RAW_FS, exactly the way
   // SAMPLE_LENS_GLSL is shared by the JPEG-source pair -- so the rim
@@ -125,6 +138,17 @@
     int px = int(floor(uv.x * float(uLensSize.x)));
     int py = int(floor((1.0 - uv.y) * float(uLensSize.y)));
     return demosaicAt(ivec2(px, py));
+  }
+
+  // See SAMPLE_LENS_GLSL's functions of the same names.
+  vec2 lensUv(float u, float theta, float cropFrac, float roll) {
+    float a = theta + roll;
+    return vec2(0.5) + vec2(cos(a), sin(a)) * (u * cropFrac * 0.5);
+  }
+  vec2 lensTexelSize() { return 1.0 / vec2(uLensSize); }
+  vec3 lensTexel(vec2 uv) {
+    return demosaicAt(ivec2(int(floor(uv.x * float(uLensSize.x))),
+                            int(floor((1.0 - uv.y) * float(uLensSize.y)))));
   }`;
 
   // Global tone (Tasks 10 and 19), shared by COMPOSITE_FS and the
@@ -179,6 +203,55 @@
     return luma + (toned - luma) * s;
   }`;
 
+  // Sharpening and noise reduction, mirroring detail.js's apply() line for
+  // line (see that file for the method). Reads a 5 x 5 neighbourhood of
+  // source pixels through lensTexel, so it needs the lens sampler snippet
+  // included before it. uDetail = (sharpenAmount 0..150, sharpenRadius
+  // pixels, lumaNoise 0..100, colorNoise 0..100); all zero returns the
+  // centre sample untouched. The constants are detail.js's.
+  const DETAIL_GLSL = `
+  uniform vec4 uDetail;
+  const vec3 DETAIL_LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+  vec3 detailAt(vec2 uv) {
+    vec3 c0 = lensTexel(uv);
+    if (!(uDetail.x > 0.0 || uDetail.z > 0.0 || uDetail.w > 0.0)) return c0;
+    vec2 texel = lensTexelSize();
+    float y0 = dot(c0, DETAIL_LUMA);
+    vec3 k0 = c0 - y0;
+    float sigY = ${Detail.RANGE_FLOOR.toFixed(6)} + ${Detail.LUMA_RANGE.toFixed(6)} * (uDetail.z / 100.0);
+    float sigC = ${Detail.RANGE_FLOOR.toFixed(6)} + ${Detail.CHROMA_RANGE.toFixed(6)} * (uDetail.w / 100.0);
+    float radius = uDetail.y;
+    float sumY = 0.0, wY = 0.0, wC = 0.0, blur = 0.0, wBlur = 0.0;
+    vec3 sumC = vec3(0.0);
+    for (int dy = -${Detail.R}; dy <= ${Detail.R}; dy++) {
+      for (int dx = -${Detail.R}; dx <= ${Detail.R}; dx++) {
+        vec3 c = lensTexel(uv + vec2(float(dx), float(dy)) * texel);
+        float y = dot(c, DETAIL_LUMA);
+        vec3 k = c - y;
+        float d2 = float(dx * dx + dy * dy);
+        float ws = exp(-d2 / (2.0 * ${Detail.NR_SIGMA.toFixed(6)} * ${Detail.NR_SIGMA.toFixed(6)}));
+        float ey = y - y0;
+        float wy = ws * exp(-(ey * ey) / (2.0 * sigY * sigY));
+        vec3 ek = k - k0;
+        float wc = ws * exp(-dot(ek, ek) / (2.0 * sigC * sigC));
+        sumY += wy * y; wY += wy;
+        sumC += wc * k; wC += wc;
+        float wb = exp(-d2 / (2.0 * radius * radius));
+        blur += wb * y; wBlur += wb;
+      }
+    }
+    float outY = uDetail.z > 0.0 ? sumY / wY : y0;
+    vec3 outK = uDetail.w > 0.0 ? sumC / wC : k0;
+    if (uDetail.x > 0.0) {
+      float detail = y0 - blur / wBlur;
+      float th = ${Detail.SHARPEN_THRESHOLD.toFixed(6)} + ${Detail.SHARPEN_THRESHOLD_NR.toFixed(6)} * (uDetail.z / 100.0);
+      float dd = detail * detail;
+      outY += (uDetail.x / 100.0) * detail * (dd / (dd + th * th));
+    }
+    return clamp(vec3(outY) + outK, 0.0, 1.0);
+  }`;
+
   const COMPOSITE_FS = `#version 300 es
   precision highp float;
   uniform sampler2D uLens;      // one square lens frame, S x S
@@ -196,7 +269,7 @@
   uniform vec3  uTone;          // exposureEv, contrast, saturation
   uniform vec4  uToneCurve;     // highlights, shadows, whites, blacks (-100..100)
   out vec4 fragColor;
-  ` + SAMPLE_LENS_GLSL + TONE_GLSL + `
+  ` + SAMPLE_LENS_GLSL + DETAIL_GLSL + TONE_GLSL + `
 
   const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
   const vec3 COOL = vec3(0.82, 0.92, 1.12);   // cast the last of the image picks up
@@ -230,7 +303,7 @@
     // --- image, with the terminator running it out at the lens edge ---
     vec3 img = vec3(0.0);
     if (u < 1.0) {
-      img = sampleLensAt(uLens, u, theta, uCropFrac, uRoll);
+      img = detailAt(lensUv(u, theta, uCropFrac, uRoll));
       img = applyTone(img, uTone, uToneCurve);
       float term = terminator(u);
       float fade = 1.0 - term;
@@ -355,16 +428,21 @@
   // instead), and repoint the one `sampleLensAt(uLens, ...)` call each
   // shader makes at `sampleRawLensAt(...)`, which needs no texture argument
   // of its own -- it reads uLens itself, declared alongside it.
-  function toRawVariant(source) {
+  // COMPOSITE_FS no longer calls sampleLensAt directly (it samples through
+  // detailAt/lensTexel, which RAW_SAMPLE_GLSL also defines), so only the
+  // profile shader needs that call repointed.
+  function toRawVariant(source, repointSample) {
     let s = replaceOrThrow(source, SAMPLE_LENS_GLSL, RAW_SAMPLE_GLSL);
     s = replaceOrThrow(s, 'uniform sampler2D uLens;',
       '// uLens (usampler2D) is declared by RAW_SAMPLE_GLSL above');
-    s = replaceOrThrow(s, 'sampleLensAt(uLens, u, theta, uCropFrac, uRoll)',
-      'sampleRawLensAt(u, theta, uCropFrac, uRoll)');
+    if (repointSample) {
+      s = replaceOrThrow(s, 'sampleLensAt(uLens, u, theta, uCropFrac, uRoll)',
+        'sampleRawLensAt(u, theta, uCropFrac, uRoll)');
+    }
     return s;
   }
 
-  const COMPOSITE_RAW_FS = toRawVariant(COMPOSITE_FS);
+  const COMPOSITE_RAW_FS = toRawVariant(COMPOSITE_FS, false);
 
   // Browser-side tone parity (app.js checkToneParity): TONE_GLSL's
   // applyTone over 256 synthetic inputs, one per fragment along x, written
@@ -382,10 +460,31 @@
     vec3 rgb = vec3(x / 255.0, (255.0 - x) / 255.0 * 0.8 + 0.1, mod(x * 37.0, 256.0) / 255.0);
     fragColor = vec4(applyTone(rgb, uTone, uToneCurve), 1.0);
   }`;
-  const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS);
+  const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS, true);
+
+  // Browser-side detail parity (app.js checkDetailParity): DETAIL_GLSL over
+  // a 64 x 64 synthetic image, with lensTexel swapped for an exact
+  // integer pattern (App's detailParityPixel computes the same values), so
+  // the shader can be compared with Detail.apply without a real photo.
+  const DETAIL_PARITY_FS = `#version 300 es
+  precision highp float;
+  out vec4 fragColor;
+  vec2 lensTexelSize() { return vec2(1.0 / 64.0); }
+  vec3 lensTexel(vec2 uv) {
+    vec2 p = floor(uv * 64.0);
+    float edge = p.x + p.y < 64.0 ? 0.25 : 0.7;
+    return vec3(
+      edge + mod(p.x * 37.0 + p.y * 91.0, 17.0) / 255.0,
+      edge + mod(p.x * 53.0 + p.y * 29.0, 13.0) / 255.0,
+      edge + mod(p.x * 71.0 + p.y * 43.0, 19.0) / 255.0);
+  }
+  ` + DETAIL_GLSL + `
+  void main() {
+    fragColor = vec4(detailAt((floor(gl_FragCoord.xy) + 0.5) / 64.0), 1.0);
+  }`;
 
   return {
     FULLSCREEN_VS, COMPOSITE_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
-    COMPOSITE_RAW_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS,
+    COMPOSITE_RAW_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS, DETAIL_GLSL, DETAIL_PARITY_FS,
   };
 });

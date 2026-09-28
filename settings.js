@@ -24,8 +24,8 @@
   // it -- it is silently ignored rather than crashing anything.
   const PERSISTED_KEYS = [
     'fovDeg', 'thetaMaxDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
-    'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone',
-    'rawWb', 'rawWbLinked', 'panels', 'scopeMode', 'waveformMode',
+    'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone', 'detail',
+    'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels',
   ];
 
   // Task 18: the side panel's collapsible sections, in display order, and
@@ -37,14 +37,14 @@
   // hide a section for good or invent a new one. Edge starts closed: its
   // seven fitted parameters are the most specialised controls on the page
   // and the X1-classic preset is the intended starting point.
-  const PANEL_SECTIONS = ['scopes', 'framing', 'level', 'whiteBalance', 'edge', 'tone', 'output'];
+  const PANEL_SECTIONS = ['framing', 'level', 'whiteBalance', 'edge', 'tone', 'detail', 'output'];
   const DEFAULT_PANELS = {
-    scopes: true, framing: true, level: true, whiteBalance: true, edge: false, tone: true, output: true,
+    framing: true, level: true, whiteBalance: true, edge: false, tone: true, detail: true, output: true,
   };
 
   const ENUMS = {
     sensors: ['A', 'B', 'both'], orientation: ['side', 'stacked'],
-    scopeMode: ['waveform', 'vectorscope'], waveformMode: ['luma', 'parade'],
+    scopeMode: ['histogram', 'waveform', 'vectorscope'], scopeChannels: ['luma', 'rgb'],
   };
 
   // Single source of truth for the valid domain of every numeric field.
@@ -95,6 +95,10 @@
       exposureEv: [-3, 3], contrast: [-1, 1], saturation: [-1, 1],
       // Task 19: the luminance-curve sliders (Edge.toneCurve).
       highlights: [-100, 100], shadows: [-100, 100], whites: [-100, 100], blacks: [-100, 100],
+    },
+    // Sharpening and noise reduction (detail.js).
+    detail: {
+      sharpenAmount: [0, 150], sharpenRadius: [0.5, 2], lumaNoise: [0, 100], colorNoise: [0, 100],
     },
     // Task 17: Kelvin/tint replaces the raw red/blue multipliers. Matches
     // Wb.KELVIN_MIN/MAX and Wb.TINT_MAX exactly.

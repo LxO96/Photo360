@@ -97,6 +97,8 @@
     edge: { ...Edge.PRESETS.x1classic },
     // Task 19 adds the luminance-curve sliders (Edge.toneCurve), -100..100.
     tone: { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 },
+    // Sharpening and noise reduction (detail.js); all zero is off.
+    detail: { ...Detail.DEFAULTS },
     // Task 12 output options. Not part of Settings.PERSISTED_KEYS -- these
     // describe how to write the next file, not a framing preference worth
     // resurrecting across a reload the way fovDeg/edge/tone are.
@@ -159,10 +161,12 @@
     // Task 18: which collapsible panel sections are open. A plain UI
     // preference, persisted and validated through Settings like the rest.
     panels: { ...Settings.DEFAULT_PANELS },
-    // Which scope the Scopes section shows, and the waveform's channels.
-    // Plain preferences, persisted as enums (Settings.ENUMS).
-    scopeMode: 'waveform',
-    waveformMode: 'luma',
+    // The scopes overlay: shown or not, which scope, and Luma or RGB for
+    // the histogram and waveform. Plain preferences, persisted
+    // (Settings.ENUMS for the two modes).
+    scopesShown: true,
+    scopeMode: 'histogram',
+    scopeChannels: 'luma',
   };
   let ctx = null;
 
@@ -567,23 +571,31 @@
   // read exactly horizontal there regardless of source type -- using
   // Lens.rollFor(state, physical) directly (the same call circleDraw itself
   // makes, just without circleDraw's added sensor term) guarantees that.
-  // -- Scopes (waveform / vectorscope) ------------------------------------
-  // They read the rendered preview, so they show exactly what is on screen
-  // (white balance, tone and edge included; only the visible part when
-  // zoomed). The WebGL canvas keeps no drawing buffer between frames, so
-  // the sample has to be taken right after renderComposition, in the same
-  // task -- hence sampleScopes() inside render(). The small sample is kept
-  // so switching modes redraws without re-rendering. Pixels outside the
-  // image circles are left out; the black surround would otherwise pile up
-  // at 0%.
+  // -- Scopes (histogram / waveform / vectorscope) ------------------------
+  // A floating box over the bottom-right of the stage. The scopes read the
+  // rendered preview, so they show exactly what is on screen (white
+  // balance, tone and edge included; only the visible part when zoomed).
+  // The WebGL canvas keeps no drawing buffer between frames, so the sample
+  // has to be taken right after renderComposition, in the same task --
+  // hence sampleScopes() inside render(). The small sample is kept so
+  // switching modes redraws without re-rendering.
+  //
+  // Only the photograph is counted: pixels outside the circles, and the
+  // synthetic edge inside them (from the Edge falloff start outward, where
+  // the terminator fades to black), are left out -- otherwise that black
+  // piles up at 0% and skews every scope.
+  const scopeBoxEl = document.getElementById('scopeBox');
   const scopeEl = document.getElementById('scope');
-  const waveformModesEl = document.getElementById('waveformModes');
+  const channelModesEl = document.getElementById('channelModes');
+  const scopesToggleEl = document.getElementById('scopesToggle');
+  const clipLowEl = document.getElementById('clipLow');
+  const clipHighEl = document.getElementById('clipHigh');
   const scopeSample = document.createElement('canvas');
   const SCOPE_SAMPLE_MAX_PIXELS = 160000;
   let scopePixels = null;  // { px, w, h, include, n } from the last render
 
   function sampleScopes() {
-    if (!state.panels.scopes) { scopePixels = null; return; }
+    if (!state.scopesShown) { scopePixels = null; return; }
     const plotW = Math.max(60, Math.round(scopeEl.clientWidth * (window.devicePixelRatio || 1)));
     let w = Math.max(1, Math.min(canvas.width, plotW));
     let h = Math.max(1, Math.round(w * canvas.height / canvas.width));
@@ -594,8 +606,9 @@
     const g = scopeSample.getContext('2d', { willReadFrequently: true });
     g.drawImage(canvas, 0, 0, w, h);
     const sx = w / canvas.width, sy = h / canvas.height;
+    const photo = state.edge.falloffStart;
     const include = Scopes.insideCircles(previewLayout().circles.map((c) => ({
-      cx: c.cx * sx, cy: c.cy * sy, radius: c.radius * Math.min(sx, sy),
+      cx: c.cx * sx, cy: c.cy * sy, radius: c.radius * Math.min(sx, sy) * photo,
     })));
     let n = 0;
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (include(x, y)) n++;
@@ -642,25 +655,36 @@
   }
 
   const SCOPE_TRACE = [235, 235, 235];
-  const PARADE_COLOURS = [[255, 80, 70], [80, 230, 100], [80, 140, 255]];
+  const RGB_COLOURS = [[255, 80, 70], [80, 230, 100], [80, 140, 255]];
+
+  function syncScopeControls() {
+    const mode = state.scopeMode;
+    scopeBoxEl.classList.toggle('hidden', !state.scopesShown);
+    scopesToggleEl.setAttribute('aria-pressed', String(state.scopesShown));
+    scopeEl.classList.toggle('square', mode === 'vectorscope');
+    channelModesEl.classList.toggle('hidden', mode === 'vectorscope');
+    for (const b of document.querySelectorAll('[data-scope]')) {
+      b.setAttribute('aria-pressed', String(b.dataset.scope === mode));
+    }
+    for (const b of document.querySelectorAll('[data-ch]')) {
+      b.setAttribute('aria-pressed', String(b.dataset.ch === state.scopeChannels));
+    }
+  }
 
   function drawScope() {
-    const vector = state.scopeMode === 'vectorscope';
-    scopeEl.classList.toggle('square', vector);
-    waveformModesEl.classList.toggle('hidden', vector);
-    for (const b of document.querySelectorAll('[data-scope]')) {
-      b.setAttribute('aria-pressed', String(b.dataset.scope === state.scopeMode));
-    }
-    for (const b of document.querySelectorAll('[data-wf]')) {
-      b.setAttribute('aria-pressed', String(b.dataset.wf === state.waveformMode));
-    }
-    if (!state.panels.scopes) return;
+    syncScopeControls();
+    clipLowEl.textContent = '';
+    clipHighEl.textContent = '';
+    // Nothing to draw while the box isn't laid out (hidden, or no file
+    // loaded yet); the next render draws it.
+    if (!state.scopesShown || !scopeEl.clientWidth) return;
     const { w, h, dpr } = sizeScopeCanvas();
     const g = scopeEl.getContext('2d');
     g.clearRect(0, 0, w, h);
     g.imageSmoothingEnabled = true;
     const sp = scopePixels && scopePixels.n ? scopePixels : null;
-    if (vector) {
+    const mode = state.scopeMode;
+    if (mode === 'vectorscope') {
       const size = 129;
       if (sp) {
         const bins = Scopes.vectorscope(sp.px, sp.w, sp.h, { size, include: sp.include });
@@ -668,27 +692,76 @@
         g.drawImage(binsToCanvas([bins], size, size, [SCOPE_TRACE], ref, false), 0, 0, w, h);
       }
       drawVectorGraticule(g, w, size, dpr);
-    } else {
-      const parade = state.waveformMode === 'parade';
+    } else if (mode === 'waveform') {
+      const rgb = state.scopeChannels === 'rgb';
       const levels = Math.min(256, h);
       if (sp) {
-        const wf = Scopes.waveform(sp.px, sp.w, sp.h, { levels, mode: state.waveformMode, include: sp.include });
+        const wf = Scopes.waveform(sp.px, sp.w, sp.h, { levels, mode: state.scopeChannels, include: sp.include });
         const ref = Math.max(2, (sp.n / (sp.w * levels)) * 12);
-        if (parade) {
+        if (rgb) {
           wf.channels.forEach((ch, i) => {
-            g.drawImage(binsToCanvas([ch], wf.cols, levels, [PARADE_COLOURS[i]], ref, true),
+            g.drawImage(binsToCanvas([ch], wf.cols, levels, [RGB_COLOURS[i]], ref, true),
               (i * w) / 3, 0, w / 3, h);
           });
         } else {
           g.drawImage(binsToCanvas(wf.channels, wf.cols, levels, [SCOPE_TRACE], ref, true), 0, 0, w, h);
         }
       }
-      drawWaveformGraticule(g, w, h, dpr, parade);
+      drawWaveformGraticule(g, w, h, dpr, rgb);
+    } else {
+      drawHistogramGraticule(g, w, h);
+      if (sp) drawHistogram(g, w, h, sp);
+    }
+  }
+
+  // Linear count per level, each channel a filled curve, scaled to the
+  // tallest bin other than the two end bins -- so a clipping spike at pure
+  // black or white (reported in the readout below) doesn't flatten the
+  // rest. RGB curves are added ('lighter'): where all three overlap the fill
+  // reads white.
+  function drawHistogram(g, w, h, sp) {
+    const bins = 256;
+    const hg = Scopes.histogram(sp.px, sp.w, sp.h, { bins, mode: state.scopeChannels, include: sp.include });
+    let peak = 1;
+    for (const ch of hg.channels) for (let k = 1; k < bins - 1; k++) if (ch[k] > peak) peak = ch[k];
+    const colours = hg.channels.length === 1 ? [[200, 200, 200]] : RGB_COLOURS;
+    g.save();
+    g.globalCompositeOperation = 'lighter';
+    hg.channels.forEach((ch, i) => {
+      const [r, gg, b] = colours[i];
+      g.beginPath();
+      g.moveTo(0, h);
+      for (let k = 0; k < bins; k++) {
+        const x = (k + 0.5) / bins * w;
+        g.lineTo(x, h - Math.min(1, ch[k] / peak) * (h - 2));
+      }
+      g.lineTo(w, h);
+      g.closePath();
+      g.fillStyle = `rgba(${r},${gg},${b},${hg.channels.length === 1 ? 0.55 : 0.45})`;
+      g.fill();
+      g.strokeStyle = `rgba(${r},${gg},${b},.9)`;
+      g.lineWidth = 1;
+      g.stroke();
+    });
+    g.restore();
+    const pct = (f) => (f * 100 < 0.1 && f > 0 ? '<0.1' : (f * 100).toFixed(1)) + '%';
+    clipLowEl.textContent = `Black ${pct(hg.clipLow)}`;
+    clipHighEl.textContent = `White ${pct(hg.clipHigh)}`;
+    clipLowEl.classList.toggle('hot', hg.clipLow >= 0.005);
+    clipHighEl.classList.toggle('hot', hg.clipHigh >= 0.005);
+  }
+
+  function drawHistogramGraticule(g, w, h) {
+    g.lineWidth = 1;
+    g.strokeStyle = 'rgba(160,160,160,.14)';
+    for (const f of [0.25, 0.5, 0.75]) {
+      const x = Math.round(f * w) + 0.5;
+      g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke();
     }
   }
 
   // 0-100% in 10% steps; 0, 50 and 100 are stronger and labelled.
-  function drawWaveformGraticule(g, w, h, dpr, parade) {
+  function drawWaveformGraticule(g, w, h, dpr, rgb) {
     g.lineWidth = 1;
     g.font = `${9 * dpr}px ui-monospace, Consolas, monospace`;
     g.textBaseline = 'middle';
@@ -701,7 +774,7 @@
         g.fillText(String(p), 3 * dpr, Math.min(h - 6 * dpr, Math.max(6 * dpr, y)));
       }
     }
-    if (parade) {
+    if (rgb) {
       g.strokeStyle = 'rgba(160,160,160,.3)';
       for (const x of [w / 3, (2 * w) / 3]) {
         g.beginPath(); g.moveTo(Math.round(x) + 0.5, 0); g.lineTo(Math.round(x) + 0.5, h); g.stroke();
@@ -739,6 +812,13 @@
     g.textAlign = 'start';
   }
 
+  // Showing the box needs a fresh sample, which only a render can take.
+  function setScopesShown(shown) {
+    state.scopesShown = shown;
+    scheduleSave();
+    if (shown && state.sourceLensSize) render(); else drawScope();
+  }
+
   for (const b of document.querySelectorAll('[data-scope]')) {
     b.addEventListener('click', () => {
       state.scopeMode = b.dataset.scope;
@@ -746,19 +826,20 @@
       scheduleSave();
     });
   }
-  for (const b of document.querySelectorAll('[data-wf]')) {
+  for (const b of document.querySelectorAll('[data-ch]')) {
     b.addEventListener('click', () => {
-      state.waveformMode = b.dataset.wf;
+      state.scopeChannels = b.dataset.ch;
       drawScope();
       scheduleSave();
     });
   }
-  // Opening the section needs a fresh sample, which only a render can take.
-  // Deferred a frame so the panel listener has recorded panels.scopes.
-  document.getElementById('scopes').addEventListener('toggle', (e) => {
-    if (!e.target.open) return;
-    requestAnimationFrame(() => { if (state.sourceLensSize) render(); else drawScope(); });
-  });
+  scopesToggleEl.addEventListener('click', () => setScopesShown(!state.scopesShown));
+  document.getElementById('scopeHide').addEventListener('click', () => setScopesShown(false));
+  // The box sits on the stage; keep its clicks and scrolls from rolling,
+  // panning or zooming the image underneath.
+  for (const type of ['pointerdown', 'wheel', 'dblclick']) {
+    scopeBoxEl.addEventListener(type, (e) => e.stopPropagation());
+  }
 
   function drawGuides() {
     if (!ctx || !state.sourceLensSize) return;
@@ -1060,6 +1141,13 @@
     defNum(k, { get: () => state.tone[k], set: (v) => { state.tone[k] = v; },
       range: Settings.RANGES.tone[k], fmt: (v) => (v > 0 ? '+' : '') + String(Math.round(v)) });
   }
+  for (const k of ['sharpenAmount', 'lumaNoise', 'colorNoise']) {
+    defNum(k, { get: () => state.detail[k], set: (v) => { state.detail[k] = v; },
+      range: Settings.RANGES.detail[k], fmt: (v) => String(Math.round(v)) });
+  }
+  defNum('sharpenRadius', { get: () => state.detail.sharpenRadius,
+    set: (v) => { state.detail.sharpenRadius = v; },
+    range: Settings.RANGES.detail.sharpenRadius, fmt: (v) => v.toFixed(1) });
   for (const lens of ['A', 'B']) {
     defNum('kelvin' + lens, {
       get: () => state.rawWb[lens].kelvin,
@@ -1549,8 +1637,70 @@
     return { maxDiff, cases: TONE_PARITY_CASES.length, worst };
   }
 
+  // Shaders.DETAIL_PARITY_FS's synthetic pixel, computed identically (every
+  // value is exact in float32).
+  function detailParityPixel(x, y) {
+    const edge = x + y < 64 ? 0.25 : 0.7;
+    const m = (v, n) => ((v % n) + n) % n;
+    return [
+      edge + m(x * 37 + y * 91, 17) / 255,
+      edge + m(x * 53 + y * 29, 13) / 255,
+      edge + m(x * 71 + y * 43, 19) / 255,
+    ];
+  }
+  const DETAIL_PARITY_CASES = [
+    { sharpenAmount: 0, sharpenRadius: 1, lumaNoise: 0, colorNoise: 0 },
+    { sharpenAmount: 150, sharpenRadius: 0.5, lumaNoise: 0, colorNoise: 0 },
+    { sharpenAmount: 80, sharpenRadius: 2, lumaNoise: 0, colorNoise: 0 },
+    { sharpenAmount: 0, sharpenRadius: 1, lumaNoise: 100, colorNoise: 0 },
+    { sharpenAmount: 0, sharpenRadius: 1, lumaNoise: 0, colorNoise: 100 },
+    { sharpenAmount: 60, sharpenRadius: 1.2, lumaNoise: 35, colorNoise: 50 },
+  ];
+
+  // Compares DETAIL_GLSL (via DETAIL_PARITY_FS) with Detail.apply over a
+  // 64 x 64 synthetic image for each case above.
+  function checkDetailParity() {
+    if (!ctx) ctx = GL.create(canvas);
+    const gl = ctx.gl;
+    const prog = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.DETAIL_PARITY_FS);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 64, 64, 0, gl.RGBA, gl.FLOAT, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    gl.viewport(0, 0, 64, 64);
+    gl.useProgram(prog);
+    const out = new Float32Array(64 * 64 * 4);
+    let maxDiff = 0, worst = null;
+    for (const p of DETAIL_PARITY_CASES) {
+      gl.uniform4f(gl.getUniformLocation(prog, 'uDetail'),
+        p.sharpenAmount, p.sharpenRadius, p.lumaNoise, p.colorNoise);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.readPixels(0, 0, 64, 64, gl.RGBA, gl.FLOAT, out);
+      for (let y = 0; y < 64; y++) {
+        for (let x = 0; x < 64; x++) {
+          const want = Detail.apply((dx, dy) => detailParityPixel(x + dx, y + dy), p);
+          for (let c = 0; c < 3; c++) {
+            const d = Math.abs(out[(y * 64 + x) * 4 + c] - want[c]);
+            if (d > maxDiff) { maxDiff = d; worst = { detail: p, x, y, c, gpu: out[(y * 64 + x) * 4 + c], js: want[c] }; }
+          }
+        }
+      }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo); gl.deleteTexture(tex); gl.deleteProgram(prog);
+    console.log('detail parity: ' + DETAIL_PARITY_CASES.length + ' settings x 4096 pixels, max abs diff =', maxDiff,
+      maxDiff < 1e-4 ? '(OK, below 1e-4)' : '(FAIL, exceeds 1e-4)');
+    return { maxDiff, cases: DETAIL_PARITY_CASES.length, worst };
+  }
+
   window.App = {
-    loadFile, state, render, rollFor: Lens.rollFor, checkParity, checkToneParity,
+    loadFile, state, render, rollFor: Lens.rollFor, checkParity, checkToneParity, checkDetailParity,
     setZoom, zoomToFit, getZoom: () => (zoom ? Object.assign({}, zoom) : null),
     saveSettings, loadSettings, exportImage,
   };

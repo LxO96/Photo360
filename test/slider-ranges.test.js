@@ -56,6 +56,10 @@ const SLIDER_TO_RANGE = {
   shadows: [Settings.RANGES.tone.shadows, 1],
   whites: [Settings.RANGES.tone.whites, 1],
   blacks: [Settings.RANGES.tone.blacks, 1],
+  sharpenAmount: [Settings.RANGES.detail.sharpenAmount, 1],
+  sharpenRadius: [Settings.RANGES.detail.sharpenRadius, 1],
+  lumaNoise: [Settings.RANGES.detail.lumaNoise, 1],
+  colorNoise: [Settings.RANGES.detail.colorNoise, 1],
   // Task 17 replaced the raw red/blue multiplier sliders (wbRedA/wbBlueA/
   // wbRedB/wbBlueB, a linear 0.2-1.5 range that matched Settings.RANGES
   // directly) with Kelvin/tint controls. Those are deliberately

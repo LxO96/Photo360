@@ -141,3 +141,44 @@ test('intensity is 0 for empty bins, monotonic, and capped at 1', () => {
   }
   assert.strictEqual(Scopes.intensity(1e9, 10), 1);
 });
+
+// -- histogram ----------------------------------------------------------------
+
+test('luma histogram counts each pixel once at its luma level', () => {
+  const px = image(4, 2, (x) => (x < 2 ? [0, 0, 0] : [255, 255, 255]));
+  const hg = Scopes.histogram(px, 4, 2, { bins: 256, mode: 'luma' });
+  assert.strictEqual(hg.channels.length, 1);
+  assert.strictEqual(hg.channels[0][0], 4);
+  assert.strictEqual(hg.channels[0][255], 4);
+  assert.strictEqual(hg.total, 8);
+});
+
+test('rgb histogram keeps one curve per channel', () => {
+  const px = image(3, 1, () => [255, 0, 128]);
+  const hg = Scopes.histogram(px, 3, 1, { bins: 256, mode: 'rgb' });
+  assert.strictEqual(hg.channels.length, 3);
+  assert.strictEqual(hg.channels[0][255], 3);
+  assert.strictEqual(hg.channels[1][0], 3);
+  assert.strictEqual(hg.channels[2][128], 3);
+});
+
+test('histogram reports clipped fractions at both ends', () => {
+  // One of four pixels has a channel at 255, one has every channel at 0.
+  const cols = [[255, 10, 10], [0, 0, 0], [100, 100, 100], [50, 60, 70]];
+  const px = image(4, 1, (x) => cols[x]);
+  const hg = Scopes.histogram(px, 4, 1, { bins: 64, mode: 'rgb' });
+  assert.ok(near(hg.clipHigh, 0.25));
+  assert.ok(near(hg.clipLow, 0.25));
+});
+
+test('histogram honours the include mask', () => {
+  const px = image(4, 4, () => [80, 80, 80]);
+  const hg = Scopes.histogram(px, 4, 4, { bins: 32, mode: 'luma', include: (x) => x === 0 });
+  assert.strictEqual(hg.total, 4);
+  assert.strictEqual(sum(hg.channels[0]), 4);
+});
+
+test('rgb waveform mode is the parade', () => {
+  const px = image(2, 1, () => [255, 0, 0]);
+  assert.strictEqual(Scopes.waveform(px, 2, 1, { levels: 16, mode: 'rgb' }).channels.length, 3);
+});

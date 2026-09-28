@@ -63,7 +63,7 @@ needed for the rim glow."
 
 The header bar shows the open file and has an **Open…** button that is
 always there. The panel on the right is split into collapsible sections
-(Framing, Level, White balance for raw files only, Edge, Tone, Output). The
+(Framing, Level, White balance for raw files only, Edge, Tone, Detail, Output). The
 page remembers which sections are open along with your other settings. Every
 number beside a slider can be edited: type a value and press Enter, or click
 away, to apply it. Values outside a slider's range are clamped to it, and
@@ -74,15 +74,24 @@ exact pixel size and aspect ratio it will write.
 
 ### Scopes
 
-The **Scopes** section at the top of the panel stays in view while you
-scroll through the sliders. **Waveform** plots brightness (0–100%) across
-the image, column by column, as either **Luma** or an **RGB** parade.
-**Vectorscope** plots colour on the standard Rec.709 layout, with boxes for
-the 75% colour targets and a dashed skin-tone line; a neutral image sits in
-the centre, so an off-centre blob shows a colour cast. Both read the
-rendered preview, so they include white balance, tone and edge, and when
-zoomed they cover only the visible part. The black surround outside the
-image circles is left out.
+The scopes float over the bottom-right corner of the image, where a fisheye
+composition is usually black. **Scopes** in the header (or the × on the box)
+shows and hides them.
+
+- **Histogram** (the default): how many pixels sit at each brightness, as
+  **Luma** or overlaid **RGB** curves. The readout under it gives the share
+  of pixels clipped to pure black and pure white, highlighted from 0.5%.
+- **Waveform**: brightness (0–100%) across the image, column by column, as
+  Luma or an RGB parade.
+- **Vector**: colour on the standard Rec.709 vectorscope, with boxes for the
+  75% colour targets and a dashed skin-tone line. A neutral image sits in
+  the centre, so an off-centre blob shows a colour cast.
+
+All three read the rendered preview, so they include white balance, tone,
+detail and edge; when zoomed in they cover only the visible part. They
+count the photograph only: the black outside the circles and the synthetic
+lens edge inside them (from the Edge falloff start outward) are left out,
+since that black would otherwise pile up at 0%.
 
 ### Preview and zoom
 
@@ -215,6 +224,25 @@ lifting Shadows. The opposite directions are gentler, because pushed further
 the curve would fold over. `Edge.toneCurve` in `edge.js` is the reference,
 and the shader mirrors it exactly. `App.checkToneParity()` compares the two
 on the GPU.
+
+### Detail
+
+**Sharpening** (Amount 0–150, Radius 0.5–2 px) and **Noise reduction**
+(Luminance and Colour, 0–100). All four default to off, and at zero they
+cost nothing. They work on the source pixels, before tone: noise reduction
+first, so the sharpening does not amplify noise.
+
+- Noise reduction is an edge-preserving (bilateral) filter over each pixel's
+  5×5 neighbourhood. Luminance smooths grain; Colour smooths the coloured
+  speckle, which is mostly a raw (DNG) problem. Edges survive because
+  neighbours that differ a lot from the centre are left out of the average.
+- Sharpening is an unsharp mask on luminance only, so it adds no colour
+  fringes. Very small differences are faded out so flat, noisy areas are
+  not sharpened, more so as Luminance noise reduction goes up.
+
+They act at pixel level, so judge them at 100% zoom. `detail.js` is the
+reference and the shader mirrors it; `App.checkDetailParity()` compares the
+two.
 
 ### Output
 

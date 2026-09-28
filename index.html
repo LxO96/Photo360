@@ -119,25 +119,38 @@
     color: var(--fg-2); background: #161616;
   }
 
+  /* -- Scopes overlay ---------------------------------------------------
+     Bottom-right of the stage, where a fisheye composition is usually
+     black. Neutral greys only; the pressed mode takes the accent. */
+  #scopeBox {
+    position: absolute; right: 16px; bottom: 16px; z-index: 5; width: 320px;
+    background: rgba(14, 14, 14, .86); border: 1px solid var(--line-2); border-radius: 4px;
+    padding: 6px; backdrop-filter: blur(6px); touch-action: none; cursor: default;
+  }
+  body:not(.loaded) #scopeBox { display: none; }
+  .scope-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+  .scope-head .spring { flex: 1; }
+  .seg { flex: none; display: inline-flex; border: 1px solid var(--line-2); border-radius: 3px; overflow: hidden; }
+  .seg button {
+    background: transparent; border: 0; color: var(--mut); font-size: 11px;
+    height: 20px; padding: 0 7px; cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--line-2); }
+  .seg button:hover { color: var(--fg); }
+  .seg button[aria-pressed="true"] { color: var(--accent); background: #232323; }
+  #scopeHide { height: 20px; width: 20px; padding: 0; line-height: 1; }
+  #scope { display: block; width: 100%; height: 150px; background: #0a0a0a; border-radius: 2px; }
+  #scope.square { width: 200px; height: 200px; margin: 0 auto; }
+  #scopeClip { display: flex; justify-content: space-between; margin-top: 3px; font-size: 10.5px; color: var(--mut); font-variant-numeric: tabular-nums; }
+  #scopeClip .hot { color: var(--warn); }
+  body:not(.loaded) #scopesToggle { opacity: .35; pointer-events: none; }
+  #scopesToggle[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-soft); }
+
   /* -- Panel ------------------------------------------------------------ */
   #panel {
     display: flex; flex-direction: column; min-height: 0;
     background: var(--panel); border-left: 1px solid var(--line);
   }
-  /* -- Scopes ----------------------------------------------------------- */
-  #scopes { flex: none; }
-  #scopes > .body { padding: 6px 12px 8px; }
-  .scope-modes { display: flex; justify-content: space-between; gap: 6px; margin-bottom: 6px; }
-  .seg { display: inline-flex; border: 1px solid var(--line-2); border-radius: 3px; overflow: hidden; }
-  .seg button {
-    background: transparent; border: 0; color: var(--mut); font-size: 11px;
-    height: 20px; padding: 0 8px; cursor: pointer;
-  }
-  .seg button + button { border-left: 1px solid var(--line-2); }
-  .seg button:hover { color: var(--fg); }
-  .seg button[aria-pressed="true"] { color: var(--accent); background: #232323; }
-  #scope { display: block; width: 100%; height: 150px; background: #0c0c0c; border: 1px solid var(--line); border-radius: 2px; }
-  #scope.square { height: auto; aspect-ratio: 1; width: 200px; margin: 0 auto; }
   #panelScroll { flex: 1; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: #3a3a3a transparent; }
 
   details.sec { border-bottom: 1px solid var(--line); }
@@ -260,6 +273,7 @@
       <button id="zoomFit" class="btn ghost" type="button" aria-pressed="true" title="Fit the composition to the stage (double-click the image to toggle Fit / 100%)">Fit</button>
       <button id="zoom100" class="btn ghost" type="button" aria-pressed="false" title="One screen pixel per exported pixel">100%</button>
     </div>
+    <button id="scopesToggle" class="btn ghost" type="button" aria-pressed="true" title="Show or hide the scopes">Scopes</button>
     <span class="rule"></span>
     <button id="openFile" class="btn" type="button" title="Open an .insp, .jpg or .dng file">Open…</button>
   </header>
@@ -267,6 +281,23 @@
   <div id="stage">
     <canvas id="view"></canvas>
     <canvas id="guides"></canvas>
+    <div id="scopeBox">
+      <div class="scope-head">
+        <div class="seg" role="group" aria-label="Scope">
+          <button type="button" data-scope="histogram">Histogram</button>
+          <button type="button" data-scope="waveform">Waveform</button>
+          <button type="button" data-scope="vectorscope">Vector</button>
+        </div>
+        <span class="spring"></span>
+        <div id="channelModes" class="seg" role="group" aria-label="Channels">
+          <button type="button" data-ch="luma">Luma</button>
+          <button type="button" data-ch="rgb">RGB</button>
+        </div>
+        <button id="scopeHide" class="btn ghost" type="button" title="Hide the scopes" aria-label="Hide the scopes">&times;</button>
+      </div>
+      <canvas id="scope" aria-label="Scope"></canvas>
+      <div id="scopeClip"><span id="clipLow"></span><span id="clipHigh"></span></div>
+    </div>
     <div id="drop">
       <svg class="mark" width="112" height="72" viewBox="2 7 28 18" aria-hidden="true">
         <path fill="currentColor" fill-rule="evenodd"
@@ -279,24 +310,6 @@
   </div>
 
   <aside id="panel">
-    <!-- Scopes sit outside the scrolling list so they stay in view while
-         the sliders below are adjusted. -->
-    <details id="scopes" class="sec" data-panel="scopes" open>
-      <summary>Scopes</summary>
-      <div class="body">
-        <div class="scope-modes">
-          <div class="seg" role="group" aria-label="Scope">
-            <button type="button" data-scope="waveform">Waveform</button>
-            <button type="button" data-scope="vectorscope">Vectorscope</button>
-          </div>
-          <div id="waveformModes" class="seg" role="group" aria-label="Waveform channels">
-            <button type="button" data-wf="luma">Luma</button>
-            <button type="button" data-wf="parade">RGB</button>
-          </div>
-        </div>
-        <canvas id="scope" aria-label="Scope"></canvas>
-      </div>
-    </details>
     <div id="panelScroll">
 
     <details class="sec" data-panel="framing" open>
@@ -431,6 +444,27 @@
       </div>
     </details>
 
+    <details class="sec" data-panel="detail" open>
+      <summary>Detail</summary>
+      <div class="body">
+        <div class="note">Works at pixel level: judge it at 100% zoom.</div>
+        <div class="sub-h">Sharpening</div>
+        <div class="row"><label for="sharpenAmount">Amount</label>
+          <input id="sharpenAmount" type="range" min="0" max="150" step="1" value="0">
+          <span class="val"><input id="sharpenAmountOut" class="num" type="text" inputmode="numeric" aria-label="Sharpening amount"><i></i></span></div>
+        <div class="row"><label for="sharpenRadius">Radius</label>
+          <input id="sharpenRadius" type="range" min="0.5" max="2" step="0.1" value="1">
+          <span class="val"><input id="sharpenRadiusOut" class="num" type="text" inputmode="decimal" aria-label="Sharpening radius, pixels"><i>px</i></span></div>
+        <div class="sub-h">Noise reduction</div>
+        <div class="row"><label for="lumaNoise">Luminance</label>
+          <input id="lumaNoise" type="range" min="0" max="100" step="1" value="0">
+          <span class="val"><input id="lumaNoiseOut" class="num" type="text" inputmode="numeric" aria-label="Luminance noise reduction"><i></i></span></div>
+        <div class="row"><label for="colorNoise">Colour</label>
+          <input id="colorNoise" type="range" min="0" max="100" step="1" value="0">
+          <span class="val"><input id="colorNoiseOut" class="num" type="text" inputmode="numeric" aria-label="Colour noise reduction"><i></i></span></div>
+      </div>
+    </details>
+
     <details class="sec" data-panel="output" open>
       <summary>Output</summary>
       <div class="body">
@@ -462,6 +496,7 @@
   <script src="view.js"></script>
   <script src="scopes.js"></script>
   <script src="edge.js"></script>
+  <script src="detail.js"></script>
   <script src="exif.js"></script>
   <script src="dng.js"></script>
   <script src="wb.js"></script>
