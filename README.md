@@ -213,11 +213,17 @@ sliders shown here if you've been experimenting.
   counting toward the glow, and where and how abruptly the image fades to
   black at the true edge of the lens's field of view.
 
-### White balance (raw sources only)
+### White balance
 
-Shown only when the loaded file is a raw `.dng` — a JPEG/`.insp` has already
-been demosaiced and white balanced by the camera, so the panel has nothing
-to do there.
+For a raw `.dng` the sliders are Kelvin and tint, below. A JPEG/`.insp` has
+already been white balanced by the camera, so there the panel (tagged JPEG)
+has relative **Temperature** and **Tint** per lens instead, −100 to +100,
+0 = as shot, as in Lightroom for JPEGs: raising Temperature warms, positive
+Tint adds magenta. They correct the camera's rendering for a different light
+(a chromatic adaptation in linear light that keeps brightness; `jpegwb.js`),
+and every JPEG opens at 0 / 0. Link A and B, Pick neutral, Auto, Match lenses
+and Reset (to 0 / 0) work the same way for both kinds of file; clipped JPEG
+highlights (often the sky's blue channel) are left out of what they measure.
 
 - **Lens A/B Kelvin, Lens A/B tint** — each lens's own white balance,
   independent of the other, expressed as a classic colour-temperature +
@@ -239,6 +245,20 @@ to do there.
   grey and averages those, so a big coloured area (a lawn, the sea, a blue
   sky) doesn't pull it, and the tint stays within 20 of the camera's. The
   note under the buttons says what it set. `autowb.js`.
+- **Match lenses** — puts two circles on the photo: an orange **Target** on
+  one lens (the colour that is right) and a white **Matching colour** on the
+  other, joined by a dashed arrow pointing at the one that changes. Drag each
+  onto the same kind of surface (the same sky, wall or grass seen by both
+  lenses); drag the handle on a circle's rim, or scroll over it, to size the
+  area it averages. Letting go sets the Matching colour lens's Kelvin and
+  tint so its circle comes out the Target's colour (hue and saturation;
+  white balance can't change brightness), unlinking A and B if they were
+  linked. A circle over mostly clipped pixels turns red and says so, since
+  there is no colour left to measure there (move it to something bright but
+  not blown out). The circles always sit on different lenses: drag one across onto
+  the other lens and the two change sides. They stay pinned to the photo
+  when you zoom, pan or rotate, and ⇄ Swap switches the roles. Esc or the
+  button again puts them away. `wbmatch.js`.
 - **Pick neutral** — click it, then click something in the photo that
   should be neutral grey or white, or drag a rectangle over a larger white
   or grey area (a wall, a sheet, a cloud). That lens's Kelvin and tint
@@ -270,17 +290,20 @@ composited, in Lightroom's order: **Exposure** (stops), **Contrast**,
 **Highlights**, **Shadows**, **Whites**, **Blacks**, **Saturation**. All
 default to neutral (no change).
 
-**Auto** sets Exposure, Highlights, Shadows, Whites and Blacks from the
-photo; Contrast and Saturation stay yours. It measures the whole
-composition (not just the zoomed view) with tone off, and counts only the
-photograph — inside the circles and inside the Edge falloff start — so the
-black around the circles can't make it brighten. Exposure brings the median
-to mid grey (±2 EV, never raised into clipping), Highlights and Shadows
-tame a bright or dark tail, and Whites and Blacks stretch the ends. Blown
-highlights are left out of the Highlights decision, since pulling them down
-only turns them grey. Each slider is capped well short of its range, so the
-result is a starting point; click again after other changes to re-measure,
-or double-click a slider to reset it. The solver is `autotone.js`.
+**Auto** sets Exposure, Contrast, Highlights, Shadows, Whites and Blacks
+from the photo; Saturation stays yours. It measures the whole composition
+(not just the zoomed view) with tone off, and counts only the photograph —
+inside the circles and inside the Edge falloff start — so the black around
+the circles can't make it brighten. It aims for an open, punchy look:
+Exposure brings a dark photo up to mid grey but a bright one only half-way
+down (±2 EV, never raised into clipping), so a sunny scene stays sunny;
+Highlights pulls the bright part down (at least −30 when there is one) and
+Shadows lifts the dark part (at least +25) — local, so both keep texture;
+Contrast then puts the punch back in the middle; Whites and Blacks stretch
+the ends. Blown highlights are left out of the Highlights decision, and pure
+white never moves. Each slider is capped short of its range, so the result
+is a starting point; click again after other changes to re-measure, or
+double-click a slider to reset it. The solver is `autotone.js`.
 
 Highlights, Shadows, Whites and Blacks (−100 to +100) build a luminance
 tone curve, applied after exposure and before contrast and saturation.

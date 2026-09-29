@@ -13,27 +13,38 @@
   // so the black around the circles can't make it brighten.
   //
   // Every step simulates the real tone curve (Edge.applyTone on a grey of
-  // that luma, with the user's contrast), so a target the solver aims for
-  // is where the pixel actually lands. Steps, in order:
-  //   1. Exposure brings the median to MID_TARGET, within +-EV_LIMIT, and
-  //      is not raised past the point where the 99th percentile clips; a
-  //      change under EV_DEADBAND is skipped.
-  //   2. Highlights pulls a bright upper tail (90th percentile) down to
-  //      HIGH_TARGET; Shadows lifts a dark lower tail (10th) to LOW_TARGET.
-  //   3. Whites and Blacks stretch the 99.5th / 0.5th percentiles out to
+  // that luma), so a target the solver aims for is where the pixel
+  // actually lands. Steps, in order:
+  //   1. Exposure brings the median to MID_TARGET -- all the way up, but
+  //      only EV_SHARE_DOWN of the way (in stops) down: a bright scene
+  //      should stay bright, its sky brought back by Highlights, not the
+  //      whole picture dimmed -- within +-EV_LIMIT, not raised past the
+  //      point where the 99th percentile clips; a change under
+  //      EV_DEADBAND is skipped.
+  //   2. Highlights pulls the upper tail (90th percentile) down to
+  //      HIGH_TARGET, and Shadows lifts the lower tail (10th) to
+  //      LOW_TARGET -- the recovery that gives the open, "HDR" look. Since
+  //      Highlights and Shadows are local (tonebase.js) they keep texture,
+  //      so they can go further than a plain curve could; any tail at all
+  //      gets at least HIGH_MIN / SHADOW_MIN.
+  //   3. Contrast then puts back the punch the recovery takes out: the
+  //      middle half (25th..75th percentile) is spread to IQR_TARGET.
+  //   4. Whites and Blacks stretch the 99.5th / 0.5th percentiles out to
   //      near the ends, without clipping more than is already clipped.
-  // Each slider has a cap well short of its range, so Auto stays a
-  // starting point rather than a look. Blown pixels are left out of the
-  // Highlights decision (see below).
+  // Each slider has a cap short of its range, so Auto stays a starting
+  // point rather than a look. Blown pixels are left out of the Highlights
+  // decision (see below).
   const MID_TARGET = 0.46;      // display value of ~18% linear grey
   const EV_LIMIT = 2;
   const EV_DEADBAND = 0.15;
+  const EV_SHARE_DOWN = 0.5;
   const CLIP_GUARD = 0.98;
-  const HIGH_TARGET = 0.9, HIGH_CAP = -40;
+  const HIGH_TARGET = 0.8, HIGH_CAP = -70, HIGH_MIN = -30, HIGH_FROM = 0.6;
   const CLIPPED = 0.985;   // a tail this bright is blown; Highlights can only grey it
-  const LOW_TARGET = 0.09, SHADOW_CAP = 50;
-  const WHITE_TARGET = 0.96, WHITE_CAP = 40;
-  const BLACK_TARGET = 0.025, BLACK_CAP = -35;
+  const LOW_TARGET = 0.17, SHADOW_CAP = 60, SHADOW_MIN = 25, SHADOW_FROM = 0.35;
+  const IQR_TARGET = 0.34, CONTRAST_MIN = -0.1, CONTRAST_MAX = 0.35;
+  const WHITE_TARGET = 0.97, WHITE_CAP = 50;
+  const BLACK_TARGET = 0.02, BLACK_CAP = -45;
 
   // The value at fraction p (0..1) of the histogram's mass.
   function percentile(bins, p) {
@@ -79,12 +90,13 @@
     const median = p(0.5);
     if (median === null) return null;
     const t = {
-      exposureEv: 0, contrast: (opts && opts.contrast) || 0, saturation: 0,
+      exposureEv: 0, contrast: 0, saturation: 0,
       highlights: 0, shadows: 0, whites: 0, blacks: 0,
     };
 
     // 1. Exposure.
     let ev = Math.log2(MID_TARGET / Math.max(median, 1e-4));
+    if (ev < 0) ev *= EV_SHARE_DOWN;
     if (ev > 0) {
       const p99 = p(0.99);
       if (p99 > 0) ev = Math.min(ev, Math.max(0, Math.log2(CLIP_GUARD / p99)));
@@ -102,14 +114,32 @@
     // taken over the unclipped pixels.
     const p90 = percentile(unclipped(bins), 0.9), p10 = p(0.1);
     const hi = p90 === null ? 0 : mapLuma(p90, t);
-    if (hi > HIGH_TARGET && hi < CLIPPED) {
-      t.highlights = Math.round(solveFor(t, 'highlights', p90, HIGH_TARGET, HIGH_CAP, 0, true));
+    if (hi > HIGH_FROM && hi < CLIPPED) {
+      const h = hi > HIGH_TARGET ? solveFor(t, 'highlights', p90, HIGH_TARGET, HIGH_CAP, 0, true) : 0;
+      t.highlights = Math.round(Math.min(HIGH_MIN, h));
     }
-    if (mapLuma(p10, t) < LOW_TARGET) {
-      t.shadows = Math.round(solveFor(t, 'shadows', p10, LOW_TARGET, 0, SHADOW_CAP, true));
+    const lo = mapLuma(p10, t);
+    if (lo < SHADOW_FROM) {
+      const s = lo < LOW_TARGET ? solveFor(t, 'shadows', p10, LOW_TARGET, 0, SHADOW_CAP, true) : 0;
+      t.shadows = Math.round(Math.max(SHADOW_MIN, s));
     }
 
-    // 3. Whites and blacks. Only stretch: an end that already reaches
+    // 3. Contrast: the middle half spread to IQR_TARGET (contrast only
+    // widens it, so bisection works).
+    const p25 = p(0.25), p75 = p(0.75);
+    const iqr = (c) => { const u = Object.assign({}, t, { contrast: c }); return mapLuma(p75, u) - mapLuma(p25, u); };
+    if (p75 > p25) {
+      let a = CONTRAST_MIN, b = CONTRAST_MAX;
+      if (iqr(a) >= IQR_TARGET) t.contrast = a;
+      else if (iqr(b) <= IQR_TARGET) t.contrast = b;
+      else {
+        for (let i = 0; i < 40; i++) { const m = (a + b) / 2; if (iqr(m) > IQR_TARGET) b = m; else a = m; }
+        t.contrast = (a + b) / 2;
+      }
+      t.contrast = Math.round(t.contrast * 100) / 100;
+    }
+
+    // 4. Whites and blacks. Only stretch: an end that already reaches
     // (or passes) its target is left alone.
     const p995 = p(0.995), p005 = p(0.005);
     if (mapLuma(p995, t) < WHITE_TARGET) {
@@ -121,8 +151,8 @@
 
     // Normalise -0 so results compare cleanly.
     return {
-      exposureEv: t.exposureEv + 0, highlights: t.highlights + 0, shadows: t.shadows + 0,
-      whites: t.whites + 0, blacks: t.blacks + 0,
+      exposureEv: t.exposureEv + 0, contrast: t.contrast + 0, highlights: t.highlights + 0,
+      shadows: t.shadows + 0, whites: t.whites + 0, blacks: t.blacks + 0,
     };
   }
 

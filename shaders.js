@@ -523,6 +523,9 @@
   uniform vec2  uToneBaseScale;
   uniform float uToneLocal;
   uniform float uMono;          // 1: black & white, photo and rim alike
+  // JPEG / .insp white balance (jpegwb.js matrix), linear sRGB; off for raw.
+  uniform mat3  uJpegWb;
+  uniform float uJpegWbOn;
   out vec4 fragColor;
   ` + SAMPLE_LENS_GLSL + TONE_GLSL + EDGE_GLSL + `
 
@@ -541,6 +544,7 @@
     if (u < 1.0) {
       vec2 uv = lensUv(u, theta, uCropFrac, uRoll);
       img = lensTexel(uv);
+      if (uJpegWbOn > 0.5) img = srgbEncode3(gamutMap(uJpegWb * srgbDecode3(img)));
       vec2 toneCoef = uToneLocal > 0.5
         ? texture(uToneBase, lensTexelPos(uv) * uToneBaseScale).rg : vec2(1.0, 0.0);
       img = applyTone(img, uTone, uToneCurve, toneCoef);

@@ -25,7 +25,7 @@
     'fovDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone', 'detail',
     'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels', 'scopeScale',
-    'keyLayout',
+    'keyLayout', 'jpegWb',
   ];
 
   // Task 18: the side panel's collapsible sections, in display order, and
@@ -109,6 +109,11 @@
     rawWb: {
       A: { kelvin: [2000, 12000], tint: [-150, 150] },
       B: { kelvin: [2000, 12000], tint: [-150, 150] },
+    },
+    // JPEG / .insp white balance (jpegwb.js): relative, 0 = as shot.
+    jpegWb: {
+      A: { temp: [-100, 100], tint: [-100, 100] },
+      B: { temp: [-100, 100], tint: [-100, 100] },
     },
   };
 

@@ -54,9 +54,11 @@ test('a bright image is darkened', () => {
 test('a well-exposed full-range image is left nearly alone', () => {
   const t = AutoTone.solve(hist(spread(0.01, 0.97, 4000)));
   assert.ok(Math.abs(t.exposureEv) < 0.15, JSON.stringify(t));
-  for (const k of ['highlights', 'shadows', 'whites', 'blacks']) {
-    assert.ok(Math.abs(t[k]) <= 15, `${k} = ${t[k]}`);
-  }
+  // The ends already reach: no stretch.
+  for (const k of ['whites', 'blacks']) assert.ok(Math.abs(t[k]) <= 15, `${k} = ${t[k]}`);
+  // Only the usual moderate recovery, and contrast to match.
+  assert.ok(t.highlights >= -45 && t.shadows <= 45, JSON.stringify(t));
+  assert.ok(t.contrast <= 0.3, JSON.stringify(t));
 });
 
 test('a flat, low-contrast image is stretched with whites and blacks', () => {
@@ -108,17 +110,25 @@ test('black outside the photo circles does not change the result', () => {
   assert.ok(unmasked.exposureEv > masked.exposureEv);
 });
 
-test('the user contrast is taken into account', () => {
-  const b = hist(spread(0.05, 0.35, 2000));
-  const plain = AutoTone.solve(b);
-  const withContrast = AutoTone.solve(b, { contrast: 0.5 });
-  assert.notDeepStrictEqual(plain, withContrast);
+test('Auto recovers the ends and puts contrast back in the middle', () => {
+  // A bright, hazy scene: a bright tail to recover, a flat middle.
+  const t = AutoTone.solve(hist(spread(0.3, 0.9, 3000)));
+  assert.ok(t.contrast > 0.1, JSON.stringify(t));
+  // The middle half ends up spread to the target.
+  const full = Object.assign({ saturation: 0 }, t);
+  const iqr = mapped(0.75, full) - mapped(0.25, full);
+  assert.ok(iqr > 0.3, String(iqr));
+  // A contrasty scene gets no more contrast.
+  const hard = AutoTone.solve(hist(spread(0.02, 0.12, 1000).concat(spread(0.85, 0.97, 1000))));
+  assert.ok(hard.contrast <= 0, JSON.stringify(hard));
 });
 
 test('clipped sky is not pulled grey by Highlights, and blacks stay gentle', () => {
   // A mid-toned scene with 10% blown to white.
   const vals = spread(0.08, 0.7, 1800).concat(new Array(200).fill(1));
   const t = AutoTone.solve(hist(vals));
-  assert.ok(t.highlights > -20, JSON.stringify(t));
-  assert.ok(t.blacks >= -35, JSON.stringify(t));
+  // Highlights never moves pure white, so the blown sky stays white.
+  assert.ok(mapped(1, Object.assign({ saturation: 0 }, t)) > 0.99, JSON.stringify(t));
+  assert.ok(t.highlights >= -30, JSON.stringify(t));
+  assert.ok(t.blacks >= -45, JSON.stringify(t));
 });

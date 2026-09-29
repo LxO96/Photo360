@@ -980,6 +980,11 @@
         gl.uniform1i(u('uDeveloped'), 2);
       }
       if (state.isRaw) setRawUniforms(gl, compositeProgram, ctx, draw.texIndex, state, physical);
+      // JPEG / .insp white balance, per physical lens.
+      const jw = !state.isRaw && state.jpegWb && state.jpegWb[physical];
+      const jwOn = !!(jw && (jw.temp || jw.tint));
+      gl.uniform1f(u('uJpegWbOn'), jwOn ? 1 : 0);
+      if (jwOn) gl.uniformMatrix3fv(u('uJpegWb'), true, JpegWb.matrix(jw.temp, jw.tint));
       // gl_FragCoord is in absolute framebuffer pixels (see shaders.js), so
       // the shader needs this cell's origin to recover local
       // center-relative coordinates. These are the whole (unclipped) cell's
@@ -1276,6 +1281,6 @@
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
     makeFloatExportTarget, readCompositionStripsFloat,
     developLens, releaseDeveloped, runDevelop, makeDevTarget, freeDevTarget,
-    developInfo, developSettled, setDevelopBudget, buildToneBase,
+    developInfo, developSettled, setDevelopBudget, buildToneBase, readLensRgba,
   };
 });

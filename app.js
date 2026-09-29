@@ -143,6 +143,10 @@
     // for thetaMaxDeg, so a stored value only ever surfaces before any file
     // (or a non-raw file) is loaded.
     rawWb: { A: { kelvin: 6500, tint: 0 }, B: { kelvin: 6500, tint: 0 } },
+    // JPEG / .insp white balance (jpegwb.js), relative to the camera's
+    // rendering; every JPEG load starts at 0 / 0 (as shot). Shares Link A
+    // and B (rawWbLinked) with raw.
+    jpegWb: { A: { temp: 0, tint: 0 }, B: { temp: 0, tint: 0 } },
     // The camera-space neutral triple (green = 1) the shader's uWhiteBalance
     // uniform actually consumes (see gl.js setRawUniforms) -- derived from
     // rawWb + rawMeta.colorMatrix1 via Wb.neutralFromKelvinTint every time
@@ -221,8 +225,12 @@
   // balanced by the camera. #whiteBalanceGroup is the whole collapsible
   // section (its <summary> is #whiteBalanceHeading), so one toggle covers
   // both; whether it is expanded is state.panels.whiteBalance's business.
+  const wbTagEl = document.getElementById('wbTag');
   function updateWbVisibility() {
-    whiteBalanceGroupEl.classList.toggle('hidden', !state.isRaw);
+    whiteBalanceGroupEl.classList.toggle('hidden', !state.sourceLensSize);
+    whiteBalanceGroupEl.dataset.mode = state.isRaw ? 'raw' : 'jpeg';
+    wbTagEl.textContent = state.isRaw ? 'RAW' : 'JPEG';
+    wbResetEl.textContent = state.isRaw ? 'Reset to as-shot' : 'Reset';
   }
 
   // Header bar (Task 18): the loaded file's name plus a terse description
@@ -276,6 +284,7 @@
     tintBEl.value = Wb.tintToSlider(state.rawWb.B.tint);
     tintBOutEl.value = Math.round(state.rawWb.B.tint);
     wbLinkEl.checked = state.rawWbLinked;
+    for (const k of ['jwTempA', 'jwTintA', 'jwTempB', 'jwTintB']) if (NUM[k]) reflectNum(NUM[k], true);
     recomputeRawWhiteBalance();
   }
 
@@ -350,6 +359,7 @@
       lensCount: descriptor.lensCount,
     };
     if (descriptor.isRaw) patch.rawWb = descriptor.rawWb;
+    else patch.jpegWb = { A: { temp: 0, tint: 0 }, B: { temp: 0, tint: 0 } };
     // Constrain Sensors to the file's own lens count -- a 1:1 file has no
     // lens B, so a `sensors` of 'B' or 'both' left over from a previous
     // dual file must not silently keep pointing at a texture slot this file
@@ -381,6 +391,7 @@
     updateExportLabel();
     document.body.classList.add('loaded');
     beforeView = false;
+    stopMatch();
     render();
     scheduleSave();
     // History is per photo.
@@ -549,6 +560,7 @@
           `${(c.duplicatedAreaFraction * 100).toFixed(0)}% of this image also appears in the other lens.`
         : `${(-c.overlapDeg).toFixed(1)}° short of the hemisphere — a gap between the two lenses.`;
     drawGuides();
+    drawMatch();
     updateLensControls();
     updateExportSize();
   }
@@ -1160,6 +1172,13 @@
   // Mean linear sRGB of `rect` (canvas pixels, inside `circ`) as rendered
   // with tone and detail off, or { error }.
   function measurePick(rect, circ) {
+    return measureRegion(rect, (x, y) => Math.hypot(x + 0.5 - circ.cx, y + 0.5 - circ.cy) <= circ.radius);
+  }
+
+  // The same for any area: the pixels of `rect` for which inside(x, y)
+  // (canvas pixels) is true. `clipped` says whether `rect` ran off the
+  // canvas (the preview only shows part of the composition when zoomed).
+  function measureRegion(rect, insideCanvas) {
     const saved = { tone: state.tone, detail: state.detail };
     state.tone = { ...DEFAULTS.tone };
     state.detail = { ...DEFAULTS.detail };
@@ -1174,22 +1193,41 @@
     const px = g.getImageData(0, 0, w, h).data;
     state.tone = saved.tone;
     state.detail = saved.detail;
-    const inside = (x, y) => Math.hypot(x0 + x + 0.5 - circ.cx, y0 + y + 0.5 - circ.cy) <= circ.radius;
-    const a = Wb.pickAverage(px, w, h, inside);
+    const offCanvas = rect.x0 < 0 || rect.y0 < 0 || rect.x1 > canvas.width || rect.y1 > canvas.height;
+    const a = Wb.pickAverage(px, w, h, (x, y) => insideCanvas(x0 + x, y0 + y));
     const total = a.used + a.clipped + a.dark;
+    const clippedShare = total ? a.clipped / total : 0;
     if (!a.srgb || a.used < total * PICK_MIN_USABLE) {
       return {
+        clippedShare,
         error: a.clipped >= a.dark
           ? 'That area is mostly clipped. Pick something bright but not blown out.'
           : 'That area is too dark to judge. Pick a mid or light grey.',
       };
     }
-    return { srgb: a.srgb, used: a.used, skipped: a.clipped + a.dark };
+    return { srgb: a.srgb, used: a.used, skipped: a.clipped + a.dark, offCanvas, clippedShare };
   }
 
   function pickNeutralAt(rect, circ) {
     const physical = GL.physicalLens(state, circ.lens);
     const lenses = state.rawWbLinked ? ['A', 'B'] : [physical];
+    if (!state.isRaw) {
+      // JPEG: exact in one pass -- the rendering is a fixed matrix of the
+      // camera's colour.
+      const m = measurePick(rect, circ);
+      if (!m.srgb) { render(); showPickNote(m.error || 'That area has no usable colour.'); return; }
+      const s = JpegWb.solve(jpegAsShot(physical, m.srgb), [1, 1, 1]);
+      if (!s) { render(); showPickNote('That area has no usable colour. Pick a neutral grey or white.'); return; }
+      state.jpegWb = { A: { ...state.jpegWb.A }, B: { ...state.jpegWb.B } };
+      for (const l of lenses) state.jpegWb[l] = { temp: s.temp, tint: s.tint };
+      syncWbControls();
+      render();
+      scheduleSave();
+      showPickNote('Set ' + fmtJw(s) + (lenses.length === 1 ? ` on lens ${physical}` : '') +
+        (s.atLimit ? ' (at the slider limit)' : '') + '.' +
+        (m.skipped ? ' Clipped or black pixels in the area were left out.' : ''));
+      return;
+    }
     const rk = Settings.RANGES.rawWb[physical];
     let kelvin = null, tint = null, atLimit = false, skipped = 0;
     for (let pass = 0; pass < PICK_PASSES; pass++) {
@@ -1546,6 +1584,17 @@
       reset: () => asShotWb().tint,
     });
   }
+  for (const lens of ['A', 'B']) {
+    for (const field of ['temp', 'tint']) {
+      defNum('jw' + (field === 'temp' ? 'Temp' : 'Tint') + lens, {
+        get: () => state.jpegWb[lens][field],
+        range: Settings.RANGES.jpegWb[lens][field],
+        fmt: (v) => { const r = Math.round(v); return (r > 0 ? '+' : '') + String(r); },
+        apply: (v) => setJpegWbField(lens, field, v),
+        reset: () => 0,
+      });
+    }
+  }
   // JPEG quality is an output option, not a persisted/rendered setting, and
   // has no Settings.RANGES entry -- its own slider bounds are the range.
   defNum('quality', { path: 'quality', get: () => state.quality, set: (v) => { state.quality = v; },
@@ -1662,8 +1711,8 @@
   // preview's zoom doesn't matter) with tone off, histograms the photo
   // pixels only -- inside each circle and inside the Edge falloff start,
   // the scopes' mask, so the surrounding black can't drag it brighter --
-  // and lets AutoTone.solve set the five sliders. Contrast and saturation
-  // are the user's and are left alone (the solve accounts for contrast).
+  // and lets AutoTone.solve set exposure, contrast and the four curve
+  // sliders. Saturation (and black & white) are the user's and left alone.
   const AUTO_TONE_SIZE = 640;
   function autoTone() {
     if (!ctx || !state.sourceLensSize) return;
@@ -1687,7 +1736,7 @@
       cx: c.cx, cy: c.cy, radius: c.radius * photo,
     })));
     const hist = Scopes.histogram(px, w, h, { bins: 256, mode: 'luma', include });
-    const t = AutoTone.solve(hist.channels[0], { contrast: state.tone.contrast });
+    const t = AutoTone.solve(hist.channels[0]);
     if (!t) return;
     state.tone = Object.assign({}, state.tone, t);
     syncControlsFromState();
@@ -1748,6 +1797,30 @@
   // apart -- exactly Task 16's linking behaviour, just over a different
   // field shape. The sliders and typed readouts reach this through the NUM
   // table above (their `apply`).
+  // JPEG / .insp: the same, on the relative sliders.
+  function setJpegWbField(lens, field, value) {
+    if (!Number.isFinite(value)) { syncWbControls(); return; }
+    const range = Settings.RANGES.jpegWb[lens][field];
+    value = Math.max(range[0], Math.min(range[1], value));
+    const lenses = state.rawWbLinked ? ['A', 'B'] : [lens];
+    state.jpegWb = { A: { ...state.jpegWb.A }, B: { ...state.jpegWb.B } };
+    for (const l of lenses) state.jpegWb[l][field] = value;
+    syncWbControls();
+    render();
+    scheduleSave();
+  }
+
+  // The camera's rendering of a lens's colour (linear sRGB) behind what is
+  // rendered now under its JPEG white balance.
+  function jpegAsShot(lens, rendered) {
+    const w = state.jpegWb[lens];
+    return JpegWb.apply(JpegWb.inv(JpegWb.matrix(w.temp, w.tint)), rendered);
+  }
+  function fmtJw(s) {
+    const f = (v) => { const r = Math.round(v); return (r > 0 ? '+' : '') + r; };
+    return `temperature ${f(s.temp)}, tint ${f(s.tint)}`;
+  }
+
   function setWbField(lens, field, value) {
     // Typed readouts can hold anything; keep values inside the slider
     // domain (Settings.RANGES.rawWb, identical to Wb.KELVIN_MIN/MAX and
@@ -1772,6 +1845,7 @@
     // the instant it's turned on.
     if (state.rawWbLinked) {
       state.rawWb.B = { ...state.rawWb.A };
+      state.jpegWb = { A: { ...state.jpegWb.A }, B: { ...state.jpegWb.A } };
     }
     syncWbControls();
     render();
@@ -1786,6 +1860,13 @@
   }
 
   wbResetEl.addEventListener('click', () => {
+    if (!state.isRaw) {
+      state.jpegWb = { A: { temp: 0, tint: 0 }, B: { temp: 0, tint: 0 } };
+      syncWbControls();
+      render();
+      scheduleSave();
+      return;
+    }
     if (!state.rawAsShotNeutral) return;
     const kt = asShotWb();
     state.rawWb = {
@@ -1801,7 +1882,59 @@
   // the photo (the lens circle out to the Edge falloff start). Linked:
   // both lenses measured together, one result; unlinked: once per lens.
   const wbAutoEl = document.getElementById('wbAuto');
+  // JPEG / .insp: the same grey-pixel estimate on the camera's rendering
+  // (linear sRGB, read back from the lens texture, subsampled), starting
+  // from "as shot"; the tint kept within JPEG_AUTO_TINT of it.
+  const JPEG_AUTO_TINT = 30;
+  function jpegSamples(i, radiusFrac) {
+    const size = ctx.textureSize[i];
+    if (!ctx.textures[i] || !size) return [];
+    const w = size.width, h = size.height;
+    const step = Math.max(1, Math.floor(Math.max(w, h) / 400));
+    const cx = w / 2, cy = h / 2, r2 = Math.pow(radiusFrac * Math.min(w, h) / 2, 2);
+    const out = [];
+    for (let y = 0; y < h; y += step) {
+      const row = GL.readLensRgba(ctx, i, { x: 0, y, w, h: 1 });
+      for (let x = 0; x < w; x += step) {
+        if ((x - cx) * (x - cx) + (y - cy) * (y - cy) > r2) continue;
+        const r = row[x * 4], g = row[x * 4 + 1], b = row[x * 4 + 2];
+        if (Math.max(r, g, b) >= 250 || Math.max(r, g, b) < 8 || Math.min(r, g, b) === 0) continue;
+        out.push([Wb.srgbDecode(r / 255), Wb.srgbDecode(g / 255), Wb.srgbDecode(b / 255)]);
+      }
+    }
+    return out;
+  }
+
+  function autoWhiteBalanceJpeg() {
+    const radiusFrac = Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg) * state.edge.falloffStart;
+    const lenses = state.lensCount === 1 ? ['A'] : ['A', 'B'];
+    const slot = (L) => (L === 'A' ? 0 : 1);
+    const groups = state.rawWbLinked
+      ? [{ lenses, samples: lenses.flatMap((L) => jpegSamples(slot(L), radiusFrac)) }]
+      : lenses.map((L) => ({ lenses: [L], samples: jpegSamples(slot(L), radiusFrac) }));
+    const next = { A: { ...state.jpegWb.A }, B: { ...state.jpegWb.B } };
+    const parts = [];
+    for (const g of groups) {
+      const r = AutoWb.estimate(g.samples, [1, 1, 1]);
+      const s = r && JpegWb.solve(r.neutral, [1, 1, 1]);
+      if (!s) continue;
+      s.tint = Math.max(-JPEG_AUTO_TINT, Math.min(JPEG_AUTO_TINT, s.tint));
+      for (const L of g.lenses) next[L] = { temp: s.temp, tint: s.tint };
+      if (state.rawWbLinked && state.lensCount === 2) next.B = { ...next.A };
+      parts.push((groups.length > 1 ? g.lenses[0] + ' ' : '') + fmtJw(s));
+    }
+    if (!parts.length) { showPickNote('Auto found nothing to measure: the photo is all clipped or black.'); return; }
+    commitHistory();
+    state.jpegWb = next;
+    syncWbControls();
+    render();
+    scheduleSave();
+    commitHistory();
+    showPickNote('Auto: ' + parts.join(', ') + '.');
+  }
+
   function autoWhiteBalance() {
+    if (ctx && state.sourceLensSize && !state.isRaw) return autoWhiteBalanceJpeg();
     if (!ctx || !state.isRaw || !state.rawMeta) return false;
     const radiusFrac = Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg) * state.edge.falloffStart;
     const samplesOf = (i) => {
@@ -1841,6 +1974,298 @@
     showPickNote('Auto: ' + parts.join(', ') + '.');
   }
   wbAutoEl.addEventListener('click', autoWhiteBalance);
+
+
+  // -- Match lenses (wbmatch.js) -------------------------------------------
+  // Two sampling circles pinned to the photo -- a target on one lens, a
+  // source on the other -- joined by a dashed line; letting go of one sets
+  // the source lens's white balance so its circle's colour matches the
+  // target's (hue and saturation; white balance can't change brightness).
+  // Drawn as SVG over the canvas, in canvas pixels, redrawn by render().
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+  const matchLayerEl = document.getElementById('matchLayer');
+  const wbMatchEl = document.getElementById('wbMatch');
+  const wbMatchSwapEl = document.getElementById('wbMatchSwap');
+  const MATCH_PASSES = 4;
+  const MATCH_START_R = 0.06;
+  let match = null;   // { target, source }: { lens, uv, r } each
+
+  // Each shown lens's circle on the canvas, by physical lens.
+  function matchDiscs() {
+    const out = {};
+    const crop = Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg);
+    for (const c of previewLayout().circles) {
+      out[GL.physicalLens(state, c.lens)] = {
+        cx: c.cx, cy: c.cy, radius: c.radius, crop, circ: c,
+        roll: GL.circleDraw(state, c.lens).rollDeg * Math.PI / 180,
+      };
+    }
+    return out;
+  }
+
+  const svgEl = (name, attrs, parent) => {
+    const el = document.createElementNS(SVG_NS, name);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    if (parent) parent.appendChild(el);
+    return el;
+  };
+  const matchEls = {};
+  function buildMatchLayer() {
+    matchLayerEl.replaceChildren();
+    matchEls.line = svgEl('line', { class: 'm-line' }, matchLayerEl);
+    matchEls.arrow = svgEl('polygon', { class: 'm-arrow' }, matchLayerEl);
+    for (const role of ['target', 'source']) {
+      const g = svgEl('g', { class: 'm-pip m-' + role }, matchLayerEl);
+      matchEls[role] = {
+        g,
+        halo: svgEl('circle', { class: 'm-halo' }, g),
+        ring: svgEl('circle', { class: 'm-ring' }, g),
+        dot: svgEl('circle', { class: 'm-dot' }, g),
+        handle: svgEl('circle', { class: 'm-handle' }, g),
+        label: svgEl('text', { class: 'm-label' }, g),
+      };
+      matchEls[role].label.textContent = role === 'target' ? 'Target' : 'Matching colour';
+      bindPip(role);
+    }
+  }
+
+  // Where each circle is on the canvas now, or null if its lens is not shown.
+  function pipOnScreen(pip, discs) {
+    const d = discs[pip.lens];
+    if (!d) return null;
+    const c = WbMatch.lensToScreen(pip.uv, d);
+    return { x: c.x, y: c.y, r: WbMatch.radiusToScreen(pip.r, d), disc: d };
+  }
+
+  function drawMatch() {
+    matchLayerEl.classList.toggle('hidden', !match);
+    if (!match || !ctx || !state.sourceLensSize) return;
+    const vr = canvas.getBoundingClientRect(), sr = stageEl.getBoundingClientRect();
+    matchLayerEl.style.left = (vr.left - sr.left) + 'px';
+    matchLayerEl.style.top = (vr.top - sr.top) + 'px';
+    matchLayerEl.style.width = vr.width + 'px';
+    matchLayerEl.style.height = vr.height + 'px';
+    matchLayerEl.setAttribute('viewBox', `0 0 ${canvas.width} ${canvas.height}`);
+    const px = canvas.width / Math.max(1, vr.width);   // canvas pixels per CSS pixel
+    matchLayerEl.style.setProperty('--px', px);
+    const discs = matchDiscs();
+    const at = {};
+    for (const role of ['target', 'source']) {
+      const s = pipOnScreen(match[role], discs), e = matchEls[role];
+      at[role] = s;
+      e.g.style.display = s ? '' : 'none';
+      if (!s) continue;
+      for (const c of [e.halo, e.ring]) { c.setAttribute('cx', s.x); c.setAttribute('cy', s.y); c.setAttribute('r', s.r); }
+      e.dot.setAttribute('cx', s.x); e.dot.setAttribute('cy', s.y); e.dot.setAttribute('r', 2.5 * px);
+      const h = Math.SQRT1_2 * s.r;
+      e.handle.setAttribute('cx', s.x + h); e.handle.setAttribute('cy', s.y - h); e.handle.setAttribute('r', 5 * px);
+      const pip = match[role];
+      e.g.classList.toggle('clipped', !!pip.clipped);
+      e.label.textContent = (role === 'target' ? 'Target' : 'Matching colour') + (pip.clipped ? ' – clipped' : '');
+      e.label.setAttribute('x', s.x); e.label.setAttribute('y', s.y - s.r - 6 * px);
+      e.label.setAttribute('font-size', 11 * px);
+    }
+    // Rim to rim, the arrow (mid-way) pointing at the circle that changes.
+    const line = matchEls.line, arrow = matchEls.arrow;
+    const t = at.target, s = at.source;
+    const len = t && s ? Math.hypot(s.x - t.x, s.y - t.y) : 0;
+    const show = len > t?.r + s?.r + 12 * px;
+    line.style.display = show ? '' : 'none';
+    arrow.style.display = show ? '' : 'none';
+    if (show) {
+      const ux = (s.x - t.x) / len, uy = (s.y - t.y) / len;
+      const a = { x: t.x + ux * t.r, y: t.y + uy * t.r }, b = { x: s.x - ux * s.r, y: s.y - uy * s.r };
+      const head = 10 * px, wing = 5.5 * px;
+      line.setAttribute('x1', a.x); line.setAttribute('y1', a.y);
+      line.setAttribute('x2', b.x); line.setAttribute('y2', b.y);
+      const tip = { x: (a.x + b.x) / 2 + ux * head / 2, y: (a.y + b.y) / 2 + uy * head / 2 };
+      const bx = tip.x - ux * head, by = tip.y - uy * head;
+      arrow.setAttribute('points', `${tip.x},${tip.y} ${bx - uy * wing},${by + ux * wing} ${bx + uy * wing},${by - ux * wing}`);
+    }
+  }
+
+  // Drag the body to move a circle, the rim handle to resize it; the
+  // wheel resizes too. Dragged onto the other circle's lens, the two
+  // change sides: the other one takes the spot this one came from.
+  function bindPip(role) {
+    const e = matchEls[role];
+    const drag = (ev, mode) => {
+      if (ev.button !== 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      const pip = match[role], start = { ...pip, uv: pip.uv.slice() };
+      const target = ev.currentTarget;
+      try { target.setPointerCapture(ev.pointerId); } catch (err) { /* synthetic */ }
+      const grab = pointerToCanvas(ev);
+      const at0 = pipOnScreen(pip, matchDiscs());
+      const off = at0 ? { x: at0.x - grab.x, y: at0.y - grab.y } : { x: 0, y: 0 };
+      const move = (m) => {
+        const p = pointerToCanvas(m), discs = matchDiscs();
+        if (mode === 'size') {
+          const s = pipOnScreen(pip, discs);
+          if (s) pip.r = WbMatch.clampRadius(WbMatch.radiusToLens(Math.hypot(p.x - s.x, p.y - s.y), s.disc));
+        } else {
+          const q = { x: p.x + off.x, y: p.y + off.y };
+          const c = circleAt(q);
+          if (c) {
+            const lens = GL.physicalLens(state, c.lens);
+            pip.lens = lens;
+            pip.uv = WbMatch.screenToLens(q, discs[lens]);
+          }
+        }
+        checkClipped(role);
+        drawMatch();
+      };
+      const up = () => {
+        target.removeEventListener('pointermove', move);
+        target.removeEventListener('pointerup', up);
+        target.removeEventListener('pointercancel', up);
+        const other = match[role === 'target' ? 'source' : 'target'];
+        if (!WbMatch.differentLenses(match.target, match.source)) {
+          other.lens = start.lens;
+          other.uv = start.uv.slice();
+          drawMatch();
+        }
+        applyMatch();
+      };
+      target.addEventListener('pointermove', move);
+      target.addEventListener('pointerup', up);
+      target.addEventListener('pointercancel', up);
+    };
+    e.ring.addEventListener('pointerdown', (ev) => drag(ev, 'move'));
+    e.halo.addEventListener('pointerdown', (ev) => drag(ev, 'move'));
+    e.dot.addEventListener('pointerdown', (ev) => drag(ev, 'move'));
+    e.label.addEventListener('pointerdown', (ev) => drag(ev, 'move'));
+    e.handle.addEventListener('pointerdown', (ev) => drag(ev, 'size'));
+    let wheelTimer = null;
+    e.g.addEventListener('wheel', (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      match[role].r = WbMatch.clampRadius(match[role].r * Math.pow(1.1, ev.deltaY < 0 ? 1 : -1));
+      drawMatch();
+      clearTimeout(wheelTimer);
+      wheelTimer = setTimeout(applyMatch, 300);
+    }, { passive: false });
+  }
+
+  // Whether a circle's area is mostly clipped (its colour unknowable), for
+  // drawMatch to show -- checked as it is dragged or resized, a few times a
+  // second, and whenever it is measured.
+  const CLIP_SHOW = 0.5, CLIP_CHECK_MS = 120;
+  let clipCheckAt = 0;
+  function markClipped(role, m) {
+    match[role].clipped = !!m && (m.clippedShare || 0) >= CLIP_SHOW;
+  }
+  function checkClipped(role) {
+    const now = performance.now();
+    if (now - clipCheckAt < CLIP_CHECK_MS) return;
+    clipCheckAt = now;
+    const s = pipOnScreen(match[role], matchDiscs());
+    if (!s) return;
+    markClipped(role, measurePip(s));
+    render();   // measuring drew the tone-off frame
+  }
+
+  // The average of a circle, clipped to its lens's photo (inside the Edge
+  // falloff start).
+  function measurePip(s) {
+    const lensR = s.disc.radius * state.edge.falloffStart;
+    const rect = { x0: s.x - s.r, y0: s.y - s.r, x1: s.x + s.r, y1: s.y + s.r };
+    return measureRegion(rect, (x, y) =>
+      Math.hypot(x + 0.5 - s.x, y + 0.5 - s.y) <= s.r &&
+      Math.hypot(x + 0.5 - s.disc.cx, y + 0.5 - s.disc.cy) <= lensR);
+  }
+
+  function applyMatch() {
+    if (!match || (state.isRaw && !state.rawMeta)) return;
+    const src = match.source.lens, tgt = match.target.lens;
+    const discs = matchDiscs();
+    const ts = pipOnScreen(match.target, discs);
+    if (!ts || !pipOnScreen(match.source, discs)) { showPickNote('Show both lenses to match them.'); return; }
+    const mt = measurePip(ts);
+    markClipped('target', mt);
+    markClipped('source', measurePip(pipOnScreen(match.source, discs)));
+    if (!mt.srgb) { render(); showPickNote('Target: ' + mt.error); return; }
+    const wasLinked = state.rawWbLinked;
+    if (!state.isRaw) {
+      // JPEG: exact in one pass.
+      const ms = measurePip(pipOnScreen(match.source, discs));
+      if (!ms.srgb) { render(); showPickNote('Matching colour: ' + ms.error); return; }
+      const s = JpegWb.solve(jpegAsShot(src, ms.srgb), mt.srgb);
+      if (!s) { render(); showPickNote('Those colours leave nothing to match.'); return; }
+      commitHistory();
+      state.rawWbLinked = false;
+      state.jpegWb = Object.assign({ A: { ...state.jpegWb.A }, B: { ...state.jpegWb.B } }, { [src]: { temp: s.temp, tint: s.tint } });
+      syncWbControls();
+      render();
+      scheduleSave();
+      commitHistory();
+      showPickNote(`Matched lens ${src} to ${tgt}: ${fmtJw(s)}` + (s.atLimit ? ' (at the slider limit)' : '') + '.' +
+        (wasLinked ? ' A and B are now unlinked.' : '') +
+        (mt.offCanvas || ms.offCanvas ? ' Part of a circle is off screen; only what is shown was sampled.' : ''));
+      return;
+    }
+    const rk = Settings.RANGES.rawWb[src];
+    let kt = null, off = mt.offCanvas, atLimit = false;
+    commitHistory();
+    for (let pass = 0; pass < MATCH_PASSES; pass++) {
+      const ms = measurePip(pipOnScreen(match.source, matchDiscs()));
+      if (!ms.srgb) { if (pass === 0) { render(); showPickNote('Source: ' + ms.error); return; } break; }
+      off = off || ms.offCanvas;
+      const n = WbMatch.solve(ms.srgb, mt.srgb, state.rawCamToSrgb[src], state.rawWhiteBalance[src], Dng.mat3Invert);
+      if (!n) break;
+      const raw = Wb.kelvinTintFromNeutral(n, state.rawMeta.colorMatrix1);
+      kt = {
+        kelvin: Math.max(rk.kelvin[0], Math.min(rk.kelvin[1], raw.kelvin)),
+        tint: Math.max(rk.tint[0], Math.min(rk.tint[1], raw.tint)),
+      };
+      atLimit = kt.kelvin !== raw.kelvin || kt.tint !== raw.tint;
+      state.rawWbLinked = false;
+      state.rawWb = Object.assign({}, state.rawWb, { [src]: kt });
+      syncWbControls();   // also the neutral and matrix the next pass uses
+      if (atLimit) break;
+    }
+    render();
+    scheduleSave();
+    commitHistory();
+    if (!kt) { showPickNote('Those colours leave nothing to match.'); return; }
+    showPickNote(`Matched lens ${src} to ${tgt}: ${Math.round(kt.kelvin)} K, tint ${kt.tint >= 0 ? '+' : ''}${Math.round(kt.tint)}` +
+      (atLimit ? ' (at the slider limit)' : '') + '.' + (wasLinked ? ' A and B are now unlinked.' : '') +
+      (off ? ' Part of a circle is off screen; only what is shown was sampled.' : ''));
+  }
+
+  function startMatch() {
+    if (!ctx || !state.sourceLensSize || state.lensCount !== 2) return;
+    if (state.sensors !== 'both') { showPickNote('Show both lenses (Sensors: Both) to match them.'); return; }
+    const shown = previewLayout().circles.map((c) => GL.physicalLens(state, c.lens));
+    match = {
+      target: { lens: shown[0], uv: [0.5, 0.5], r: MATCH_START_R },
+      source: { lens: shown[1], uv: [0.5, 0.5], r: MATCH_START_R },
+    };
+    wbMatchEl.setAttribute('aria-pressed', 'true');
+    wbMatchSwapEl.classList.remove('hidden');
+    showPickNote('Drag the circles onto the same kind of surface in each lens; the lens with the Matching colour circle then matches the Target.');
+    drawMatch();
+  }
+
+  function stopMatch() {
+    match = null;
+    wbMatchEl.setAttribute('aria-pressed', 'false');
+    wbMatchSwapEl.classList.add('hidden');
+    drawMatch();
+  }
+
+  buildMatchLayer();
+  wbMatchEl.addEventListener('click', () => (match ? stopMatch() : startMatch()));
+  wbMatchSwapEl.addEventListener('click', () => {
+    if (!match) return;
+    match = { target: match.source, source: match.target };
+    drawMatch();
+    applyMatch();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && match && !tool && !numBySlider.has(document.activeElement)) stopMatch();
+  });
 
   // Formats an edge slider's value to its own <input step>'s decimal
   // precision instead of JS's default number-to-string, which printed raw

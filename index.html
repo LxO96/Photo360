@@ -131,6 +131,24 @@
     padding: 6px; backdrop-filter: blur(6px); touch-action: none; cursor: default;
   }
   body:not(.loaded) #scopeBox { display: none; }
+  /* Match lenses: target / source circles (app.js drawMatch). Sizes are
+     in canvas pixels; --px is canvas pixels per CSS pixel. */
+  #matchLayer { position: absolute; z-index: 4; pointer-events: none; overflow: visible; }
+  #matchLayer .m-line { stroke: #ffffff; stroke-width: calc(1.5px * var(--px, 1)); stroke-dasharray: calc(6px * var(--px, 1)) calc(5px * var(--px, 1)); opacity: .85; }
+  #matchLayer .m-halo { fill: none; stroke: rgba(0, 0, 0, .55); stroke-width: calc(4px * var(--px, 1)); pointer-events: stroke; cursor: move; }
+  #matchLayer .m-ring { fill: rgba(255, 255, 255, .04); stroke-width: calc(1.75px * var(--px, 1)); pointer-events: all; cursor: move; }
+  #matchLayer .m-dot { pointer-events: all; cursor: move; }
+  #matchLayer .m-handle { stroke: rgba(0, 0, 0, .6); stroke-width: calc(1px * var(--px, 1)); pointer-events: all; cursor: nwse-resize; }
+  #matchLayer .m-label { text-anchor: middle; font-family: var(--ui); font-weight: 600; paint-order: stroke;
+    stroke: rgba(0, 0, 0, .7); stroke-width: calc(3px * var(--px, 1)); pointer-events: all; cursor: move; user-select: none; }
+  #matchLayer .m-target .m-ring { stroke: var(--accent); }
+  #matchLayer .m-target .m-dot, #matchLayer .m-target .m-handle, #matchLayer .m-target .m-label { fill: var(--accent); }
+  #matchLayer .m-source .m-ring { stroke: #ffffff; }
+  #matchLayer .m-source .m-dot, #matchLayer .m-source .m-handle, #matchLayer .m-source .m-label { fill: #ffffff; }
+  /* A circle over mostly clipped pixels: nothing to measure there. */
+  #matchLayer .m-pip.clipped .m-ring { stroke: var(--err); stroke-dasharray: calc(4px * var(--px, 1)) calc(3px * var(--px, 1)); }
+  #matchLayer .m-pip.clipped .m-dot, #matchLayer .m-pip.clipped .m-handle, #matchLayer .m-pip.clipped .m-label { fill: var(--err); }
+  #matchLayer .m-arrow { fill: #ffffff; opacity: .9; stroke: rgba(0, 0, 0, .5); stroke-width: calc(1px * var(--px, 1)); }
   /* Before / after (the \ key). */
   #beforeBadge {
     position: absolute; left: 16px; top: 16px; z-index: 6; padding: 3px 8px;
@@ -270,6 +288,11 @@
   .note.warn { color: var(--warn); }
   .actions { display: flex; justify-content: flex-end; margin-top: 6px; gap: 6px; }
   .actions.tools { justify-content: flex-start; margin: 0 0 4px; }
+  /* White balance has more buttons than fit one row of the panel. */
+  .actions.wb-actions { justify-content: flex-start; flex-wrap: wrap; }
+  /* Raw files get Kelvin / tint, JPEG / .insp relative Temperature / Tint. */
+  #whiteBalanceGroup[data-mode="raw"] .jpeg-only,
+  #whiteBalanceGroup[data-mode="jpeg"] .raw-only { display: none; }
   /* A tool that is waiting for input on the image (Straighten, Pick). */
   .btn.ghost[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-soft); }
   #stage.tool-active, #stage.tool-active.zoomed { cursor: crosshair; }
@@ -353,6 +376,7 @@
     <canvas id="view"></canvas>
     <canvas id="guides"></canvas>
     <div id="beforeBadge" class="hidden">Before</div>
+    <svg id="matchLayer" class="hidden" aria-label="Match lenses: Target and Matching colour circles"></svg>
     <div id="help" class="hidden" role="dialog" aria-label="Keyboard shortcuts">
       <div class="help-head"><span>Keyboard shortcuts</span>
         <button class="close btn ghost sq" type="button" aria-label="Close">&times;</button></div>
@@ -450,36 +474,54 @@
     </details>
 
     <details id="whiteBalanceGroup" class="sec hidden" data-panel="whiteBalance" open>
-      <summary id="whiteBalanceHeading">White balance <span class="tag">RAW</span></summary>
+      <summary id="whiteBalanceHeading">White balance <span id="wbTag" class="tag">RAW</span></summary>
       <div class="body">
-        <div class="note">Kelvin + tint per lens, as in Lightroom. Kelvin is the colour
+        <div class="note raw-only">Kelvin + tint per lens, as in Lightroom. Kelvin is the colour
           temperature being corrected for; raising it warms the image. Positive tint adds
           magenta, negative adds green.</div>
+        <div class="note jpeg-only">Per lens, relative to how the camera rendered it (0 = as
+          shot), as in Lightroom for JPEGs. Raising Temperature warms the image; positive
+          tint adds magenta, negative adds green.</div>
         <div data-lens="A">
         <div class="sub-h">Lens A</div>
-        <div class="row"><label for="kelvinA">Temperature</label>
+        <div class="row raw-only"><label for="kelvinA">Temperature</label>
           <input id="kelvinA" type="range" min="0" max="1" step="0.0001">
           <span class="val"><input id="kelvinAOut" class="num" type="text" inputmode="numeric" aria-label="Lens A temperature, Kelvin"><i>K</i></span></div>
-        <div class="row"><label for="tintA">Tint</label>
+        <div class="row raw-only"><label for="tintA">Tint</label>
           <input id="tintA" type="range" min="-1" max="1" step="0.0001">
           <span class="val"><input id="tintAOut" class="num" type="text" inputmode="numeric" aria-label="Lens A tint"><i></i></span></div>
+        <div class="row jpeg-only"><label for="jwTempA">Temperature</label>
+          <input id="jwTempA" type="range" min="-100" max="100" step="1" value="0">
+          <span class="val"><input id="jwTempAOut" class="num" type="text" inputmode="numeric" aria-label="Lens A temperature"><i></i></span></div>
+        <div class="row jpeg-only"><label for="jwTintA">Tint</label>
+          <input id="jwTintA" type="range" min="-100" max="100" step="1" value="0">
+          <span class="val"><input id="jwTintAOut" class="num" type="text" inputmode="numeric" aria-label="Lens A tint"><i></i></span></div>
         </div>
         <div data-lens="B">
         <div class="sub-h">Lens B</div>
-        <div class="row"><label for="kelvinB">Temperature</label>
+        <div class="row raw-only"><label for="kelvinB">Temperature</label>
           <input id="kelvinB" type="range" min="0" max="1" step="0.0001">
           <span class="val"><input id="kelvinBOut" class="num" type="text" inputmode="numeric" aria-label="Lens B temperature, Kelvin"><i>K</i></span></div>
-        <div class="row"><label for="tintB">Tint</label>
+        <div class="row raw-only"><label for="tintB">Tint</label>
           <input id="tintB" type="range" min="-1" max="1" step="0.0001">
           <span class="val"><input id="tintBOut" class="num" type="text" inputmode="numeric" aria-label="Lens B tint"><i></i></span></div>
+        <div class="row jpeg-only"><label for="jwTempB">Temperature</label>
+          <input id="jwTempB" type="range" min="-100" max="100" step="1" value="0">
+          <span class="val"><input id="jwTempBOut" class="num" type="text" inputmode="numeric" aria-label="Lens B temperature"><i></i></span></div>
+        <div class="row jpeg-only"><label for="jwTintB">Tint</label>
+          <input id="jwTintB" type="range" min="-100" max="100" step="1" value="0">
+          <span class="val"><input id="jwTintBOut" class="num" type="text" inputmode="numeric" aria-label="Lens B tint"><i></i></span></div>
         </div>
         <label class="check" data-lens="both"><input id="wbLink" type="checkbox" checked> Link A and B</label>
-        <div class="actions">
+        <div class="actions wb-actions">
           <button id="wbPick" class="btn ghost" type="button" aria-pressed="false"
             title="Click a spot, or drag over an area, that should be neutral grey or white. Esc cancels.">Pick neutral</button>
           <button id="wbAuto" class="btn ghost" type="button"
             title="Measure the light from the photo (Shift+W). Linked: one value for both lenses; unlinked: one per lens.">Auto</button>
           <button id="wbReset" class="btn ghost" type="button">Reset to as-shot</button>
+          <button id="wbMatch" class="btn ghost" type="button" aria-pressed="false"
+            title="Match one lens's colour to the other: drag the Target and Matching colour circles onto the same kind of surface. Esc puts them away.">Match lenses</button>
+          <button id="wbMatchSwap" class="btn ghost hidden" type="button" title="Swap which lens is the Target">&#8646; Swap</button>
         </div>
         <div id="wbPickNote" class="note hidden"></div>
       </div>
@@ -613,6 +655,8 @@
   <script src="dngwrite.js"></script>
   <script src="wb.js"></script>
   <script src="autowb.js"></script>
+  <script src="wbmatch.js"></script>
+  <script src="jpegwb.js"></script>
   <script src="shaders.js"></script>
   <script src="gl.js"></script>
   <script src="settings.js"></script>

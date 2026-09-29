@@ -31,7 +31,7 @@
     { group: 'Sliders', label: 'Fine drag (a tenth of the speed; press any time)', show: 'Shift+drag', action: null, keys: [] },
     { group: 'Image', label: 'Rotate 90° / back', show: 'R / Shift+R', action: null, keys: [] },
     { group: 'Image', label: 'Black & white on / off', show: 'B', action: 'toggleMono', keys: [{ key: 'b', shift: false }] },
-    { group: 'Image', label: 'Auto white balance (raw files)', show: 'Shift+W', action: 'autoWb',
+    { group: 'Image', label: 'Auto white balance', show: 'Shift+W', action: 'autoWb',
       keys: [{ key: 'w', shift: true }] },
     { group: 'View', label: 'Fit / 100%', show: 'Z', action: 'toggleZoom', keys: [{ key: 'z' }] },
     { group: 'View', label: 'Fit', show: 'Ctrl+0', action: 'zoomFit', keys: [{ key: '0', ctrl: true }] },
