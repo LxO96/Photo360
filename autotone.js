@@ -31,20 +31,25 @@
   //      middle half (25th..75th percentile) is spread to IQR_TARGET.
   //   4. Whites and Blacks stretch the 99.5th / 0.5th percentiles out to
   //      near the ends, without clipping more than is already clipped.
+  //   5. If all that left the middle darker than it started (up to
+  //      KEEP_MAX), exposure brings it back: Auto opens a photo up, it
+  //      doesn't dim it.
   // Each slider has a cap short of its range, so Auto stays a starting
   // point rather than a look. Blown pixels are left out of the Highlights
   // decision (see below).
   const MID_TARGET = 0.46;      // display value of ~18% linear grey
   const EV_LIMIT = 2;
   const EV_DEADBAND = 0.15;
-  const EV_SHARE_DOWN = 0.5;
+  const EV_SHARE_DOWN = 0.25;
   const CLIP_GUARD = 0.98;
-  const HIGH_TARGET = 0.8, HIGH_CAP = -70, HIGH_MIN = -30, HIGH_FROM = 0.6;
+  const HIGH_TARGET = 0.8, HIGH_CAP = -70, HIGH_MIN = -20, HIGH_FROM = 0.6;
   const CLIPPED = 0.985;   // a tail this bright is blown; Highlights can only grey it
   const LOW_TARGET = 0.17, SHADOW_CAP = 60, SHADOW_MIN = 25, SHADOW_FROM = 0.35;
-  const IQR_TARGET = 0.34, CONTRAST_MIN = -0.1, CONTRAST_MAX = 0.35;
+  const IQR_TARGET = 0.32, CONTRAST_MIN = -0.1, CONTRAST_MAX = 0.3;
+  // The middle may not end up darker than it was (or than KEEP_MAX).
+  const KEEP_MAX = 0.62, KEEP_SLACK = 0.02;
   const WHITE_TARGET = 0.97, WHITE_CAP = 50;
-  const BLACK_TARGET = 0.02, BLACK_CAP = -45;
+  const BLACK_TARGET = 0.02, BLACK_CAP = -30;
 
   // The value at fraction p (0..1) of the histogram's mass.
   function percentile(bins, p) {
@@ -147,6 +152,13 @@
     }
     if (mapLuma(p005, t) > BLACK_TARGET) {
       t.blacks = Math.round(solveFor(t, 'blacks', p005, BLACK_TARGET, BLACK_CAP, 0, true));
+    }
+
+    // 5. Keep the brightness: if the steps above left the median darker
+    // than it started (up to KEEP_MAX), exposure brings it back.
+    const keep = Math.min(median, KEEP_MAX) - KEEP_SLACK;
+    if (mapLuma(median, t) < keep) {
+      t.exposureEv = Math.round(solveFor(t, 'exposureEv', median, keep, t.exposureEv, EV_LIMIT, true) * 100) / 100;
     }
 
     // Normalise -0 so results compare cleanly.

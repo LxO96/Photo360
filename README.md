@@ -93,7 +93,7 @@ while you type in a number box, and Ctrl+Z there undoes the typing.
 | Esc | Leave the slider |
 | Z | Fit / 100% |
 | Ctrl+0, Ctrl+1, Ctrl+= / Ctrl+− | Fit, 100%, zoom in / out |
-| `\` (Swedish: < or §) | Before / after: Tone and Detail off until pressed again or something is changed |
+| `\` (Swedish: < or §) | Before, while held: Tone and Detail off until you let go |
 | Ctrl+O, Ctrl+Shift+E, Ctrl+P | Open, Export, Print |
 
 History records edits to the picture (Framing, Level, White balance, Edge,
@@ -295,12 +295,13 @@ from the photo; Saturation stays yours. It measures the whole composition
 (not just the zoomed view) with tone off, and counts only the photograph —
 inside the circles and inside the Edge falloff start — so the black around
 the circles can't make it brighten. It aims for an open, punchy look:
-Exposure brings a dark photo up to mid grey but a bright one only half-way
-down (±2 EV, never raised into clipping), so a sunny scene stays sunny;
-Highlights pulls the bright part down (at least −30 when there is one) and
+Exposure brings a dark photo up to mid grey but a bright one only a quarter
+of the way down (±2 EV, never raised into clipping), so a sunny scene stays
+sunny; Highlights pulls the bright part down (at least −20 when there is one) and
 Shadows lifts the dark part (at least +25) — local, so both keep texture;
 Contrast then puts the punch back in the middle; Whites and Blacks stretch
-the ends. Blown highlights are left out of the Highlights decision, and pure
+the ends. Last, if all that left the middle tones darker than they were,
+Exposure brings them back — Auto opens a photo up, it doesn't dim it. Blown highlights are left out of the Highlights decision, and pure
 white never moves. Each slider is capped short of its range, so the result
 is a starting point; click again after other changes to re-measure, or
 double-click a slider to reset it. The solver is `autotone.js`.

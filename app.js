@@ -2748,11 +2748,11 @@
     toggleMono: () => toggleMono(),
     rotateCw: () => rotateBy(1),
     rotateCcw: () => rotateBy(-1),
-    beforeAfter: () => {
+    // Before / after: shown while the key is held (see the keyup below).
+    beforeAfter: (e) => {
       if (!loaded()) return false;
-      beforeView = !beforeView;
-      updateBeforeBadge();
-      render();
+      if (e.repeat || beforeView) return;
+      setBeforeView(true);
     },
     open: () => { fileEl.click(); },
     export: () => { if (!loaded() || exportBtn.disabled) return false; exportBtn.click(); },
@@ -2772,6 +2772,23 @@
     if (ACTIONS[action](e) === false) return;
     e.preventDefault();
   });
+
+  function setBeforeView(on) {
+    if (beforeView === on) return;
+    beforeView = on;
+    updateBeforeBadge();
+    render();
+  }
+  // Letting go of the before / after key (or the window losing focus while
+  // it is held) goes back to the edited picture.
+  document.addEventListener('keyup', (e) => {
+    if (!beforeView) return;
+    const a = document.activeElement;
+    if (Shortcuts.match(e, { typing: false, onSlider: numBySlider.has(a), layout: state.keyLayout }) === 'beforeAfter') {
+      setBeforeView(false);
+    }
+  });
+  window.addEventListener('blur', () => setBeforeView(false));
 
   window.addEventListener('beforeprint', preparePrint);
   window.addEventListener('afterprint', releasePrint);

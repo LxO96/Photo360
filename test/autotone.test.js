@@ -46,9 +46,11 @@ test('a dark image is brightened towards mid grey', () => {
   assert.ok(med > 0.38 && med < 0.56, `median lands at ${med}`);
 });
 
-test('a bright image is darkened', () => {
+test('a bright image is eased down a little, its highlights recovered, its middle kept', () => {
   const t = AutoTone.solve(hist(spread(0.55, 0.95, 2000)));
-  assert.ok(t.exposureEv < -0.2, JSON.stringify(t));
+  assert.ok(t.exposureEv < 0 && t.exposureEv > -0.3, JSON.stringify(t));
+  assert.ok(t.highlights < 0, JSON.stringify(t));
+  assert.ok(mapped(0.75, Object.assign({ saturation: 0 }, t)) >= 0.6, JSON.stringify(t));
 });
 
 test('a well-exposed full-range image is left nearly alone', () => {
