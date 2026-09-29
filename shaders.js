@@ -1,12 +1,15 @@
 (function (root, factory) {
   'use strict';
-  // The develop shaders bake in detail.js's constants, so it loads first
-  // (index.html orders the script tags accordingly).
+  // The develop and tone-base shaders bake in detail.js's and
+  // tonebase.js's constants, so those load first (index.html orders the
+  // script tags accordingly).
   const node = typeof module !== 'undefined' && module.exports;
-  const api = factory(node ? require('./detail.js') : root.Detail);
+  const api = node
+    ? factory(require('./detail.js'), require('./tonebase.js'))
+    : factory(root.Detail, root.ToneBase);
   if (node) module.exports = api;
   else root.Shaders = api;
-})(typeof globalThis !== 'undefined' ? globalThis : this, function (Detail) {
+})(typeof globalThis !== 'undefined' ? globalThis : this, function (Detail, ToneBase) {
   'use strict';
 
   const FULLSCREEN_VS = `#version 300 es
@@ -36,7 +39,9 @@
     return vec2(0.5) + vec2(cos(a), sin(a)) * (u * cropFrac * 0.5);
   }
   vec2 lensTexelSize() { return 1.0 / vec2(textureSize(uLens, 0)); }
-  vec3 lensTexel(vec2 uv) { return texture(uLens, uv).rgb; }`;
+  vec3 lensTexel(vec2 uv) { return texture(uLens, uv).rgb; }
+  // The same position in texels (the tone base is laid out in them).
+  vec2 lensTexelPos(vec2 uv) { return uv * vec2(textureSize(uLens, 0)); }`;
 
   // Shared by COMPOSITE_RAW_FS and PROFILE_BUILD_RAW_FS, exactly the way
   // SAMPLE_LENS_GLSL is shared by the JPEG-source pair -- so the rim
@@ -175,18 +180,26 @@
   }
   vec3 lensTexel(vec2 uv) {
     return demosaicAt(lensPixel(uv));
-  }`;
+  }
+  vec2 lensTexelPos(vec2 uv) { return vec2(uv.x, 1.0 - uv.y) * vec2(uLensSize); }`;
 
-  // Global tone (Tasks 10 and 19), shared by COMPOSITE_FS and the
+  // Tone, shared by COMPOSITE_FS, the tone-base passes (lightness) and the
   // browser-side TONE_PARITY_FS so the parity check exercises this exact
-  // source. Mirrors edge.js toneBump/toneCurve/applyTone line for line,
-  // including the pass-through guards, so uTone = vec3(0.0) and
+  // source. Mirrors edge.js applyTone line for line (see there for the
+  // method), including the pass-through guard, so uTone = vec3(0.0) and
   // uToneCurve = vec4(0.0) are bit-identical to tone being absent. The
   // strengths (0.10 / 0.25, 0.25 / 0.2 / 0.15 / 0.15) are Edge's
   // TONE_UP/TONE_DOWN/WHITE_IN/WHITE_OUT/BLACK_OUT/BLACK_IN; see edge.js
-  // for why they are what they are (monotonicity bounds).
+  // for why they are what they are (monotonicity bounds). `coef` is the
+  // local base's (A, B) (tonebase.js), (1, 0) for the global curve.
   const TONE_GLSL = `
   const vec3 TONE_LUMA = vec3(0.2126, 0.7152, 0.0722);
+
+  float srgbDecode1(float v) { return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4); }
+  float srgbEncode1(float x) { return x <= 0.0031308 ? x * 12.92 : 1.055 * pow(x, 1.0 / 2.4) - 0.055; }
+  vec3 srgbDecode3(vec3 c) { return vec3(srgbDecode1(c.r), srgbDecode1(c.g), srgbDecode1(c.b)); }
+  vec3 srgbEncode3(vec3 c) { return vec3(srgbEncode1(c.r), srgbEncode1(c.g), srgbEncode1(c.b)); }
+  float toneLightness(vec3 rgb) { return srgbEncode1(dot(srgbDecode3(rgb), TONE_LUMA)); }
 
   float toneBump(float y) {
     return (256.0 / 27.0) * y * y * y * (1.0 - y);
@@ -197,37 +210,124 @@
   }
 
   // c = (highlights, shadows, whites, blacks), each -100..100.
-  float toneCurve(float y, vec4 c) {
-    if (!toneCurveNonzero(c)) return y;
-    float h = c.x / 100.0, s = c.y / 100.0, w = c.z / 100.0, b = c.w / 100.0;
+  float hsCurve(float y, vec4 c) {
+    float h = c.x / 100.0, s = c.y / 100.0;
     float aS = s > 0.0 ? 0.25 * s : 0.10 * s;
     float aH = h > 0.0 ? 0.10 * h : 0.25 * h;
     y = y + aS * toneBump(1.0 - y);
-    y = y + aH * toneBump(y);
+    return y + aH * toneBump(y);
+  }
+
+  float toneBumpSlope(float y) {
+    return (256.0 / 27.0) * (3.0 * y * y - 4.0 * y * y * y);
+  }
+  float hsSlope(float y, vec4 c) {
+    float h = c.x / 100.0, s = c.y / 100.0;
+    float aS = s > 0.0 ? 0.25 * s : 0.10 * s;
+    float aH = h > 0.0 ? 0.10 * h : 0.25 * h;
+    float y1 = y + aS * toneBump(1.0 - y);
+    return (1.0 - aS * toneBumpSlope(1.0 - y)) * (1.0 + aH * toneBumpSlope(y1));
+  }
+
+  float toneLevels(float y, vec4 c) {
+    float w = c.z / 100.0, b = c.w / 100.0;
     float wIn = 1.0 - 0.25 * max(w, 0.0), wOut = 1.0 + 0.2 * min(w, 0.0);
     float bIn = 0.15 * max(-b, 0.0), bOut = 0.15 * max(b, 0.0);
     float t = clamp((y - bIn) / (wIn - bIn), 0.0, 1.0);
     return bOut + (wOut - bOut) * t;
   }
 
-  // tone = (exposureEv, contrast, saturation); curve as toneCurve's c.
-  vec3 applyTone(vec3 rgb, vec3 tone, vec4 curve) {
+  float contrastCurve(float x, float contrast) {
+    float p = max(0.02, 1.0 + contrast);
+    float a = pow(x, p), b = pow(1.0 - x, p);
+    return a / (a + b);
+  }
+
+  float cbrt1(float x) { return sign(x) * pow(abs(x), 1.0 / 3.0); }
+  vec3 toOklab(vec3 c) {
+    float l = cbrt1(0.4122214708 * c.r + 0.5363325363 * c.g + 0.0514459929 * c.b);
+    float m = cbrt1(0.2119034982 * c.r + 0.6806995451 * c.g + 0.1073969566 * c.b);
+    float s = cbrt1(0.0883024619 * c.r + 0.2817188376 * c.g + 0.6299787005 * c.b);
+    return vec3(0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+                1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+                0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s);
+  }
+  vec3 fromOklab(vec3 o) {
+    float l = o.x + 0.3963377774 * o.y + 0.2158037573 * o.z;
+    float m = o.x - 0.1055613458 * o.y - 0.0638541728 * o.z;
+    float s = o.x - 0.0894841775 * o.y - 1.2914855480 * o.z;
+    l = l * l * l; m = m * m * m; s = s * s * s;
+    return vec3(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+                -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+                -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s);
+  }
+
+  float maxChroma(float L, vec2 h) {
+    float lo = 0.0, hi = 0.4;
+    for (int i = 0; i < 14; i++) {
+      float mid = (lo + hi) / 2.0;
+      vec3 c = fromOklab(vec3(L, mid * h));
+      bool inside = min(min(c.r, c.g), c.b) >= 0.0 && max(max(c.r, c.g), c.b) <= 1.0;
+      if (inside) lo = mid; else hi = mid;
+    }
+    return lo;
+  }
+
+  vec3 saturateOklab(vec3 lin, float s) {
+    vec3 o = toOklab(lin);
+    float C = length(o.yz);
+    if (C < 1e-6) return lin;
+    float target = C * s;
+    if (s > 1.0) {
+      float cmax = maxChroma(o.x, o.yz / C);
+      float knee = 0.8 * cmax, room = cmax - knee;
+      if (target > knee) {
+        target = room > 0.0 ? knee + room * (1.0 - exp(-(target - knee) / room)) : knee;
+        target = max(target, C);
+      }
+    }
+    return fromOklab(vec3(o.x, o.yz * (target / C)));
+  }
+
+  vec3 gamutMap(vec3 lin) {
+    float Y = dot(lin, TONE_LUMA);
+    if (Y >= 1.0) return vec3(1.0);
+    if (Y <= 0.0) return vec3(0.0);
+    float mx = max(max(lin.r, lin.g), lin.b), mn = min(min(lin.r, lin.g), lin.b);
+    float t = 1.0;
+    if (mx > 1.0) t = min(t, (1.0 - Y) / (mx - Y));
+    if (mn < 0.0) t = min(t, Y / (Y - mn));
+    return t < 1.0 ? Y + (lin - Y) * t : lin;
+  }
+
+  // tone = (exposureEv, contrast, saturation); curve as hsCurve's c.
+  vec3 applyTone(vec3 rgb, vec3 tone, vec4 curve, vec2 coef) {
     bool cv = toneCurveNonzero(curve);
     if (tone.x == 0.0 && tone.y == 0.0 && tone.z == 0.0 && !cv) return rgb;
-    float gain = pow(2.0, tone.x);
-    float k = 1.0 + tone.y;
-    vec3 v = rgb * gain;
+    float g = pow(2.0, tone.x);
+    vec3 lin = srgbDecode3(rgb * g);
+    float Y = dot(lin, TONE_LUMA);
+    float l = srgbEncode1(Y);
+    float l2 = l;
     if (cv) {
-      float L = dot(v, TONE_LUMA);
-      float t = clamp(L, 0.0, 1.0);
-      float L2 = L + (toneCurve(t, curve) - t);
-      if (L > 1e-5) v *= L2 / L; else v += vec3(L2 - L);
+      float base = clamp(coef.x * l + g * coef.y, 0.0, 1.0);
+      float hb = hsCurve(base, curve);
+      l2 = hb + (l - base) * max(1.0 + 3.0 * abs(hb - base), hsSlope(base, curve));
+      float t = clamp(l2, 0.0, 1.0);
+      l2 = l2 + (toneLevels(t, curve) - t);
     }
-    vec3 toned = (v - vec3(0.5)) * k + vec3(0.5);
-    float luma = dot(toned, TONE_LUMA);
-    float s = 1.0 + tone.z;
-    return luma + (toned - luma) * s;
+    if (tone.y != 0.0) {
+      float t = clamp(l2, 0.0, 1.0);
+      l2 = l2 + (contrastCurve(t, tone.y) - t);
+    }
+    if (l2 != l) {
+      float Y2 = srgbDecode1(l2);
+      if (Y > 1e-6) lin *= Y2 / Y; else lin += vec3(Y2 - Y);
+    }
+    if (tone.z != 0.0) lin = saturateOklab(lin, 1.0 + tone.z);
+    return srgbEncode3(gamutMap(lin));
   }`;
+
 
   // The develop passes (noise reduction and sharpening), mirroring
   // detail.js step for step; see that file for the method and gl.js
@@ -414,6 +514,12 @@
   uniform float uTerminatorDesaturate, uTerminatorCoolShift;
   uniform vec3  uTone;          // exposureEv, contrast, saturation
   uniform vec4  uToneCurve;     // highlights, shadows, whites, blacks (-100..100)
+  // The local tone base (tonebase.js, gl.js buildToneBase): (A, B) per
+  // block of lens texels; uToneBaseScale maps a texel position to its uv.
+  // uToneLocal 0: the global curve.
+  uniform sampler2D uToneBase;
+  uniform vec2  uToneBaseScale;
+  uniform float uToneLocal;
   out vec4 fragColor;
   ` + SAMPLE_LENS_GLSL + TONE_GLSL + EDGE_GLSL + `
 
@@ -430,8 +536,11 @@
     // --- image, with the terminator running it out at the lens edge ---
     vec3 img = vec3(0.0);
     if (u < 1.0) {
-      img = lensTexel(lensUv(u, theta, uCropFrac, uRoll));
-      img = applyTone(img, uTone, uToneCurve);
+      vec2 uv = lensUv(u, theta, uCropFrac, uRoll);
+      img = lensTexel(uv);
+      vec2 toneCoef = uToneLocal > 0.5
+        ? texture(uToneBase, lensTexelPos(uv) * uToneBaseScale).rg : vec2(1.0, 0.0);
+      img = applyTone(img, uTone, uToneCurve, toneCoef);
       float term = terminator(u);
       float fade = 1.0 - term;
       img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);
@@ -626,6 +735,72 @@
   const COMPOSITE_RAW_DEV_FS = replaceOrThrow(COMPOSITE_RAW_FS, '#version 300 es',
     '#version 300 es\n  #define DEVELOPED 1');
 
+
+  // The local tone base (tonebase.js, which these mirror; gl.js
+  // buildToneBase runs them): block means of lightness and its square,
+  // two box passes, the guided filter's coefficients, two more box
+  // passes. Low-res RGBA16F targets, one texel per BLOCK x BLOCK block
+  // of lens texels.
+  const TB_DOWN_BODY = `
+  uniform int uBlock;
+  out vec4 fragColor;
+  void main() {
+    ivec2 lo = ivec2(gl_FragCoord.xy) * uBlock;
+    ivec2 size = tbSize();
+    float a = 0.0, b = 0.0, n = 0.0;
+    for (int j = 0; j < 8; j++) {
+      for (int i = 0; i < 8; i++) {
+        ivec2 q = lo + ivec2(i, j);
+        if (i >= uBlock || j >= uBlock || q.x >= size.x || q.y >= size.y) continue;
+        float l = toneLightness(tbPixel(q));
+        a += l; b += l * l; n += 1.0;
+      }
+    }
+    fragColor = vec4(a / n, b / n, 0.0, 1.0);
+  }`;
+  const TB_DOWN_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uLens;
+  ` + TONE_GLSL + `
+  ivec2 tbSize() { return textureSize(uLens, 0); }
+  vec3 tbPixel(ivec2 q) { return texelFetch(uLens, q, 0).rgb; }
+  ` + TB_DOWN_BODY;
+  const TB_DOWN_RAW_FS = `#version 300 es
+  precision highp float;
+  ` + RAW_SAMPLE_GLSL + TONE_GLSL + `
+  ivec2 tbSize() { return uLensSize; }
+  vec3 tbPixel(ivec2 q) { return demosaicAt(q); }
+  ` + TB_DOWN_BODY;
+
+  // Mean over (2 uR + 1) taps along uDir, clamped at the edges.
+  const TB_BOX_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uSrc;
+  uniform ivec2 uDir;
+  uniform int uR;
+  out vec4 fragColor;
+  void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    ivec2 hi = textureSize(uSrc, 0) - ivec2(1);
+    vec2 acc = vec2(0.0);
+    for (int k = -${ToneBase.MAX_RADIUS}; k <= ${ToneBase.MAX_RADIUS}; k++) {
+      if (k < -uR || k > uR) continue;
+      acc += texelFetch(uSrc, clamp(p + uDir * k, ivec2(0), hi), 0).rg;
+    }
+    fragColor = vec4(acc / float(2 * uR + 1), 0.0, 1.0);
+  }`;
+
+  const TB_COEF_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uSrc;
+  out vec4 fragColor;
+  void main() {
+    vec2 m = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0).rg;
+    float v = max(0.0, m.y - m.x * m.x);
+    float a = v / (v + ${ToneBase.EPS.toFixed(6)});
+    fragColor = vec4(a, m.x * (1.0 - a), 0.0, 1.0);
+  }`;
+
   // Browser-side tone parity (app.js checkToneParity): TONE_GLSL's
   // applyTone over 256 synthetic inputs, one per fragment along x, written
   // to a float target so it can be compared with Edge.applyTone on the
@@ -635,12 +810,15 @@
   precision highp float;
   uniform vec3 uTone;
   uniform vec4 uToneCurve;
+  uniform float uLocal;
   out vec4 fragColor;
   ` + TONE_GLSL + `
   void main() {
     float x = floor(gl_FragCoord.x);
     vec3 rgb = vec3(x / 255.0, (255.0 - x) / 255.0 * 0.8 + 0.1, mod(x * 37.0, 256.0) / 255.0);
-    fragColor = vec4(applyTone(rgb, uTone, uToneCurve), 1.0);
+    // A local base's (A, B), varied along x (App's toneParityCoef).
+    vec2 coef = uLocal > 0.5 ? vec2(mod(x * 29.0, 64.0) / 64.0, mod(x * 13.0, 32.0) / 64.0) : vec2(1.0, 0.0);
+    fragColor = vec4(applyTone(rgb, uTone, uToneCurve, coef), 1.0);
   }`;
   const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS, true);
 
@@ -663,5 +841,6 @@
     FULLSCREEN_VS, COMPOSITE_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
     COMPOSITE_RAW_FS, COMPOSITE_RAW_DEV_FS, COMPOSITE_DNG_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS,
     DEV_INPUT_RAW_FS, DEV_INPUT_RGB_FS, DEV_BLUR_FS, DEV_DETAIL_FS, DEV_FINAL_FS, DEV_PARITY_INPUT_FS,
+    TB_DOWN_FS, TB_DOWN_RAW_FS, TB_BOX_FS, TB_COEF_FS,
   };
 });

@@ -257,58 +257,199 @@
     return !!(tone.highlights || tone.shadows || tone.whites || tone.blacks);
   }
 
-  function toneCurve(y, tone) {
-    if (!curveNonzero(tone)) return y;
+  // Tone, applied to the photograph (COMPOSITE_FS, right after sampling,
+  // before the terminator); this is the JS reference TONE_GLSL mirrors.
+  // In order:
+  //   1. Exposure: a gain on the display values (2^EV), as before.
+  //   2. The luminance curve (Highlights / Shadows, then Whites / Blacks)
+  //      and Contrast, on lightness l = sRGB-encoded luminance (so a grey's
+  //      l is its display value). Highlights and Shadows act on the
+  //      pixel's local *base* lightness (tonebase.js: an edge-aware smooth
+  //      of the image, `coef` = its [A, B] at this pixel, base = A l + B),
+  //      and the pixel keeps its offset from it, scaled by a detail gain:
+  //      l' = hs(base) + (l - base) max(1 + DETAIL_GAIN |hs(base) - base|,
+  //      hs'(base)). The first term: a face in a lifted shadow keeps (a
+  //      little more than) its contrast instead of going flat. The second:
+  //      where the plain curve would *expand* contrast (pulled highlights
+  //      near white, where clouds sit) it still does. Without `coef` the
+  //      base is the pixel itself (the plain global curve).
+  //      Contrast is a smooth S-curve on l pivoting at 0.5 (slope 1 +
+  //      contrast there), so it never clips.
+  //   3. The new lightness is applied as a ratio of *linear* luminance to
+  //      the linear colour, so hue and saturation are kept exactly.
+  //   4. Saturation scales chroma in OKLab, at constant lightness; pushed
+  //      up, colours ease off before the edge of the gamut instead of
+  //      clipping into another hue.
+  //   5. Anything left outside [0, 1] is pulled toward the grey of its own
+  //      luminance (hue kept) rather than clipped channel by channel.
+  // Values over 1 from exposure pass through the curve as a constant
+  // offset (continuous and monotonic). A near-black pixel has no ratio to
+  // scale, so it gets the change as neutral grey (how +Blacks lifts pure
+  // black). Missing curve keys (an old tone object) count as 0.
+  function srgbDecode(v) {
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  }
+  function srgbEncode(x) {
+    return x <= 0.0031308 ? x * 12.92 : 1.055 * Math.pow(x, 1 / 2.4) - 0.055;
+  }
+  const DETAIL_GAIN = 3;
+  const lumaOf = (c) => LUMA.r * c[0] + LUMA.g * c[1] + LUMA.b * c[2];
+  const clamp01 = (x) => Math.min(1, Math.max(0, x));
+
+  // Lightness of a display-encoded colour: encoded linear luminance.
+  function lightness(rgb) {
+    return srgbEncode(lumaOf([srgbDecode(rgb[0]), srgbDecode(rgb[1]), srgbDecode(rgb[2])]));
+  }
+
+  function hsCurve(y, tone) {
     const h = (tone.highlights || 0) / 100, s = (tone.shadows || 0) / 100;
-    const w = (tone.whites || 0) / 100, b = (tone.blacks || 0) / 100;
     const aS = s > 0 ? TONE_DOWN * s : TONE_UP * s;
     const aH = h > 0 ? TONE_UP * h : TONE_DOWN * h;
     y = y + aS * toneBump(1 - y);
-    y = y + aH * toneBump(y);
+    return y + aH * toneBump(y);
+  }
+
+  // d hsCurve / dy.
+  function toneBumpSlope(y) {
+    return (256 / 27) * (3 * y * y - 4 * y * y * y);
+  }
+  function hsSlope(y, tone) {
+    const h = (tone.highlights || 0) / 100, s = (tone.shadows || 0) / 100;
+    const aS = s > 0 ? TONE_DOWN * s : TONE_UP * s;
+    const aH = h > 0 ? TONE_UP * h : TONE_DOWN * h;
+    const y1 = y + aS * toneBump(1 - y);
+    return (1 - aS * toneBumpSlope(1 - y)) * (1 + aH * toneBumpSlope(y1));
+  }
+
+  function levels(y, tone) {
+    const w = (tone.whites || 0) / 100, b = (tone.blacks || 0) / 100;
     const wIn = 1 - WHITE_IN * Math.max(w, 0), wOut = 1 + WHITE_OUT * Math.min(w, 0);
     const bIn = BLACK_IN * Math.max(-b, 0), bOut = BLACK_OUT * Math.max(b, 0);
-    const t = Math.min(1, Math.max(0, (y - bIn) / (wIn - bIn)));
+    const t = clamp01((y - bIn) / (wIn - bIn));
     return bOut + (wOut - bOut) * t;
   }
 
-  // Task 10: global tone -- exposure, contrast, saturation -- plus (Task 19)
-  // the luminance curve above, applied after exposure and before contrast
-  // and saturation. Applied to the photograph itself (COMPOSITE_FS, right
-  // after sampling, before the terminator); this is the JS reference the
-  // GLSL mirrors. The curve is applied as a luminance *ratio* so hue and
-  // saturation are preserved: luminance L becomes L' = L + (curve(t) - t),
-  // t = clamp(L, 0, 1) -- exactly the curve inside [0, 1], a constant
-  // offset outside it (continuous, and still monotonic, for the >1 values
-  // exposure can produce) -- and every channel is scaled by L'/L. A
-  // near-black pixel (L <= 1e-5) has no ratio to scale, so it gets the
-  // change as neutral grey instead (that is how +Blacks lifts pure black).
-  // Missing curve keys (an old tone object) count as 0.
-  function applyTone(rgb, tone) {
+  // The global curve: Highlights/Shadows, then Whites/Blacks.
+  function toneCurve(y, tone) {
+    if (!curveNonzero(tone)) return y;
+    return levels(hsCurve(y, tone), tone);
+  }
+
+  // Contrast: x^p / (x^p + (1 - x)^p), p = 1 + contrast -- fixed at 0,
+  // 0.5 and 1, slope p at 0.5, flattening into the ends instead of clipping.
+  const CONTRAST_P_MIN = 0.02;
+  function contrastCurve(x, contrast) {
+    const p = Math.max(CONTRAST_P_MIN, 1 + contrast);
+    const a = Math.pow(x, p), b = Math.pow(1 - x, p);
+    return a / (a + b);
+  }
+
+  // OKLab (Ottosson) from / to linear sRGB.
+  function toOklab(c) {
+    const l = Math.cbrt(0.4122214708 * c[0] + 0.5363325363 * c[1] + 0.0514459929 * c[2]);
+    const m = Math.cbrt(0.2119034982 * c[0] + 0.6806995451 * c[1] + 0.1073969566 * c[2]);
+    const s = Math.cbrt(0.0883024619 * c[0] + 0.2817188376 * c[1] + 0.6299787005 * c[2]);
+    return [
+      0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    ];
+  }
+  function fromOklab(o) {
+    const l = Math.pow(o[0] + 0.3963377774 * o[1] + 0.2158037573 * o[2], 3);
+    const m = Math.pow(o[0] - 0.1055613458 * o[1] - 0.0638541728 * o[2], 3);
+    const s = Math.pow(o[0] - 0.0894841775 * o[1] - 1.2914855480 * o[2], 3);
+    return [
+      4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+      -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+      -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s,
+    ];
+  }
+
+  // The largest OKLab chroma at lightness L and hue direction (ha, hb)
+  // that is still inside the sRGB gamut, by bisection.
+  const GAMUT_STEPS = 14, CHROMA_MAX = 0.4;
+  function maxChroma(L, ha, hb) {
+    let lo = 0, hi = CHROMA_MAX;
+    for (let i = 0; i < GAMUT_STEPS; i++) {
+      const mid = (lo + hi) / 2;
+      const c = fromOklab([L, mid * ha, mid * hb]);
+      const inside = Math.min(c[0], c[1], c[2]) >= 0 && Math.max(c[0], c[1], c[2]) <= 1;
+      if (inside) lo = mid; else hi = mid;
+    }
+    return lo;
+  }
+
+  // Saturation: chroma times s at constant OKLab lightness. Raised, the
+  // target chroma is compressed above SAT_KNEE of the gamut's reach (never
+  // below where it started), so vivid colours stay inside it.
+  const SAT_KNEE = 0.8;
+  function saturate(lin, s) {
+    const o = toOklab(lin);
+    const C = Math.hypot(o[1], o[2]);
+    if (C < 1e-6) return lin;
+    let target = C * s;
+    if (s > 1) {
+      const cmax = maxChroma(o[0], o[1] / C, o[2] / C);
+      const knee = SAT_KNEE * cmax, room = cmax - knee;
+      if (target > knee) {
+        target = room > 0 ? knee + room * (1 - Math.exp(-(target - knee) / room)) : knee;
+        target = Math.max(target, C);
+      }
+    }
+    const k = target / C;
+    return fromOklab([o[0], o[1] * k, o[2] * k]);
+  }
+
+  // Into [0, 1], toward the grey of the colour's own luminance.
+  function gamutMap(lin) {
+    const Y = lumaOf(lin);
+    if (Y >= 1) return [1, 1, 1];
+    if (Y <= 0) return [0, 0, 0];
+    const mx = Math.max(lin[0], lin[1], lin[2]), mn = Math.min(lin[0], lin[1], lin[2]);
+    let t = 1;
+    if (mx > 1) t = Math.min(t, (1 - Y) / (mx - Y));
+    if (mn < 0) t = Math.min(t, Y / (Y - mn));
+    return t < 1 ? lin.map((v) => Y + (v - Y) * t) : lin;
+  }
+
+  // rgb: display-encoded; coef: [A, B] of the local base (tonebase.js) or
+  // absent for the global curve.
+  function applyTone(rgb, tone, coef) {
     const curve = curveNonzero(tone);
     if (tone.exposureEv === 0 && tone.contrast === 0 && tone.saturation === 0 && !curve) {
       return rgb.slice ? rgb.slice() : [rgb[0], rgb[1], rgb[2]];
     }
-    const gain = Math.pow(2, tone.exposureEv);
-    const k = 1 + tone.contrast;
-    const out = [];
-    for (let i = 0; i < 3; i++) out[i] = rgb[i] * gain;
+    const g = Math.pow(2, tone.exposureEv);
+    let lin = [srgbDecode(rgb[0] * g), srgbDecode(rgb[1] * g), srgbDecode(rgb[2] * g)];
+    const Y = lumaOf(lin);
+    const l = srgbEncode(Y);
+    let l2 = l;
     if (curve) {
-      const L = LUMA.r * out[0] + LUMA.g * out[1] + LUMA.b * out[2];
-      const t = Math.min(1, Math.max(0, L));
-      const L2 = L + (toneCurve(t, tone) - t);
-      if (L > 1e-5) { const r = L2 / L; for (let i = 0; i < 3; i++) out[i] *= r; }
-      else for (let i = 0; i < 3; i++) out[i] += L2 - L;
+      const base = clamp01(coef ? coef[0] * l + g * coef[1] : l);
+      const hb = hsCurve(base, tone);
+      l2 = hb + (l - base) * Math.max(1 + DETAIL_GAIN * Math.abs(hb - base), hsSlope(base, tone));
+      const t = clamp01(l2);
+      l2 = l2 + (levels(t, tone) - t);
     }
-    for (let i = 0; i < 3; i++) out[i] = (out[i] - 0.5) * k + 0.5;
-    const luma = LUMA.r * out[0] + LUMA.g * out[1] + LUMA.b * out[2];
-    const s = 1 + tone.saturation;
-    for (let i = 0; i < 3; i++) out[i] = luma + (out[i] - luma) * s;
-    return out;
+    if (tone.contrast !== 0) {
+      const t = clamp01(l2);
+      l2 = l2 + (contrastCurve(t, tone.contrast) - t);
+    }
+    if (l2 !== l) {
+      const Y2 = srgbDecode(l2);
+      if (Y > 1e-6) { const r = Y2 / Y; lin = lin.map((v) => v * r); }
+      else lin = lin.map((v) => v + (Y2 - Y));
+    }
+    if (tone.saturation !== 0) lin = saturate(lin, 1 + tone.saturation);
+    lin = gamutMap(lin);
+    return [srgbEncode(lin[0]), srgbEncode(lin[1]), srgbEncode(lin[2])];
   }
 
   return {
     DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight,
     PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS,
-    applyTone, toneCurve, toneBump,
+    applyTone, toneCurve, toneBump, hsCurve, hsSlope, levels, contrastCurve, lightness, srgbDecode, srgbEncode,
+    toOklab, fromOklab, maxChroma, saturate, gamutMap,
   };
 });

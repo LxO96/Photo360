@@ -116,21 +116,73 @@ test('Whites and Blacks move the end points', () => {
   }
 });
 
-test('the curve is applied as a luminance ratio, so hue (channel ratios) is preserved', () => {
+const lin = (c) => c.map(Edge.srgbDecode);
+
+test('the curve and contrast scale linear light, so hue and saturation (linear ratios) are kept', () => {
   const c = [0.6, 0.3, 0.15];
-  const out = Edge.applyTone(c, { ...NEUTRAL, highlights: -60, shadows: 40 });
-  assert.ok(Math.abs(out[0] / out[1] - c[0] / c[1]) < 1e-9);
-  assert.ok(Math.abs(out[2] / out[1] - c[2] / c[1]) < 1e-9);
-  assert.notStrictEqual(out[1], c[1]);
+  for (const t of [{ ...NEUTRAL, highlights: -60, shadows: 40 }, { ...NEUTRAL, contrast: 0.8 }, { ...NEUTRAL, contrast: -0.6 }]) {
+    const a = lin(c), b = lin(Edge.applyTone(c, t));
+    assert.ok(Math.abs(b[0] / b[1] - a[0] / a[1]) < 1e-9, JSON.stringify(t));
+    assert.ok(Math.abs(b[2] / b[1] - a[2] / a[1]) < 1e-9, JSON.stringify(t));
+    assert.notStrictEqual(b[1], a[1]);
+  }
 });
 
 test('the curve runs after exposure and before contrast', () => {
   const t = { exposureEv: 1, contrast: 0.4, saturation: 0, ...ZERO4, shadows: 50 };
   const c = [0.1, 0.1, 0.1];
   const y = Edge.toneCurve(0.2, t);           // exposure first: 0.1 -> 0.2
-  const expected = (y - 0.5) * 1.4 + 0.5;     // then contrast
+  const expected = Edge.contrastCurve(y, 0.4); // then contrast
   const out = Edge.applyTone(c, t);
   assert.ok(Math.abs(out[0] - expected) < 1e-12, `${out[0]} vs ${expected}`);
+});
+
+test('contrast is a smooth S-curve: slope 1 + contrast at mid grey, never clipping', () => {
+  for (const k of [-0.9, -0.5, 0.5, 1]) {
+    const d = 1e-6;
+    const slope = (Edge.contrastCurve(0.5 + d, k) - Edge.contrastCurve(0.5 - d, k)) / (2 * d);
+    assert.ok(Math.abs(slope - (1 + k)) < 1e-4, `${k}: ${slope}`);
+    let prev = -1;
+    for (const y of YS) {
+      const v = Edge.contrastCurve(y, k);
+      assert.ok(v >= prev && v >= 0 && v <= 1, `${k} at ${y}`);
+      prev = v;
+    }
+    // Highlights and shadows are compressed, not cut off.
+    assert.ok(Edge.contrastCurve(0.95, k) < 1 && Edge.contrastCurve(0.05, k) > 0);
+  }
+});
+
+test('saturation keeps OKLab lightness and hue', () => {
+  const c = [0.7, 0.45, 0.3];
+  for (const s of [-0.5, 0.5, 1]) {
+    const a = Edge.toOklab(lin(c)), b = Edge.toOklab(lin(Edge.applyTone(c, { ...NEUTRAL, saturation: s })));
+    assert.ok(Math.abs(a[0] - b[0]) < 1e-6, `L at ${s}`);
+    assert.ok(Math.abs(Math.atan2(a[2], a[1]) - Math.atan2(b[2], b[1])) < 1e-6, `hue at ${s}`);
+    const ca = Math.hypot(a[1], a[2]), cb = Math.hypot(b[1], b[2]);
+    assert.ok(s > 0 ? cb > ca : cb < ca, `chroma at ${s}`);
+  }
+});
+
+test('raised saturation eases off at the gamut instead of clipping into another hue', () => {
+  // Already vivid colours: no channel is cut, hue stays.
+  for (const c of [[0.95, 0.2, 0.1], [0.1, 0.8, 0.2], [0.2, 0.3, 0.95], [0.9, 0.85, 0.1]]) {
+    const out = Edge.applyTone(c, { ...NEUTRAL, saturation: 1 });
+    const l = lin(out);
+    assert.ok(Math.min(...l) >= -1e-9 && Math.max(...l) <= 1 + 1e-9, JSON.stringify(out));
+    const a = Edge.toOklab(lin(c)), b = Edge.toOklab(l);
+    assert.ok(Math.abs(Math.atan2(a[2], a[1]) - Math.atan2(b[2], b[1])) < 1e-3, JSON.stringify(c));
+    assert.ok(Math.hypot(b[1], b[2]) >= Math.hypot(a[1], a[2]) - 1e-9, 'never less saturated');
+  }
+});
+
+test('colours pushed past white by exposure fade toward white, not into another hue', () => {
+  const c = [0.9, 0.6, 0.3];
+  const out = Edge.applyTone(c, { ...NEUTRAL, exposureEv: 0.6 });
+  assert.ok(Math.max(...out) <= 1 && Math.min(...out) >= 0);
+  // Order of the channels (so the hue family) is kept, and it is lighter.
+  assert.ok(out[0] >= out[1] && out[1] >= out[2]);
+  assert.ok(Edge.lightness(out) > Edge.lightness(c));
 });
 
 test('black input with lifted Blacks becomes a neutral grey (no division by zero)', () => {
@@ -138,10 +190,10 @@ test('black input with lifted Blacks becomes a neutral grey (no division by zero
   assert.ok(out[0] > 0 && out[0] === out[1] && out[1] === out[2]);
 });
 
-test('luminance above 1 (after exposure) passes through the curve continuously', () => {
-  const t = { ...NEUTRAL, ...ZERO4, highlights: -50 };
-  const a = Edge.applyTone([1.2, 1.2, 1.2], t);
-  assert.ok(Number.isFinite(a[0]) && Math.abs(a[0] - 1.2) < 1e-12);
+test('luminance above 1 (after exposure) passes through the curve and ends as white', () => {
+  const t = { ...NEUTRAL, ...ZERO4, exposureEv: 1, highlights: -50 };
+  const a = Edge.applyTone([0.6, 0.6, 0.6], t);
+  assert.deepStrictEqual(a.map((v) => Math.round(v * 1e9) / 1e9), [1, 1, 1]);
 });
 
 // The GPU half of the tone parity check (App.checkToneParity) renders
@@ -153,6 +205,6 @@ test('both composite shaders and the tone parity shader share one TONE_GLSL', ()
     assert.ok(Shaders[name].includes(Shaders.TONE_GLSL), name);
   }
   for (const name of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS']) {
-    assert.ok(Shaders[name].includes('applyTone(img, uTone, uToneCurve)'), name);
+    assert.ok(Shaders[name].includes('applyTone(img, uTone, uToneCurve, toneCoef'), name);
   }
 });

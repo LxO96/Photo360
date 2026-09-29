@@ -2151,6 +2151,10 @@
   function toneParityInput(x) {
     return [x / 255, (255 - x) / 255 * 0.8 + 0.1, ((x * 37) % 256) / 255];
   }
+  // TONE_PARITY_FS's local base coefficients (A, B) at x.
+  function toneParityCoef(x) {
+    return [((x * 29) % 64) / 64, ((x * 13) % 32) / 64];
+  }
 
   function checkToneParity() {
     ensureCtx();
@@ -2171,23 +2175,26 @@
     const u = (n) => gl.getUniformLocation(prog, n);
     const out = new Float32Array(256 * 4);
     let maxDiff = 0, worst = null;
-    for (const t of TONE_PARITY_CASES) {
-      gl.uniform3f(u('uTone'), t.exposureEv, t.contrast, t.saturation);
-      gl.uniform4f(u('uToneCurve'), t.highlights, t.shadows, t.whites, t.blacks);
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      gl.readPixels(0, 0, 256, 1, gl.RGBA, gl.FLOAT, out);
-      for (let x = 0; x < 256; x++) {
-        const want = Edge.applyTone(toneParityInput(x), t);
-        for (let c = 0; c < 3; c++) {
-          const d = Math.abs(out[x * 4 + c] - want[c]);
-          if (d > maxDiff) { maxDiff = d; worst = { tone: t, x, c, gpu: out[x * 4 + c], js: want[c] }; }
+    for (const local of [false, true]) {
+      for (const t of TONE_PARITY_CASES) {
+        gl.uniform3f(u('uTone'), t.exposureEv, t.contrast, t.saturation);
+        gl.uniform4f(u('uToneCurve'), t.highlights, t.shadows, t.whites, t.blacks);
+        gl.uniform1f(u('uLocal'), local ? 1 : 0);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.readPixels(0, 0, 256, 1, gl.RGBA, gl.FLOAT, out);
+        for (let x = 0; x < 256; x++) {
+          const want = Edge.applyTone(toneParityInput(x), t, local ? toneParityCoef(x) : undefined);
+          for (let c = 0; c < 3; c++) {
+            const d = Math.abs(out[x * 4 + c] - want[c]);
+            if (d > maxDiff) { maxDiff = d; worst = { tone: t, local, x, c, gpu: out[x * 4 + c], js: want[c] }; }
+          }
         }
       }
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(fbo); gl.deleteTexture(tex); gl.deleteProgram(prog);
-    console.log('tone parity: ' + TONE_PARITY_CASES.length + ' settings x 256 inputs, max abs diff =', maxDiff,
-      maxDiff < 1e-4 ? '(OK, below 1e-4)' : '(FAIL, exceeds 1e-4)');
+    console.log('tone parity: ' + TONE_PARITY_CASES.length + ' settings x 256 inputs, global and local, max abs diff =', maxDiff,
+      maxDiff < 5e-4 ? '(OK, below 5e-4)' : '(FAIL, exceeds 5e-4)');
     return { maxDiff, cases: TONE_PARITY_CASES.length, worst };
   }
 

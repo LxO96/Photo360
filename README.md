@@ -245,18 +245,31 @@ only turns them grey. Each slider is capped well short of its range, so the
 result is a starting point; click again after other changes to re-measure,
 or double-click a slider to reset it. The solver is `autotone.js`.
 
-Highlights, Shadows, Whites and Blacks (−100 to +100) build one global
-luminance tone curve, applied after exposure and before contrast and
-saturation. It works on luminance and scales each pixel's colour by the
-same ratio, so hue is preserved. Highlights and Shadows bend the upper and
-lower parts of the curve (smooth weights peaking around 0.75 and 0.25) and
-never move pure black or white. Whites and Blacks move the white and black
-end points. The curve is always monotonic, so it can't invert tones. The
-strong directions are the usual recovery moves: pulling Highlights down and
-lifting Shadows. The opposite directions are gentler, because pushed further
-the curve would fold over. `Edge.toneCurve` in `edge.js` is the reference,
-and the shader mirrors it exactly. `App.checkToneParity()` compares the two
-on the GPU.
+Highlights, Shadows, Whites and Blacks (−100 to +100) build a luminance
+tone curve, applied after exposure and before contrast and saturation.
+Highlights and Shadows bend the upper and lower parts of the curve (smooth
+weights peaking around 0.75 and 0.25) and never move pure black or white.
+Whites and Blacks move the white and black end points. The curve is always
+monotonic, so it can't invert tones. The strong directions are the usual
+recovery moves: pulling Highlights down and lifting Shadows.
+
+**Highlights and Shadows are local.** They move each area as a whole — a
+bright sky, a face in shade — by its smoothed brightness, and the pixel keeps
+its texture on top, so recovery doesn't go flat and grey. The smoothing
+(`tonebase.js`, a guided filter at a quarter resolution, run once per image)
+follows edges, so a horizon or a head against the sky gets no halo. Where
+the plain curve would bring out texture (pale clouds when Highlights are
+pulled) it still does. Whites and Blacks stay global.
+
+**Colour stays put.** Brightness changes (curve, Contrast) scale linear
+light, so hue and saturation are kept. Contrast is a smooth S-curve that
+eases into black and white instead of clipping. Saturation works in OKLab
+at constant lightness, and eases off before colours leave the displayable
+range instead of clipping into another hue. Anything still out of range
+(say, after a big Exposure push) fades toward white or black at its own hue.
+
+`Edge.applyTone` in `edge.js` is the reference, and the shader mirrors it.
+`App.checkToneParity()` compares the two on the GPU.
 
 ### Detail
 

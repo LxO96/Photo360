@@ -70,6 +70,12 @@
       devBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_BLUR_FS),
       devDetail: program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_DETAIL_FS),
       devFinal: program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_FINAL_FS),
+      tbDown: program(gl, Shaders.FULLSCREEN_VS, Shaders.TB_DOWN_FS),
+      tbDownRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.TB_DOWN_RAW_FS),
+      tbBox: program(gl, Shaders.FULLSCREEN_VS, Shaders.TB_BOX_FS),
+      tbCoef: program(gl, Shaders.FULLSCREEN_VS, Shaders.TB_COEF_FS),
+      // Per lens slot: the local tone base (buildToneBase) and its key.
+      toneBase: { out: [null, null], key: [null, null], scratch: [] },
       profileBuild: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_FS),
       profileBuildRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BUILD_RAW_FS),
       profileBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BLUR_FS),
@@ -291,6 +297,11 @@
     ctx.textures[i] = null;
     ctx.textureSize[i] = null;
     ctx.lensInfo[i] = null;
+    if (ctx.toneBase) {
+      freeDevTarget(ctx.gl, ctx.toneBase.out[i]);
+      ctx.toneBase.out[i] = null;
+      ctx.toneBase.key[i] = null;
+    }
     if (ctx.dev) {
       releaseDevLens(ctx, i);
       // A new file starts again from the fastest path that fits.
@@ -816,6 +827,64 @@
     };
   }
 
+  // -- Local tone base (tonebase.js) ----------------------------------
+  // Highlights and Shadows act on an edge-aware smooth of each lens's
+  // lightness: the guided filter's (A, B) at one texel per BLOCK x BLOCK
+  // lens texels, built once per lens (and, for raw, per white balance --
+  // the lightness is of the rendered colour) and sampled by the composite.
+  function toneBaseActive(state) {
+    return !state.dngOutput && !!(state.tone && (state.tone.highlights || state.tone.shadows));
+  }
+
+  function buildToneBase(ctx, state, texIndex, physical) {
+    const gl = ctx.gl, tb = ctx.toneBase;
+    const info = ctx.lensInfo[texIndex], size = ctx.textureSize[texIndex];
+    if (!info || !size) return null;
+    const key = [info.id, state.isRaw ? physical : '', state.isRaw ? JSON.stringify([
+      state.rawWhiteBalance && state.rawWhiteBalance[physical],
+      state.rawCamToSrgb && state.rawCamToSrgb[physical]]) : ''].join('|');
+    if (tb.key[texIndex] === key && tb.out[texIndex]) return tb.out[texIndex];
+    const low = ToneBase.lowSize(size.width, size.height);
+    const r = ToneBase.radius(low.w, low.h);
+    const fits = (t) => t && t.w === low.w && t.h === low.h;
+    if (!(tb.scratch.length === 2 && fits(tb.scratch[0]))) {
+      for (const t of tb.scratch) freeDevTarget(gl, t);
+      tb.scratch = [makeDevTarget(gl, low.w, low.h), makeDevTarget(gl, low.w, low.h)];
+    }
+    if (!fits(tb.out[texIndex])) {
+      freeDevTarget(gl, tb.out[texIndex]);
+      tb.out[texIndex] = makeDevTarget(gl, low.w, low.h);
+    }
+    const [S0, S1] = tb.scratch, out = tb.out[texIndex];
+    const reg = { w: low.w, h: low.h };
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    const down = state.isRaw ? ctx.tbDownRaw : ctx.tbDown;
+    devPass(ctx, down, S0, reg, (u) => {
+      bindTex(gl, 0, ctx.textures[texIndex]);
+      gl.uniform1i(u('uLens'), 0);
+      gl.uniform1i(u('uBlock'), ToneBase.BLOCK);
+      if (state.isRaw) setRawUniforms(gl, down, ctx, texIndex, state, physical);
+    });
+    const box = (src, dst, dir) => devPass(ctx, ctx.tbBox, dst, reg, (u) => {
+      bindTex(gl, 0, src.tex);
+      gl.uniform1i(u('uSrc'), 0);
+      gl.uniform2i(u('uDir'), dir[0], dir[1]);
+      gl.uniform1i(u('uR'), r);
+    });
+    box(S0, S1, [1, 0]);
+    box(S1, S0, [0, 1]);
+    devPass(ctx, ctx.tbCoef, S1, reg, (u) => {
+      bindTex(gl, 0, S0.tex);
+      gl.uniform1i(u('uSrc'), 0);
+    });
+    box(S1, S0, [1, 0]);
+    box(S0, out, [0, 1]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    tb.key[texIndex] = key;
+    return out;
+  }
+
   const GLOW_HEADROOM = 0.08;   // fraction of the circle radius reserved outside the edge
 
   // `targetFbo` is optional: omitted (or null/undefined), this renders to
@@ -876,6 +945,8 @@
       // draw's own target -- the canvas by default, or targetFbo for an
       // export -- has to be re-bound afterward, every time round this loop.
       const profileTex = buildProfile(ctx, state, draw.texIndex, rollRad, physical);
+      // The local tone base likewise renders into its own targets first.
+      const toneBase = toneBaseActive(state) ? buildToneBase(ctx, state, draw.texIndex, physical) : null;
       gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
       const { cell, vx, vy } = cv;
       gl.bindVertexArray(ctx.vao);
@@ -896,6 +967,13 @@
       gl.bindTexture(gl.TEXTURE_2D, profileTex);
       const u = (n) => gl.getUniformLocation(compositeProgram, n);
       gl.uniform1i(u('uLens'), 0);
+      // Always on its own unit (an unset sampler would share unit 0 with
+      // the raw integer texture, which WebGL refuses to draw).
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, toneBase ? toneBase.tex : null);
+      gl.uniform1i(u('uToneBase'), 3);
+      gl.uniform1f(u('uToneLocal'), toneBase ? 1 : 0);
+      if (toneBase) gl.uniform2f(u('uToneBaseScale'), 1 / (ToneBase.BLOCK * toneBase.w), 1 / (ToneBase.BLOCK * toneBase.h));
       if (state.isRaw && dev) {
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, dev);
@@ -1197,6 +1275,6 @@
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
     makeFloatExportTarget, readCompositionStripsFloat,
     developLens, releaseDeveloped, runDevelop, makeDevTarget, freeDevTarget,
-    developInfo, developSettled, setDevelopBudget,
+    developInfo, developSettled, setDevelopBudget, buildToneBase,
   };
 });
