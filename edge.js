@@ -413,6 +413,13 @@
     return t < 1 ? lin.map((v) => Y + (v - Y) * t) : lin;
   }
 
+  // Black & white (tone.mono): the finished colour -- photo and rim --
+  // as a grey of the same lightness. COMPOSITE_FS applies it last.
+  function mono(rgb) {
+    const l = lightness(rgb.map(clamp01));
+    return [l, l, l];
+  }
+
   // rgb: display-encoded; coef: [A, B] of the local base (tonebase.js) or
   // absent for the global curve.
   function applyTone(rgb, tone, coef) {
@@ -450,6 +457,6 @@
     DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight,
     PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS,
     applyTone, toneCurve, toneBump, hsCurve, hsSlope, levels, contrastCurve, lightness, srgbDecode, srgbEncode,
-    toOklab, fromOklab, maxChroma, saturate, gamutMap,
+    toOklab, fromOklab, maxChroma, saturate, gamutMap, mono,
   };
 });

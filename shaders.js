@@ -200,6 +200,8 @@
   vec3 srgbDecode3(vec3 c) { return vec3(srgbDecode1(c.r), srgbDecode1(c.g), srgbDecode1(c.b)); }
   vec3 srgbEncode3(vec3 c) { return vec3(srgbEncode1(c.r), srgbEncode1(c.g), srgbEncode1(c.b)); }
   float toneLightness(vec3 rgb) { return srgbEncode1(dot(srgbDecode3(rgb), TONE_LUMA)); }
+  // Black & white (edge.js mono).
+  vec3 toneMono(vec3 rgb) { return vec3(toneLightness(clamp(rgb, 0.0, 1.0))); }
 
   float toneBump(float y) {
     return (256.0 / 27.0) * y * y * y * (1.0 - y);
@@ -520,6 +522,7 @@
   uniform sampler2D uToneBase;
   uniform vec2  uToneBaseScale;
   uniform float uToneLocal;
+  uniform float uMono;          // 1: black & white, photo and rim alike
   out vec4 fragColor;
   ` + SAMPLE_LENS_GLSL + TONE_GLSL + EDGE_GLSL + `
 
@@ -548,7 +551,9 @@
       img *= term;
     }
 
-    fragColor = vec4(img + rimLight(u, theta), 1.0);
+    vec3 outColor = img + rimLight(u, theta);
+    if (uMono > 0.5) outColor = toneMono(outColor);
+    fragColor = vec4(outColor, 1.0);
   }`;
 
   // DNG export (raw sources): the same geometry and lens edge as

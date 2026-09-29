@@ -185,6 +185,17 @@ test('colours pushed past white by exposure fade toward white, not into another 
   assert.ok(Edge.lightness(out) > Edge.lightness(c));
 });
 
+test('black & white keeps each colour’s lightness as a grey', () => {
+  for (const c of [[0.8, 0.3, 0.2], [0.1, 0.6, 0.9], [0.5, 0.5, 0.5], [1.2, 0.4, -0.1]]) {
+    const g = Edge.mono(c);
+    assert.ok(g[0] === g[1] && g[1] === g[2]);
+    const want = Edge.lightness(c.map((v) => Math.min(1, Math.max(0, v))));
+    assert.ok(Math.abs(g[0] - want) < 1e-12);
+  }
+  // A grey stays itself.
+  assert.ok(Math.abs(Edge.mono([0.37, 0.37, 0.37])[0] - 0.37) < 1e-12);
+});
+
 test('black input with lifted Blacks becomes a neutral grey (no division by zero)', () => {
   const out = Edge.applyTone([0, 0, 0], { ...NEUTRAL, ...ZERO4, blacks: 100 });
   assert.ok(out[0] > 0 && out[0] === out[1] && out[1] === out[2]);

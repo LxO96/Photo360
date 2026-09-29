@@ -100,7 +100,7 @@
     lensCount: 0,
     edge: { ...Edge.PRESETS.x1classic },
     // Task 19 adds the luminance-curve sliders (Edge.toneCurve), -100..100.
-    tone: { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 },
+    tone: { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0, mono: false },
     // Sharpening and noise reduction (detail.js); all zero is off.
     detail: { ...Detail.DEFAULTS },
     // Task 12 output options. Not part of Settings.PERSISTED_KEYS -- these
@@ -172,6 +172,8 @@
     scopeScale: 1,
     scopeMode: 'histogram',
     scopeChannels: 'luma',
+    // Keyboard layout for the shortcuts (shortcuts.js LAYOUTS).
+    keyLayout: 'standard',
   };
   // The built-in defaults, snapshotted before stored settings are merged in:
   // what double-clicking a slider resets it to (see the NUM `path`s).
@@ -378,8 +380,11 @@
     printBtn.disabled = false;
     updateExportLabel();
     document.body.classList.add('loaded');
+    beforeView = false;
     render();
     scheduleSave();
+    // History is per photo.
+    resetHistory();
   }
 
   // The single load entry point for every source kind (.insp/.jpg/.dng).
@@ -503,6 +508,7 @@
     return GL.placedLayout(state, canvas.width, canvas.height, previewPlace);
   }
 
+  let beforeView = false;
   const DEVELOP_FAILED = 'This GPU has too little memory left even to hold the result of noise ' +
     'reduction and sharpening at this image size. Set Detail to 0 to go on.';
 
@@ -523,7 +529,9 @@
     // Detail off: free the developed frames (GL.developLens) it held.
     if (!Detail.isActive(state.detail)) GL.releaseDeveloped(ctx);
     try {
-      GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
+      // Before / after (the \ key): the preview with Tone and Detail off.
+      const shown = beforeView ? Object.assign({}, state, { tone: DEFAULTS.tone, detail: DEFAULTS.detail }) : state;
+      GL.renderComposition(ctx, shown, canvas.width, canvas.height, null, previewPlace);
       if (errorEl.textContent === DEVELOP_FAILED) clearMessages();
     } catch (e) {
       if (e.message !== 'DEVELOP_TARGET_INCOMPLETE') throw e;
@@ -1438,6 +1446,7 @@
   const SAVE_DEBOUNCE_MS = 250;
   let saveTimer = null;
   function scheduleSave() {
+    noteEdit();
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => Settings.save(state, window.localStorage), SAVE_DEBOUNCE_MS);
   }
@@ -1590,17 +1599,28 @@
     return true;
   }
 
+  function resetNum(d) {
+    const v = d.reset ? d.reset() : Settings.valueAt(DEFAULTS, d.path);
+    if (typeof v !== 'number' || !Number.isFinite(v)) return;
+    commitNum(d, Math.min(d.range[1], Math.max(d.range[0], v)));
+    reflectNum(d, true);
+  }
+
   for (const d of Object.values(NUM)) {
     d.slider.addEventListener('input', () => commitNum(d, fromSlider(d, parseFloat(d.slider.value))));
-    d.slider.addEventListener('keydown', (e) => nudgeKey(d, e));
+    d.slider.addEventListener('keydown', (e) => {
+      // Up / down pick another slider (see the keyboard shortcuts).
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        if (e.altKey) return;
+        e.preventDefault();
+        moveSlider(e.key === 'ArrowUp' ? -1 : 1, d.slider);
+        return;
+      }
+      nudgeKey(d, e);
+    });
     // Double-click resets to the default (white balance: the file's as-shot
     // value). Either way the value is clamped to the slider's current range.
-    d.slider.addEventListener('dblclick', () => {
-      const v = d.reset ? d.reset() : Settings.valueAt(DEFAULTS, d.path);
-      if (typeof v !== 'number' || !Number.isFinite(v)) return;
-      commitNum(d, Math.min(d.range[1], Math.max(d.range[0], v)));
-      reflectNum(d, true);
-    });
+    d.slider.addEventListener('dblclick', () => resetNum(d));
     // 'change' fires on blur (and on Enter in most browsers); Enter is also
     // handled explicitly below so it applies everywhere.
     d.out.addEventListener('change', () => commitReadout(d));
@@ -1610,8 +1630,9 @@
       if (e.key === 'Enter') { e.preventDefault(); commitReadout(d); d.out.select(); }
       else if (e.key === 'Escape') { e.preventDefault(); reflectNum(d, true); d.out.blur(); }
       else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault();
         commitReadout(d);
-        if (nudgeKey(d, e)) { reflectNum(d, true); d.out.select(); }
+        moveSlider(e.key === 'ArrowUp' ? -1 : 1, d.slider);
       }
     });
   }
@@ -1676,6 +1697,7 @@
   document.getElementById('autoTone').addEventListener('click', autoTone);
 
   function syncControlsFromState() {
+    toneMonoEl.checked = !!state.tone.mono;
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
     swapEl.checked = state.swap;
@@ -1689,6 +1711,16 @@
     drawScope();
     updateLensControls();
   }
+
+  // Black & white (edge.js mono), part of the tone settings.
+  const toneMonoEl = document.getElementById('toneMono');
+  function setMono(on) {
+    state.tone = Object.assign({}, state.tone, { mono: on });
+    toneMonoEl.checked = on;
+    render();
+    scheduleSave();
+  }
+  toneMonoEl.addEventListener('input', () => setMono(toneMonoEl.checked));
 
   sensorsEl.addEventListener('input', () => {
     state.sensors = sensorsEl.value;
@@ -1764,6 +1796,51 @@
     render();
     scheduleSave();
   });
+
+  // Auto white balance (autowb.js): from each lens's raw plane, inside
+  // the photo (the lens circle out to the Edge falloff start). Linked:
+  // both lenses measured together, one result; unlinked: once per lens.
+  const wbAutoEl = document.getElementById('wbAuto');
+  function autoWhiteBalance() {
+    if (!ctx || !state.isRaw || !state.rawMeta) return false;
+    const radiusFrac = Lens.radiusForFov(state.fovDeg, state.thetaMaxDeg) * state.edge.falloffStart;
+    const samplesOf = (i) => {
+      const info = ctx.lensInfo[i], size = ctx.textureSize[i];
+      if (!info || !info.plane || !size) return [];
+      const m = info.rawMeta;
+      return AutoWb.sample(info.plane, size.width, size.height, m.cfa, m.black, m.white,
+        radiusFrac * Math.min(size.width, size.height) / 2);
+    };
+    const cm = state.rawMeta.colorMatrix1;
+    const lenses = state.lensCount === 1 ? ['A'] : ['A', 'B'];
+    const groups = state.rawWbLinked
+      ? [{ lenses, samples: lenses.flatMap((L) => samplesOf(L === 'A' ? 0 : 1)) }]
+      : lenses.map((L) => ({ lenses: [L], samples: samplesOf(L === 'A' ? 0 : 1) }));
+    const parts = [];
+    const next = { A: { ...state.rawWb.A }, B: { ...state.rawWb.B } };
+    for (const g of groups) {
+      const r = AutoWb.estimate(g.samples, state.rawAsShotNeutral);
+      if (!r) continue;
+      const kt = AutoWb.toKelvinTint(r.neutral, cm, state.rawAsShotNeutral ? asShotWb().tint : 0);
+      for (const L of g.lenses) next[L] = { kelvin: kt.kelvin, tint: kt.tint };
+      if (state.rawWbLinked && state.lensCount === 2) next.B = { ...next.A };
+      parts.push((groups.length > 1 ? g.lenses[0] + ' ' : '') +
+        `${Math.round(kt.kelvin)} K ${kt.tint >= 0 ? '+' : ''}${Math.round(kt.tint)}`);
+    }
+    if (!parts.length) {
+      showPickNote('Auto found nothing to measure: the photo is all clipped or black.');
+      return;
+    }
+    // One undo step, however soon the next edit follows.
+    commitHistory();
+    state.rawWb = next;
+    syncWbControls();
+    render();
+    scheduleSave();
+    commitHistory();
+    showPickNote('Auto: ' + parts.join(', ') + '.');
+  }
+  wbAutoEl.addEventListener('click', autoWhiteBalance);
 
   // Formats an edge slider's value to its own <input step>'s decimal
   // precision instead of JS's default number-to-string, which printed raw
@@ -2027,17 +2104,257 @@
     if (preparePrint()) window.print();
   }
   printBtn.addEventListener('click', printImage);
-  document.addEventListener('keydown', (e) => {
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p' &&
-        ctx && state.sourceLensSize) {
-      e.preventDefault();
-      printImage();
+
+  // -- History (Ctrl+Z) ---------------------------------------------------
+  // Every edit reaches scheduleSave(), so that is where history hears of
+  // it (noteEdit). A change is recorded once it has settled -- HISTORY_IDLE_MS
+  // after the last input, and not while a pointer is still down -- so a
+  // slider drag, or a held arrow key, is one step. Snapshots are the
+  // persisted settings minus the view preferences (history.js).
+  const HISTORY_IDLE_MS = 400;
+  const editHistory = History.create();
+  let historyTimer = null, historyPending = false, pointerHeld = false, restoring = false;
+  const editSnapshot = () => History.editSnapshot(Settings.serialize(state));
+
+  function noteEdit() {
+    if (restoring) return;
+    if (beforeView) { beforeView = false; updateBeforeBadge(); requestRender(); }
+    historyPending = true;
+    if (historyTimer) clearTimeout(historyTimer);
+    historyTimer = setTimeout(() => { historyTimer = null; if (!pointerHeld) commitHistory(); }, HISTORY_IDLE_MS);
+  }
+
+  function commitHistory() {
+    if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+    if (!historyPending) return;
+    historyPending = false;
+    editHistory.record(editSnapshot());
+  }
+
+  function resetHistory() {
+    if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+    historyPending = false;
+    editHistory.reset(editSnapshot());
+  }
+
+  document.addEventListener('pointerdown', () => { pointerHeld = true; }, true);
+  const pointerDone = () => {
+    pointerHeld = false;
+    if (historyPending && !historyTimer) commitHistory();
+  };
+  document.addEventListener('pointerup', pointerDone, true);
+  document.addEventListener('pointercancel', pointerDone, true);
+
+  function applySnapshot(snap) {
+    restoring = true;
+    try {
+      Object.assign(state, snap);
+      syncControlsFromState();
+      updateSensorsAvailability();
+      updateSwapAvailability();
+      render();
+      saveSettings();
+    } finally {
+      restoring = false;
     }
+  }
+
+  function undo() {
+    commitHistory();
+    const s = editHistory.undo();
+    if (s) applySnapshot(s);
+  }
+  function redo() {
+    commitHistory();
+    const s = editHistory.redo();
+    if (s) applySnapshot(s);
+  }
+
+  // -- Keyboard shortcuts (shortcuts.js) -----------------------------------
+  // Up / down (and , / .) walk the sliders of the open sections in page
+  // order; from nothing they resume at the slider last used.
+  const beforeBadgeEl = document.getElementById('beforeBadge');
+  const helpEl = document.getElementById('help');
+  const helpBtnEl = document.getElementById('helpToggle');
+  let lastSlider = null;
+  const sliderEls = Object.values(NUM).map((d) => d.slider);
+  const numBySlider = new Map(Object.values(NUM).map((d) => [d.slider, d]));
+  document.addEventListener('focusin', (e) => { if (numBySlider.has(e.target)) lastSlider = e.target; });
+
+  function visibleSliders() {
+    const all = Array.from(document.querySelectorAll('input[type=range]')).filter((el) => sliderEls.includes(el));
+    // A collapsed section's sliders still have a layout box in current
+    // Chrome, so the closed <details> is checked for explicitly.
+    return all.filter((el) => !el.disabled && !el.closest('details:not([open])') &&
+      (el.checkVisibility ? el.checkVisibility() : el.getClientRects().length > 0));
+  }
+
+  function moveSlider(dir, from) {
+    const list = visibleSliders();
+    const active = from || (numBySlider.has(document.activeElement) ? document.activeElement : null);
+    let next;
+    if (!active && lastSlider && list.includes(lastSlider)) next = lastSlider;
+    else next = list[Shortcuts.step(list.indexOf(active), list.length, dir)];
+    if (!next) return;
+    next.focus();
+    next.scrollIntoView({ block: 'nearest' });
+  }
+
+  // B: black & white on / off, one undo step each.
+  function toggleMono() {
+    if (!loaded()) return false;
+    commitHistory();
+    setMono(!state.tone.mono);
+    commitHistory();
+  }
+
+  // R / Shift+R: Camera roll a quarter turn either way.
+  function rotateBy(dir) {
+    if (!loaded()) return false;
+    // Each press is its own undo step, however quick the next one.
+    commitHistory();
+    commitNum(NUM.roll, Shortcuts.rotated(state.rollDeg, dir));
+    reflectNum(NUM.roll, true);
+    commitHistory();
+  }
+
+  // Slider drags are run here rather than by the browser, so Shift can
+  // switch to fine (a tenth of the speed) at any moment of a drag -- the
+  // browser's own drag can't be changed once it has started. A press
+  // without Shift jumps the thumb to the pointer, as the browser's does;
+  // with Shift it stays where it was. Pressing or letting go of Shift
+  // mid-drag re-anchors at the current value, so the thumb never jumps.
+  const FINE_DRAG = 0.1;
+  const THUMB_PX = 11;   // index.html's slider thumb
+  for (const d of Object.values(NUM)) {
+    const s = d.slider;
+    s.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || s.disabled) return;
+      e.preventDefault();
+      s.focus();
+      try { s.setPointerCapture(e.pointerId); } catch (err) { /* a synthetic or lost pointer */ }
+      const min = parseFloat(s.min), max = parseFloat(s.max);
+      const rect = s.getBoundingClientRect();
+      const track = Math.max(1, rect.width - THUMB_PX);
+      const set = (v) => {
+        const before = s.value;
+        s.value = Math.min(max, Math.max(min, v));
+        if (s.value !== before) commitNum(d, fromSlider(d, parseFloat(s.value)));
+      };
+      if (!e.shiftKey) set(min + (e.clientX - rect.left - THUMB_PX / 2) / track * (max - min));
+      let x0 = e.clientX, v0 = parseFloat(s.value), fine = e.shiftKey;
+      const move = (m) => {
+        if (m.shiftKey !== fine) { fine = m.shiftKey; x0 = m.clientX; v0 = parseFloat(s.value); }
+        set(v0 + (m.clientX - x0) / track * (max - min) * (fine ? FINE_DRAG : 1));
+      };
+      const end = () => {
+        s.removeEventListener('pointermove', move);
+        s.removeEventListener('pointerup', end);
+        s.removeEventListener('pointercancel', end);
+      };
+      s.addEventListener('pointermove', move);
+      s.addEventListener('pointerup', end);
+      s.addEventListener('pointercancel', end);
+    });
+  }
+
+  function updateBeforeBadge() {
+    beforeBadgeEl.classList.toggle('hidden', !beforeView);
+  }
+
+  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || '');
+  function buildHelp() {
+    const list = helpEl.querySelector('.keys');
+    list.replaceChildren();
+    let group = null;
+    for (const row of Shortcuts.TABLE) {
+      if (row.group !== group) {
+        group = row.group;
+        const h = document.createElement('div');
+        h.className = 'sub-h';
+        h.textContent = group;
+        list.appendChild(h);
+      }
+      const r = document.createElement('div');
+      r.className = 'key-row';
+      const k = document.createElement('kbd');
+      const show = Shortcuts.showFor(row, state.keyLayout);
+      k.textContent = isMac ? show.replace(/Ctrl\+/g, '⌘').replace(/Shift\+/g, '⇧') : show;
+      const l = document.createElement('span');
+      l.textContent = row.label;
+      r.append(l, k);
+      list.appendChild(r);
+    }
+  }
+  function toggleHelp(show) {
+    const on = show === undefined ? helpEl.classList.contains('hidden') : show;
+    helpEl.classList.toggle('hidden', !on);
+    helpBtnEl.setAttribute('aria-pressed', String(on));
+  }
+  buildHelp();
+  // The keyboard layout (a preference, saved with the settings).
+  const keyLayoutEl = document.getElementById('keyLayout');
+  keyLayoutEl.value = state.keyLayout;
+  keyLayoutEl.addEventListener('input', () => {
+    state.keyLayout = keyLayoutEl.value;
+    buildHelp();
+    saveSettings();
   });
+  helpBtnEl.addEventListener('click', () => toggleHelp());
+  helpEl.querySelector('.close').addEventListener('click', () => toggleHelp(false));
+
+  const loaded = () => !!(ctx && state.sourceLensSize);
+  const ACTIONS = {
+    undo, redo,
+    prevSlider: () => moveSlider(-1),
+    nextSlider: () => moveSlider(1),
+    nudgeUp: (e) => nudgeKey(numBySlider.get(document.activeElement),
+      { key: 'ArrowRight', shiftKey: e.shiftKey && e.key !== '+', ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }),
+    nudgeDown: (e) => nudgeKey(numBySlider.get(document.activeElement),
+      { key: 'ArrowLeft', shiftKey: e.shiftKey, ctrlKey: false, metaKey: false, altKey: false, preventDefault() {} }),
+    resetSlider: () => resetNum(numBySlider.get(document.activeElement)),
+    leaveSlider: () => document.activeElement.blur(),
+    toggleZoom: () => { if (!loaded()) return false; if (zoom) zoomToFit(); else setZoom(1); },
+    zoomFit: () => { if (!loaded()) return false; zoomToFit(); },
+    zoom100: () => { if (!loaded()) return false; setZoom(1); },
+    zoomIn: () => { if (!loaded()) return false; stepZoomBy(1); },
+    zoomOut: () => { if (!loaded()) return false; stepZoomBy(-1); },
+    autoWb: () => autoWhiteBalance(),
+    toggleMono: () => toggleMono(),
+    rotateCw: () => rotateBy(1),
+    rotateCcw: () => rotateBy(-1),
+    beforeAfter: () => {
+      if (!loaded()) return false;
+      beforeView = !beforeView;
+      updateBeforeBadge();
+      render();
+    },
+    open: () => { fileEl.click(); },
+    export: () => { if (!loaded() || exportBtn.disabled) return false; exportBtn.click(); },
+    // With nothing loaded, Ctrl+P is the browser's own print.
+    print: () => { if (!loaded()) return false; printImage(); },
+    help: () => toggleHelp(),
+  };
+
+  document.addEventListener('keydown', (e) => {
+    if (e.defaultPrevented || e.isComposing) return;
+    const a = document.activeElement;
+    if (e.key === 'Escape' && !helpEl.classList.contains('hidden')) { toggleHelp(false); e.preventDefault(); return; }
+    const typing = !!a && (a.tagName === 'SELECT' || a.tagName === 'TEXTAREA' ||
+      (a.tagName === 'INPUT' && a.type !== 'range' && a.type !== 'checkbox'));
+    const action = Shortcuts.match(e, { typing, onSlider: numBySlider.has(a), layout: state.keyLayout });
+    if (!action || !ACTIONS[action]) return;
+    if (ACTIONS[action](e) === false) return;
+    e.preventDefault();
+  });
+
   window.addEventListener('beforeprint', preparePrint);
   window.addEventListener('afterprint', releasePrint);
 
   loadSettings();
+  resetHistory();
+  keyLayoutEl.value = state.keyLayout;
+  buildHelp();
   updateExportLabel();
   updateExportSize();
   updateFileHeader();
@@ -2273,5 +2590,6 @@
     developInfo: () => GL.developInfo(ctx, state),
     developSettled: () => GL.developSettled(ctx, state),
     developBudget: (bytes) => { GL.setDevelopBudget(ctx, bytes); render(); },
+    undo, redo, canUndo: () => editHistory.canUndo(), canRedo: () => editHistory.canRedo(), autoWhiteBalance,
   };
 })();

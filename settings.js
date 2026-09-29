@@ -25,6 +25,7 @@
     'fovDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone', 'detail',
     'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels', 'scopeScale',
+    'keyLayout',
   ];
 
   // Task 18: the side panel's collapsible sections, in display order, and
@@ -44,6 +45,7 @@
   const ENUMS = {
     sensors: ['A', 'B', 'both'], orientation: ['side', 'stacked'],
     scopeMode: ['histogram', 'waveform', 'vectorscope'], scopeChannels: ['luma', 'rgb'],
+    keyLayout: ['standard', 'swedish'],
   };
 
   // Single source of truth for the valid domain of every numeric field.

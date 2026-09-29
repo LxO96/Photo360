@@ -68,10 +68,39 @@ page remembers which sections are open along with your other settings. Every
 number beside a slider can be edited: type a value and press Enter, or click
 away, to apply it. Values outside a slider's range are clamped to it, and
 Escape cancels. Double-click a slider to reset it to its default; the
-white-balance sliders reset to the file's as-shot values. With a slider or its number focused, the arrow keys nudge the
+white-balance sliders reset to the file's as-shot values. With a slider or its number focused, ← and → nudge the
 value. Shift makes the step coarser, Ctrl makes it finer, and Page Up/Down
-make a coarse step. **Export** sits at the bottom of the panel, next to the
+make a coarse step. ↑ and ↓ move to the previous or next slider. **Export** sits at the bottom of the panel, next to the
 exact pixel size and aspect ratio it will write.
+
+### Keyboard shortcuts
+
+**Keys** in the header, or **?**, lists them, and picks the keyboard layout:
+on **Swedish**, before / after is on **<** or **§** instead of `\` (which
+needs AltGr there). Cmd stands in for Ctrl on a Mac. Single keys don't fire
+while you type in a number box, and Ctrl+Z there undoes the typing.
+
+| Keys | Does |
+|---|---|
+| Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y | Undo, redo (the last 100 edits of this photo) |
+| ↑ / ↓, or , / . | Previous / next slider (in the open sections; from nothing, the last one used) |
+| ← / →, or − / + | Change the focused slider (Shift coarse, Ctrl fine) |
+| Backspace / Delete | Reset the focused slider |
+| Shift+drag | Drag a slider at a tenth of the speed (press or let go of Shift at any time) |
+| B | Black & white on / off |
+| R / Shift+R | Rotate a quarter turn (Camera roll ±90°) |
+| Shift+W | Auto white balance (raw files) |
+| Esc | Leave the slider |
+| Z | Fit / 100% |
+| Ctrl+0, Ctrl+1, Ctrl+= / Ctrl+− | Fit, 100%, zoom in / out |
+| `\` (Swedish: < or §) | Before / after: Tone and Detail off until pressed again or something is changed |
+| Ctrl+O, Ctrl+Shift+E, Ctrl+P | Open, Export, Print |
+
+History records edits to the picture (Framing, Level, White balance, Edge,
+Tone, Detail), one step per finished change: a whole slider drag, a held
+arrow key, an Auto click. Open sections, the scopes and zoom are not edits.
+Opening a file starts a new history. `history.js` and `shortcuts.js` hold
+the logic and the table.
 
 ### Scopes
 
@@ -202,6 +231,14 @@ to do there.
 - **Link A and B** (on by default) — moving either lens's controls moves
   both, for the common case where you just want one overall white balance.
   Turn it off to give the two lenses genuinely different white balance.
+- **Auto** (Shift+W) — measures the light from the raw data of the photo
+  itself (inside the circle and the Edge falloff; clipped and black pixels
+  left out) and sets Kelvin and tint. Linked, both lenses are measured
+  together and get one value; unlinked, each lens gets its own. Starting
+  from the camera's own white balance, it looks for pixels that come out
+  grey and averages those, so a big coloured area (a lawn, the sea, a blue
+  sky) doesn't pull it, and the tint stays within 20 of the camera's. The
+  note under the buttons says what it set. `autowb.js`.
 - **Pick neutral** — click it, then click something in the photo that
   should be neutral grey or white, or drag a rectangle over a larger white
   or grey area (a wall, a sheet, a cloud). That lens's Kelvin and tint
@@ -267,6 +304,11 @@ eases into black and white instead of clipping. Saturation works in OKLab
 at constant lightness, and eases off before colours leave the displayable
 range instead of clipping into another hue. Anything still out of range
 (say, after a big Exposure push) fades toward white or black at its own hue.
+
+**Black & white** (or **B**) turns the finished picture — photo and rim —
+into greys of the same lightness, last of all, so every other Tone control
+still shapes it (Saturation then has nothing to act on). Before / after and
+the DNG export leave it out, like the rest of Tone.
 
 `Edge.applyTone` in `edge.js` is the reference, and the shader mirrors it.
 `App.checkToneParity()` compares the two on the GPU.
