@@ -290,9 +290,25 @@ redone when a Detail slider or the file changes.
 They act at pixel level, so judge them at 100% zoom. `detail.js` and
 `noise.js` are the reference and the develop shaders mirror them;
 `App.checkDetailParity()` compares the two, and `App.noiseInfo()` shows the
-measured noise. While Detail is on, they hold a few float copies of the
-source frame on the GPU (about 75 MB each for a ONE X lens). The DNG export
-leaves them out, like tone, for the raw converter to apply.
+measured noise. The DNG export leaves them out, like tone, for the raw
+converter to apply.
+
+**Graphics memory.** The Detail panel shows what Detail takes on the GPU,
+and where it runs (`devplan.js`):
+
+- **Whole frame**, the fastest: five float copies of a lens frame, about
+  370 MB for a ONE X file. Used while that stays under 1 GB.
+- **In tiles**: the same GPU passes over 1024 px pieces, each with an 80 px
+  border of the frame so the result is identical, pixel for pixel. About
+  600 MB for an X5 file (1.4 GB whole), nearly as fast.
+- **On the CPU** (`devcpu.js`), when the GPU runs out of memory even for
+  tiles: the same method on worker threads, a few seconds per change
+  (about 2 s for a ONE X DNG, 6 s for an X5 file on 8 threads). Export and
+  print wait for it.
+
+Each falls back to the next when the GPU can't allocate what it needs;
+`App.developBudget(bytes)` pretends the GPU has only that much, to try the
+fallbacks, and `App.developInfo()` shows the path in use.
 
 ### Output
 

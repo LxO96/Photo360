@@ -231,9 +231,12 @@
 
   // The develop passes (noise reduction and sharpening), mirroring
   // detail.js step for step; see that file for the method and gl.js
-  // developLens for the order they run in. Each renders one whole lens
-  // frame, pixel for pixel, into an RGBA16F target: `rgb` holds the
-  // opponent triple (luma, chroma 1, chroma 2) of detail.js's toOpp.
+  // developLens for the order they run in. Each renders one region of a
+  // lens frame (the whole frame, or a tile of it: devplan.js), pixel for
+  // pixel, into the bottom-left of an RGBA16F target: `rgb` holds the
+  // opponent triple (luma, chroma 1, chroma 2) of detail.js's toOpp. The
+  // input passes read the frame at uOrigin + the fragment; the others
+  // clamp their taps to the region, (0, 0)..uHi.
   const DEV_OPP_GLSL = `
   vec3 toOpp(vec3 c) { return vec3((c.r + 2.0 * c.g + c.b) / 4.0, (c.r - c.b) / 2.0, (2.0 * c.g - c.r - c.b) / 4.0); }
   vec3 fromOpp(vec3 o) { return vec3(o.x + o.y - o.z, o.x + o.z, o.x - o.y - o.z); }`;
@@ -244,10 +247,11 @@
   const DEV_INPUT_RAW_FS = `#version 300 es
   precision highp float;
   uniform vec2 uVst;
+  uniform ivec2 uOrigin;
   out vec4 fragColor;
   ` + RAW_SAMPLE_GLSL + DEV_OPP_GLSL + `
   void main() {
-    vec3 x = rawCameraLinearAt(ivec2(gl_FragCoord.xy));
+    vec3 x = rawCameraLinearAt(uOrigin + ivec2(gl_FragCoord.xy));
     float y0 = (2.0 / uVst.x) * sqrt(uVst.y);
     vec3 v = mix((2.0 / uVst.x) * sqrt(max(uVst.x * x + uVst.y, 0.0)),
                  y0 + x / sqrt(uVst.y), lessThan(x, vec3(0.0)));
@@ -258,27 +262,28 @@
   const DEV_INPUT_RGB_FS = `#version 300 es
   precision highp float;
   uniform sampler2D uSrc;
+  uniform ivec2 uOrigin;
   out vec4 fragColor;
   ` + DEV_OPP_GLSL + `
   void main() {
-    fragColor = vec4(toOpp(texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0).rgb), 1.0);
+    fragColor = vec4(toOpp(texelFetch(uSrc, uOrigin + ivec2(gl_FragCoord.xy), 0).rgb), 1.0);
   }`;
 
   // One a-trous step (detail.js blur): B3 spline taps uStep px apart,
-  // clamped at the frame edge.
+  // clamped at the region's edge.
   const DEV_BLUR_FS = `#version 300 es
   precision highp float;
   uniform sampler2D uC;
   uniform int uStep;
+  uniform ivec2 uHi;
   out vec4 fragColor;
   const float B3[5] = float[5](${Detail.B3.map((v) => v.toFixed(8)).join(', ')});
   void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
-    ivec2 hi = textureSize(uC, 0) - ivec2(1);
     vec3 acc = vec3(0.0);
     for (int j = -2; j <= 2; j++) {
       for (int i = -2; i <= 2; i++) {
-        ivec2 q = clamp(p + ivec2(i, j) * uStep, ivec2(0), hi);
+        ivec2 q = clamp(p + ivec2(i, j) * uStep, ivec2(0), uHi);
         acc += B3[i + 2] * B3[j + 2] * texelFetch(uC, q, 0).rgb;
       }
     }
@@ -295,6 +300,7 @@
   uniform vec3 uThresh;
   uniform float uBoost, uSigmaY;
   uniform int uStep;
+  uniform ivec2 uHi;
   out vec4 fragColor;
   float shrink(float d, float e, float t) {
     if (t <= 0.0) return d;
@@ -306,11 +312,10 @@
   }
   void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
-    ivec2 hi = textureSize(uC, 0) - ivec2(1);
     vec3 e = vec3(0.0);
     for (int j = -1; j <= 1; j++) {
       for (int i = -1; i <= 1; i++) {
-        vec3 n = coefAt(clamp(p + ivec2(i, j) * uStep, ivec2(0), hi));
+        vec3 n = coefAt(clamp(p + ivec2(i, j) * uStep, ivec2(0), uHi));
         e += n * n;
       }
     }

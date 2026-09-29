@@ -18,6 +18,7 @@
   const padToSensorSquareEl = document.getElementById('padToSensorSquare');
   const exportSizeEl = document.getElementById('exportSize');
   const exportDimsEl = document.getElementById('exportDims');
+  const detailMemEl = document.getElementById('detailMem');
   const exportNoteEl = document.getElementById('exportNote');
   const fileNameEl = document.getElementById('fileName');
   const fileMetaEl = document.getElementById('fileMeta');
@@ -389,12 +390,26 @@
   // (if anything) completely intact; a throw after would have nothing left
   // to fail on. See source.js's own top-of-file comment for the fuller
   // rationale.
+  function ensureCtx() {
+    if (ctx) return;
+    ctx = GL.create(canvas);
+    // The CPU develop path (devplan.js) finishes a lens in the background.
+    ctx.dev.onProgress = requestRender;
+    ctx.dev.onError = (e) => fail('Noise reduction on the CPU failed: ' + e.message);
+  }
+
+  let renderFrame = 0;
+  function requestRender() {
+    if (renderFrame) return;
+    renderFrame = requestAnimationFrame(() => { renderFrame = 0; render(); });
+  }
+
   async function loadFile(file) {
     clearMessages();
     let builtTextures = null;
     try {
       const buf = await file.arrayBuffer();
-      if (!ctx) ctx = GL.create(canvas);
+      ensureCtx();
       const descriptor = await Source.decode(file, buf, ctx.maxTextureSize);
       const gl = ctx.gl;
       builtTextures = [];
@@ -404,6 +419,9 @@
           for (const plane of descriptor.planes) {
             const built = GL.makeBayerTexture(gl, plane, descriptor.lensSize, descriptor.lensSize);
             builtTextures.push(built);
+            // Kept for developing on the CPU (devcpu.js), if it comes to that.
+            built.plane = plane;
+            built.rawMeta = { cfa: meta.cfaPattern, black: meta.blackLevel, white: meta.whiteLevel };
             // The sensor's noise model, for noise reduction (noise.js).
             built.noise = Noise.fitProfile(plane, descriptor.lensSize, descriptor.lensSize,
               meta.cfaPattern, meta.blackLevel, meta.whiteLevel);
@@ -485,6 +503,9 @@
     return GL.placedLayout(state, canvas.width, canvas.height, previewPlace);
   }
 
+  const DEVELOP_FAILED = 'This GPU has too little memory left even to hold the result of noise ' +
+    'reduction and sharpening at this image size. Set Detail to 0 to go on.';
+
   function render() {
     if (!ctx || !state.sourceLensSize) return;
     const m = stageMetrics();
@@ -503,12 +524,13 @@
     if (!Detail.isActive(state.detail)) GL.releaseDeveloped(ctx);
     try {
       GL.renderComposition(ctx, state, canvas.width, canvas.height, null, previewPlace);
+      if (errorEl.textContent === DEVELOP_FAILED) clearMessages();
     } catch (e) {
       if (e.message !== 'DEVELOP_TARGET_INCOMPLETE') throw e;
       GL.releaseDeveloped(ctx);
-      fail('This GPU could not allocate the memory noise reduction and sharpening need ' +
-        'at this image size. Set Detail to 0 to go on.');
+      fail(DEVELOP_FAILED);
     }
+    updateDetailNote();
     sampleScopes();
     updateZoomControls(m, g);
     const c = Lens.coverage(state.fovDeg, state.thetaMaxDeg);
@@ -528,6 +550,31 @@
   // implied. Recomputed from GL.exportGeometry -- the same geometry
   // exportImage itself renders at -- so this text can never drift from what
   // actually gets written.
+  // What Detail costs in graphics memory, and where it runs when that
+  // memory ran out (GL.developInfo, devplan.js).
+  function updateDetailNote() {
+    const d = GL.developInfo(ctx, state);
+    let text = '', warnIt = false;
+    if (d && d.path === 'cpu') {
+      warnIt = true;
+      text = 'Not enough graphics memory: noise reduction and sharpening run on the CPU' +
+        (d.workers > 1 ? ` (${d.workers} threads)` : '') + ', a few seconds per change.' +
+        (d.pending ? ' Working…' : '');
+    } else if (d) {
+      const mem = DevPlan.formatBytes(d.bytes);
+      warnIt = d.fellBack || d.bytes > DevPlan.FULL_BUDGET;
+      text = d.path === 'full'
+        ? `Uses about ${mem} of graphics memory.`
+        : d.fellBack
+          ? `Not enough graphics memory for the whole frame: working in tiles, about ${mem}.`
+          : `Uses about ${mem} of graphics memory, working in tiles ` +
+            `(the whole frame at once would take ${DevPlan.formatBytes(d.fullBytes)}).`;
+      if (d.bytes > DevPlan.FULL_BUDGET) text += ' A GPU with little memory may not manage it.';
+    }
+    detailMemEl.textContent = text;
+    detailMemEl.classList.toggle('warn', warnIt);
+  }
+
   function updateExportSize() {
     if (!state.sourceLensSize) {
       exportDimsEl.textContent = '—';
@@ -1842,6 +1889,8 @@
     if (opts.format === 'dng') { exportDng(exportState); return; }
     const g = GL.exportGeometry(exportState);
     try {
+      // Developing on the CPU: wait for the current settings' result.
+      await GL.developSettled(ctx, exportState);
       const outCanvas = renderFullCanvas(exportState, 'export');
       if (!outCanvas) return;
 
@@ -1967,7 +2016,14 @@
     printBoxEl.replaceChildren();
     document.body.classList.remove('print-ready');
   }
-  function printImage() {
+  async function printImage() {
+    if (!ctx || !state.sourceLensSize) return;
+    try {
+      await GL.developSettled(ctx, state);
+    } catch (e) {
+      fail('Print failed: ' + e.message);
+      return;
+    }
     if (preparePrint()) window.print();
   }
   printBtn.addEventListener('click', printImage);
@@ -2018,7 +2074,7 @@
   // the readback against that fixture's expected values. Requires the page
   // to be served over HTTP (fetch of a local file fails under file://).
   async function checkParity(fixtureUrl) {
-    if (!ctx) ctx = GL.create(canvas);
+    ensureCtx();
     const gl = ctx.gl;
     const res = await fetch(fixtureUrl || 'test/fixtures/parity-input.json');
     const fixture = await res.json();
@@ -2097,7 +2153,7 @@
   }
 
   function checkToneParity() {
-    if (!ctx) ctx = GL.create(canvas);
+    ensureCtx();
     const gl = ctx.gl;
     const prog = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.TONE_PARITY_FS);
     const tex = gl.createTexture();
@@ -2160,7 +2216,7 @@
   // Detail.develop over a 64 x 64 synthetic image for each case above. The
   // passes work in float16, so agreement is to ~1e-3, not float32's 1e-6.
   function checkDetailParity() {
-    if (!ctx) ctx = GL.create(canvas);
+    ensureCtx();
     const gl = ctx.gl;
     const n = 64;
     const inputProg = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.DEV_PARITY_INPUT_FS);
@@ -2204,5 +2260,11 @@
     // The measured noise per lens slot (raw profile, per-layer sigmas once
     // noise reduction has run), for checking the measurement.
     noiseInfo: () => (ctx ? ctx.lensInfo.map((i) => i && { noise: i.noise, sigmas: i.sigmas }) : null),
+    // Where Detail develops and what it costs; developBudget(bytes) makes
+    // the GPU pretend to have only that much for it (Infinity: no limit),
+    // to try the tiled and CPU fallbacks.
+    developInfo: () => GL.developInfo(ctx, state),
+    developSettled: () => GL.developSettled(ctx, state),
+    developBudget: (bytes) => { GL.setDevelopBudget(ctx, bytes); render(); },
   };
 })();

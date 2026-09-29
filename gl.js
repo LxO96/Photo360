@@ -60,7 +60,7 @@
       // Per lens slot: { id, noise: {a, b} (raw) | null, sigmas } -- what
       // the develop passes need to know about the frame (see developLens).
       lensInfo: [null, null],
-      dev: { scratch: [], out: [null, null], key: [null, null] },
+      dev: newDevState(),
       composite: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_FS),
       compositeRaw: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_RAW_FS),
       compositeDng: program(gl, Shaders.FULLSCREEN_VS, Shaders.COMPOSITE_DNG_FS),
@@ -292,9 +292,9 @@
     ctx.textureSize[i] = null;
     ctx.lensInfo[i] = null;
     if (ctx.dev) {
-      freeDevTarget(ctx.gl, ctx.dev.out[i]);
-      ctx.dev.out[i] = null;
-      ctx.dev.key[i] = null;
+      releaseDevLens(ctx, i);
+      // A new file starts again from the fastest path that fits.
+      ctx.dev.floor = 0;
     }
   }
 
@@ -316,7 +316,11 @@
         releaseLens(ctx, i);
         ctx.textures[i] = built[i].tex;
         ctx.textureSize[i] = built[i].size;
-        ctx.lensInfo[i] = { id: ++lensSerial, noise: built[i].noise || null, sigmas: null };
+        // Raw: the plane and its metadata stay for the CPU develop path.
+        ctx.lensInfo[i] = {
+          id: ++lensSerial, noise: built[i].noise || null, sigmas: null,
+          plane: built[i].plane || null, rawMeta: built[i].rawMeta || null,
+        };
       } else {
         releaseLens(ctx, i);
       }
@@ -342,18 +346,40 @@
   }
 
   // -- Develop: noise reduction and sharpening (detail.js) ---------------
-  // Each lens's whole source frame is developed once into an RGBA16F
-  // texture (ctx.dev.out[i]) that the composite then samples instead of the
+  // Each lens's whole source frame is developed into a texture
+  // (ctx.dev.out[i]) that the composite then samples instead of the
   // source: raw -> linear camera RGB, JPEG -> display-encoded RGB. It is
   // redone only when the Detail settings or the file change (ctx.dev.key),
-  // so panning, zooming, white balance, tone and exports reuse it. The
+  // so panning, zooming, white balance, tone and exports reuse it. The GPU
   // passes: input (to opponent values; raw is variance-stabilised first),
   // then per wavelet layer a blur and a thresholded-detail pass blended
-  // into an accumulator, then the final pass back to RGB. Three scratch
-  // targets the size of the frame, kept while Detail is on.
-  const DEV_CROP = 256;
+  // into an accumulator, then the final pass back to RGB, over three
+  // scratch targets kept while Detail is on.
+  //
+  // Where it runs is devplan.js's path (ctx.dev.path): the whole frame at
+  // once ("full"), in tiles ("tiled", same passes, tile-sized scratch), or
+  // on the CPU ("cpu": devcpu.js on workers, asynchronous; the GPU holds
+  // only the results). A path whose memory can't be had falls back to the
+  // next for the rest of the file (ctx.dev.floor).
+  const DEV_PATHS = ['full', 'tiled', 'cpu'];
 
-  function makeDevTarget(gl, w, h) {
+  function newDevState() {
+    return {
+      scratch: [], out: [null, null], key: [null, null],
+      path: null, floor: 0, bytes: 0, budget: Infinity,
+      readFbo: null,
+      // CPU path: the job per lens (its key and a promise settled when it
+      // is done or superseded), a generation per lens that retires old
+      // jobs' results, whether the lens's output holds a whole (if perhaps
+  // older) result yet, the pool.
+      cpu: { pool: null, gen: [0, 0], jobKey: [null, null], pending: [null, null], settle: [null, null],
+        whole: [false, false] },
+      onProgress: null,
+    };
+  }
+
+  function createDevTexture(gl, w, h, u8) {
+    while (gl.getError() !== gl.NO_ERROR) { /* drain, to see this allocation's own error */ }
     const tex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, tex);
     // LINEAR for the JPEG composite, which samples with texture() the way
@@ -362,13 +388,19 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    if (u8) gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    else gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+    const oom = gl.getError() === gl.OUT_OF_MEMORY;
     const fbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    const complete = !oom && gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return { tex, fbo, w, h, complete };
+    return { tex, fbo, w, h, complete, bytes: w * h * (u8 ? 4 : 8) };
+  }
+
+  function makeDevTarget(gl, w, h) {
+    return createDevTexture(gl, w, h, false);
   }
 
   function freeDevTarget(gl, t) {
@@ -377,30 +409,80 @@
     gl.deleteFramebuffer(t.fbo);
   }
 
-  // Frees every develop texture (Detail turned off, or a new file).
+  // A develop target counted against ctx.dev.bytes (and the test budget,
+  // setDevelopBudget); throws DEVELOP_TARGET_INCOMPLETE when it can't be
+  // had.
+  function allocDev(ctx, w, h, u8) {
+    const dev = ctx.dev;
+    if (dev.bytes + w * h * (u8 ? 4 : 8) > dev.budget) throw new Error('DEVELOP_TARGET_INCOMPLETE');
+    const t = createDevTexture(ctx.gl, w, h, u8);
+    if (!t.complete) {
+      freeDevTarget(ctx.gl, t);
+      throw new Error('DEVELOP_TARGET_INCOMPLETE');
+    }
+    dev.bytes += t.bytes;
+    return t;
+  }
+
+  function freeDev(ctx, t) {
+    if (!t) return;
+    ctx.dev.bytes -= t.bytes;
+    freeDevTarget(ctx.gl, t);
+  }
+
+  // Retires lens i's CPU job, if any: its results are dropped as they
+  // arrive and its queued tiles never run.
+  function cancelCpu(ctx, i) {
+    const cpu = ctx.dev.cpu;
+    cpu.gen[i]++;
+    cpu.jobKey[i] = null;
+    if (cpu.settle[i]) cpu.settle[i]();
+    if (cpu.pool) cpu.pool.clear((job) => job.lens === i);
+  }
+
+  function releaseDevLens(ctx, i) {
+    const dev = ctx.dev;
+    cancelCpu(ctx, i);
+    dev.cpu.whole[i] = false;
+    freeDev(ctx, dev.out[i]);
+    dev.out[i] = null;
+    dev.key[i] = null;
+  }
+
+  // Frees every develop texture (Detail turned off, a new file, a path
+  // change). The path and its floor stay.
   function releaseDeveloped(ctx) {
-    const gl = ctx.gl, dev = ctx.dev;
-    for (const t of dev.scratch) freeDevTarget(gl, t);
-    for (const t of dev.out) freeDevTarget(gl, t);
+    const dev = ctx.dev;
+    for (const t of dev.scratch) freeDev(ctx, t);
     dev.scratch = [];
-    dev.out = [null, null];
-    dev.key = [null, null];
+    releaseDevLens(ctx, 0);
+    releaseDevLens(ctx, 1);
+  }
+
+  // Test hook: pretend the GPU has only `bytes` for developing (Infinity
+  // for no limit), to exercise the fallbacks on a GPU that has plenty.
+  function setDevelopBudget(ctx, bytes) {
+    releaseDeveloped(ctx);
+    ctx.dev.budget = bytes;
+    ctx.dev.floor = 0;
+    ctx.dev.path = null;
   }
 
   function devScratch(ctx, w, h) {
-    const gl = ctx.gl, dev = ctx.dev;
+    const dev = ctx.dev;
     if (dev.scratch.length !== 3 || dev.scratch[0].w !== w || dev.scratch[0].h !== h) {
-      for (const t of dev.scratch) freeDevTarget(gl, t);
-      dev.scratch = [makeDevTarget(gl, w, h), makeDevTarget(gl, w, h), makeDevTarget(gl, w, h)];
+      for (const t of dev.scratch) freeDev(ctx, t);
+      dev.scratch = [];
+      for (let k = 0; k < 3; k++) dev.scratch.push(allocDev(ctx, w, h, false));
     }
-    if (!dev.scratch.every((t) => t.complete)) throw new Error('DEVELOP_TARGET_INCOMPLETE');
     return dev.scratch;
   }
 
-  function devPass(ctx, prog, target, setup) {
+  // One pass into the bottom-left `region` ({ w, h }) of `target`.
+  function devPass(ctx, prog, target, region, setup) {
     const gl = ctx.gl;
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
-    gl.viewport(0, 0, target.w, target.h);
+    gl.viewport(0, 0, region.w, region.h);
     gl.useProgram(prog);
     setup((n) => gl.getUniformLocation(prog, n));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
@@ -411,57 +493,56 @@
     gl.bindTexture(gl.TEXTURE_2D, tex);
   }
 
-  // Five crops inside the image circle, for measuring the noise.
-  function devCrops(w, h) {
-    const c = Math.min(DEV_CROP, Math.floor(w / 4), Math.floor(h / 4));
-    return [[0.5, 0.5], [0.3, 0.5], [0.7, 0.5], [0.5, 0.3], [0.5, 0.7]].map(([fx, fy]) => ({
-      x: Math.round(fx * w - c / 2), y: Math.round(fy * h - c / 2), w: c, h: c,
-    }));
+  // The input pass: lens `texIndex`'s frame at `region` ({ x, y, w, h },
+  // frame pixels) as opponent values, into the bottom-left of `target`.
+  function devInput(ctx, state, texIndex, target, region) {
+    const gl = ctx.gl;
+    const raw = !!state.isRaw;
+    const input = raw ? ctx.devInputRaw : ctx.devInputRgb;
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    devPass(ctx, input, target, region, (u) => {
+      bindTex(gl, 0, ctx.textures[texIndex]);
+      gl.uniform2i(u('uOrigin'), region.x, region.y);
+      if (raw) {
+        const noise = ctx.lensInfo[texIndex].noise;
+        gl.uniform1i(u('uLens'), 0);
+        setRawUniforms(gl, input, ctx, texIndex, state, 'A');
+        gl.uniform2f(u('uVst'), noise.a, noise.b);
+      } else {
+        gl.uniform1i(u('uSrc'), 0);
+      }
+    });
   }
 
-  function readDevRect(gl, target, r) {
-    const out = new Float32Array(r.w * r.h * 4);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo);
-    gl.readPixels(r.x, r.y, r.w, r.h, gl.RGBA, gl.FLOAT, out);
-    return out;
-  }
-
-  // The wavelet passes over scratch[0], which holds the input (opponent
-  // values). `sigmas` is null to measure each layer's noise on the way
-  // (a JPEG: Noise.estimateSigma over devCrops, then capLuma and
-  // jpegSigma), else detail.js-shaped. `mode` and
-  // `vst` are DEV_FINAL_FS's. Returns { out, sigmas }: `out` is the
-  // scratch target holding the result.
-  function runDevelop(ctx, scratch, params, sigmas, mode, vst) {
+  // The wavelet passes over the bottom-left `region` ({ w, h }; default
+  // the whole target) of scratch[0], which holds the input (opponent
+  // values). `sigmas` is detail.js-shaped; `mode` and `vst` are
+  // DEV_FINAL_FS's. Returns { out }: the scratch target holding the result
+  // (in the same region).
+  function runDevelop(ctx, scratch, params, sigmas, mode, vst, region) {
     const gl = ctx.gl;
     const [A, B, acc] = scratch;
-    const w = A.w, h = A.h;
-    const measured = sigmas ? sigmas.slice() : [];
+    const reg = region || { w: A.w, h: A.h };
+    const lps = Detail.levelParams(params, sigmas);
     gl.bindVertexArray(ctx.vao);
     gl.disable(gl.BLEND);
     gl.bindFramebuffer(gl.FRAMEBUFFER, acc.fbo);
+    gl.viewport(0, 0, reg.w, reg.h);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     let cur = A, next = B;
     for (let k = 0; k < Detail.LEVELS; k++) {
-      devPass(ctx, ctx.devBlur, next, (u) => {
+      devPass(ctx, ctx.devBlur, next, reg, (u) => {
         bindTex(gl, 0, cur.tex);
         gl.uniform1i(u('uC'), 0);
         gl.uniform1i(u('uStep'), 1 << k);
+        gl.uniform2i(u('uHi'), reg.w - 1, reg.h - 1);
       });
-      if (!sigmas) {
-        const crops = devCrops(w, h).map((r) => {
-          const c = readDevRect(gl, cur, r), n = readDevRect(gl, next, r);
-          for (let i = 0; i < c.length; i++) c[i] -= n[i];
-          return { d: c, w: r.w, h: r.h, stride: 4 };
-        });
-        measured[k] = Noise.jpegSigma(k, Noise.capLuma(Noise.estimateSigma(crops, 3), measured[k - 1]));
-      }
-      while (measured.length < Detail.LEVELS) measured.push([0, 0, 0]);
-      const lp = Detail.levelParams(params, measured)[k];
+      const lp = lps[k];
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
-      devPass(ctx, ctx.devDetail, acc, (u) => {
+      devPass(ctx, ctx.devDetail, acc, reg, (u) => {
         bindTex(gl, 0, cur.tex);
         bindTex(gl, 1, next.tex);
         gl.uniform1i(u('uC'), 0);
@@ -470,12 +551,13 @@
         gl.uniform1f(u('uBoost'), lp.boost);
         gl.uniform1f(u('uSigmaY'), lp.sigma[0]);
         gl.uniform1i(u('uStep'), 1 << k);
+        gl.uniform2i(u('uHi'), reg.w - 1, reg.h - 1);
       });
       gl.disable(gl.BLEND);
       const t = cur; cur = next; next = t;
     }
     // `cur` holds the coarse residual; `next` is free for the result.
-    devPass(ctx, ctx.devFinal, next, (u) => {
+    devPass(ctx, ctx.devFinal, next, reg, (u) => {
       bindTex(gl, 0, acc.tex);
       bindTex(gl, 1, cur.tex);
       gl.uniform1i(u('uAcc'), 0);
@@ -484,50 +566,254 @@
       gl.uniform2f(u('uVst'), vst ? vst.a : 1, vst ? vst.b : 0);
     });
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    return { out: next, sigmas: measured.slice(0, Detail.LEVELS) };
+    return { out: next };
   }
 
-  // Develops lens texture `texIndex` for state.detail, unless the one
-  // already there is current. Returns its texture, or null if there is no
-  // lens there.
-  function developLens(ctx, state, texIndex) {
+  // Lens `texIndex`'s JPEG pixels at `r` (frame pixels), RGBA8.
+  function readLensRgba(ctx, texIndex, r) {
     const gl = ctx.gl, dev = ctx.dev;
+    if (!dev.readFbo) dev.readFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dev.readFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, ctx.textures[texIndex], 0);
+    const out = new Uint8Array(r.w * r.h * 4);
+    gl.readPixels(r.x, r.y, r.w, r.h, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+
+  // The layer sigmas of lens `texIndex`. Raw: known exactly after the
+  // transform (Noise.rawLevelSigmas). JPEG: measured once, on the CPU,
+  // from five crops of the source (devplan.js sigmaCrops) -- the same
+  // whichever path develops it.
+  function lensSigmas(ctx, state, texIndex) {
+    const info = ctx.lensInfo[texIndex];
+    if (!info.sigmas) {
+      if (state.isRaw) {
+        info.sigmas = Noise.rawLevelSigmas(Detail);
+      } else {
+        const size = ctx.textureSize[texIndex];
+        info.sigmas = DevCpu.measureJpegSigmas(DevPlan.sigmaCrops(size.width, size.height).map((c) => {
+          const r = c.region;
+          return {
+            opp: DevCpu.rgbaInput(readLensRgba(ctx, texIndex, r), r.w, r.h), w: r.w, h: r.h,
+            inner: { x: c.inner.x - r.x, y: c.inner.y - r.y, w: c.inner.w, h: c.inner.h },
+          };
+        }));
+      }
+    }
+    return info.sigmas;
+  }
+
+  function devKey(info, d) {
+    return [info.id, d.sharpenAmount, d.sharpenRadius, d.lumaNoise, d.colorNoise].join('|');
+  }
+
+  // "full": the whole frame in the scratch targets; the result trades
+  // places with this lens's previous output (or a fresh target), which
+  // becomes scratch.
+  function developFull(ctx, state, texIndex, size, sigmas, key) {
+    const dev = ctx.dev, raw = !!state.isRaw;
+    const region = { x: 0, y: 0, w: size.width, h: size.height };
+    const scratch = devScratch(ctx, size.width, size.height);
+    devInput(ctx, state, texIndex, scratch[0], region);
+    const r = runDevelop(ctx, scratch, state.detail, sigmas, raw ? 1 : 0,
+      raw ? ctx.lensInfo[texIndex].noise : null, region);
+    const i = scratch.indexOf(r.out);
+    const old = dev.out[texIndex];
+    const spare = old && old.w === r.out.w && old.h === r.out.h && old.bytes === r.out.bytes
+      ? old : allocDev(ctx, r.out.w, r.out.h, false);
+    if (old && spare !== old) freeDev(ctx, old);
+    dev.out[texIndex] = r.out;
+    scratch[i] = spare;
+    dev.key[texIndex] = key;
+    return r.out.tex;
+  }
+
+  // "tiled": devplan.js tiles through tile-sized scratch, each tile's core
+  // copied into the lens's output.
+  function developTiled(ctx, state, texIndex, size, sigmas, key) {
+    const gl = ctx.gl, dev = ctx.dev, raw = !!state.isRaw;
+    const w = size.width, h = size.height;
+    const t = DevPlan.GPU_TILE + 2 * DevPlan.HALO;
+    let out = dev.out[texIndex];
+    if (!out || out.w !== w || out.h !== h || out.bytes !== w * h * 8) {
+      freeDev(ctx, out);
+      dev.out[texIndex] = null;
+      out = allocDev(ctx, w, h, false);
+      dev.out[texIndex] = out;
+    }
+    const scratch = devScratch(ctx, Math.min(w, t), Math.min(h, t));
+    for (const tile of DevPlan.tiles(w, h, DevPlan.GPU_TILE, DevPlan.HALO)) {
+      const { region: r, core: c } = tile;
+      devInput(ctx, state, texIndex, scratch[0], r);
+      const res = runDevelop(ctx, scratch, state.detail, sigmas, raw ? 1 : 0,
+        raw ? ctx.lensInfo[texIndex].noise : null, r);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, res.out.fbo);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, out.fbo);
+      const sx = c.x - r.x, sy = c.y - r.y;
+      gl.blitFramebuffer(sx, sy, sx + c.w, sy + c.h, c.x, c.y, c.x + c.w, c.y + c.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+      gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null);
+      gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null);
+    }
+    dev.key[texIndex] = key;
+    return out.tex;
+  }
+
+  // "cpu": tiles developed on workers, each written into the lens's
+  // output as it arrives; ctx.dev.onProgress() once the lens is whole.
+  // Until then the composite shows the last whole result (or the source,
+  // the first time).
+  function developCpu(ctx, state, texIndex, size, sigmas, key) {
+    const gl = ctx.gl, dev = ctx.dev, cpu = dev.cpu, raw = !!state.isRaw;
+    const w = size.width, h = size.height;
+    if (cpu.jobKey[texIndex] !== key) {
+      cancelCpu(ctx, texIndex);
+      let out = dev.out[texIndex];
+      if (!out || out.w !== w || out.h !== h || out.bytes !== w * h * (raw ? 8 : 4)) {
+        freeDev(ctx, out);
+        dev.out[texIndex] = null;
+        dev.key[texIndex] = null;
+        out = allocDev(ctx, w, h, !raw);
+        dev.out[texIndex] = out;
+      }
+      if (!cpu.pool) {
+        const hw = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) || 2;
+        cpu.pool = DevCpu.createPool({ size: Math.min(8, Math.max(1, hw - 1)), factories: globalThis.DevFactories });
+      }
+      const gen = cpu.gen[texIndex];
+      const info = ctx.lensInfo[texIndex];
+      cpu.jobKey[texIndex] = key;
+      let resolveJob;
+      cpu.pending[texIndex] = new Promise((r) => { resolveJob = r; });
+      cpu.settle[texIndex] = () => {
+        cpu.pending[texIndex] = null;
+        cpu.settle[texIndex] = null;
+        resolveJob();
+      };
+      const tiles = DevPlan.tiles(w, h, DevPlan.CPU_TILE, DevPlan.HALO);
+      let left = tiles.length;
+      for (const tile of tiles) {
+        const job = { lens: texIndex, kind: raw ? 'raw' : 'rgba', region: tile.region, core: tile.core,
+          params: Object.assign({}, state.detail), sigmas };
+        let transfer;
+        if (raw) {
+          job.raw = Object.assign(DevCpu.rawSub(info.plane, w, h, tile.region), info.rawMeta,
+            { a: info.noise.a, b: info.noise.b });
+          transfer = [job.raw.plane.buffer];
+        } else {
+          job.rgba = readLensRgba(ctx, texIndex, tile.region);
+          transfer = [job.rgba.buffer];
+        }
+        cpu.pool.run(job, transfer).then((res) => {
+          if (!res || cpu.gen[texIndex] !== gen) return;
+          const c = res.core;
+          gl.bindTexture(gl.TEXTURE_2D, out.tex);
+          gl.texSubImage2D(gl.TEXTURE_2D, 0, c.x, c.y, c.w, c.h, gl.RGBA, raw ? gl.FLOAT : gl.UNSIGNED_BYTE, res.data);
+          if (--left > 0) return;
+          dev.key[texIndex] = key;
+          cpu.whole[texIndex] = true;
+          cpu.settle[texIndex]();
+          if (dev.onProgress) dev.onProgress();
+        }, (e) => {
+          if (cpu.gen[texIndex] !== gen) return;
+          cancelCpu(ctx, texIndex);
+          if (dev.onError) dev.onError(e);
+        });
+      }
+    }
+    return cpu.whole[texIndex] && dev.out[texIndex] ? dev.out[texIndex].tex : null;
+  }
+
+  // Resolves once `state`'s lenses are developed (at once on the GPU
+  // paths; when the CPU path's jobs are done), for an export or print to
+  // wait on.
+  async function developSettled(ctx, state) {
+    if (state && !state.dngOutput && state.detail && Detail.isActive(state.detail)) {
+      developDrawn(ctx, state, drawnLenses(ctx, state));
+    }
+    const cpu = ctx.dev.cpu;
+    while (cpu.pending.some(Boolean)) await Promise.all(cpu.pending.filter(Boolean));
+  }
+
+  // Develops lens texture `texIndex` for state.detail on the current
+  // path, unless the one already there is current. Returns its texture, or
+  // null if there is none (no lens there; a raw frame with no noise
+  // profile; the CPU path's first result still on its way).
+  function developLens(ctx, state, texIndex) {
+    const dev = ctx.dev;
     const info = ctx.lensInfo[texIndex];
     const size = ctx.textureSize[texIndex];
     if (!ctx.textures[texIndex] || !info || !size) return null;
     if (state.isRaw && !info.noise) return null;
-    const d = state.detail;
-    const key = [info.id, d.sharpenAmount, d.sharpenRadius, d.lumaNoise, d.colorNoise].join('|');
+    const key = devKey(info, state.detail);
     if (dev.key[texIndex] === key && dev.out[texIndex]) return dev.out[texIndex].tex;
-    const scratch = devScratch(ctx, size.width, size.height);
-    gl.bindVertexArray(ctx.vao);
-    gl.disable(gl.BLEND);
-    const raw = !!state.isRaw;
-    const input = raw ? ctx.devInputRaw : ctx.devInputRgb;
-    devPass(ctx, input, scratch[0], (u) => {
-      bindTex(gl, 0, ctx.textures[texIndex]);
-      if (raw) {
-        gl.uniform1i(u('uLens'), 0);
-        setRawUniforms(gl, input, ctx, texIndex, state, 'A');
-        gl.uniform2f(u('uVst'), info.noise.a, info.noise.b);
-      } else {
-        gl.uniform1i(u('uSrc'), 0);
+    const sigmas = lensSigmas(ctx, state, texIndex);
+    if (dev.path === 'cpu') return developCpu(ctx, state, texIndex, size, sigmas, key);
+    if (dev.path === 'tiled') return developTiled(ctx, state, texIndex, size, sigmas, key);
+    return developFull(ctx, state, texIndex, size, sigmas, key);
+  }
+
+  // The lens textures the composition draws.
+  function drawnLenses(ctx, state) {
+    const set = [];
+    for (const c of compositionLayout(state, 1000, 1000).circles) {
+      const ti = circleDraw(state, c.lens).texIndex;
+      if (ctx.textures[ti] && !set.includes(ti)) set.push(ti);
+    }
+    return set;
+  }
+
+  function developSizes(ctx, lenses) {
+    return lenses.map((i) => ({ w: ctx.textureSize[i].width, h: ctx.textureSize[i].height }));
+  }
+
+  // The path for developing `lenses` now: devplan.js's choice for their
+  // size, but never above a path that has already failed for this file.
+  function choosePath(ctx, state, lenses) {
+    const want = DevPlan.choosePath(developSizes(ctx, lenses), !!state.isRaw);
+    return DEV_PATHS[Math.max(DEV_PATHS.indexOf(want), ctx.dev.floor)];
+  }
+
+  // Develops `lenses`, falling back a path each time memory runs out.
+  // Returns their textures by slot ([tex|null, tex|null]).
+  function developDrawn(ctx, state, lenses) {
+    const dev = ctx.dev;
+    for (;;) {
+      const path = choosePath(ctx, state, lenses);
+      if (path !== dev.path) {
+        releaseDeveloped(ctx);
+        dev.path = path;
       }
-    });
-    // Raw: the layers' noise is known exactly after the transform
-    // (Noise.rawLevelSigmas). JPEG: measured on the first run.
-    if (raw && !info.sigmas) info.sigmas = Noise.rawLevelSigmas(Detail);
-    const r = runDevelop(ctx, scratch, d, info.sigmas, raw ? 1 : 0, raw ? info.noise : null);
-    info.sigmas = r.sigmas;
-    // Keep the result: it trades places with this lens's previous output
-    // (or a fresh target), which becomes scratch.
-    const i = scratch.indexOf(r.out);
-    const old = dev.out[texIndex];
-    dev.out[texIndex] = r.out;
-    scratch[i] = old && old.w === r.out.w && old.h === r.out.h ? old : makeDevTarget(gl, r.out.w, r.out.h);
-    if (old && scratch[i] !== old) freeDevTarget(gl, old);
-    dev.key[texIndex] = key;
-    return r.out.tex;
+      try {
+        const out = [null, null];
+        for (const i of lenses) out[i] = developLens(ctx, state, i);
+        return out;
+      } catch (e) {
+        if (e.message !== 'DEVELOP_TARGET_INCOMPLETE') throw e;
+        releaseDeveloped(ctx);
+        const next = DevPlan.fallback(dev.path);
+        if (!next) throw e;
+        dev.floor = DEV_PATHS.indexOf(next);
+      }
+    }
+  }
+
+  // What developing costs right now, for the Detail panel: the path, the
+  // graphics memory it takes for the lenses drawn, and whether a CPU job
+  // is still running.
+  function developInfo(ctx, state) {
+    if (!ctx || !state.detail || !Detail.isActive(state.detail)) return null;
+    const lenses = drawnLenses(ctx, state).filter((i) => ctx.lensInfo[i]);
+    if (!lenses.length) return null;
+    const path = choosePath(ctx, state, lenses);
+    return {
+      path,
+      bytes: DevPlan.memory(path, developSizes(ctx, lenses), !!state.isRaw),
+      fullBytes: DevPlan.memory('full', developSizes(ctx, lenses), !!state.isRaw),
+      fellBack: ctx.dev.floor > 0,
+      pending: ctx.dev.cpu.pending.some(Boolean),
+      workers: ctx.dev.cpu.pool ? ctx.dev.cpu.pool.size : 0,
+    };
   }
 
   const GLOW_HEADROOM = 0.08;   // fraction of the circle radius reserved outside the edge
@@ -556,12 +842,9 @@
     // Noise reduction / sharpening: develop each lens drawn first (cached;
     // see developLens). Not for the DNG export, which is left to the raw
     // converter.
-    const developed = [null, null];
+    let developed = [null, null];
     if (!state.dngOutput && state.detail && Detail.isActive(state.detail)) {
-      for (const c of layout.circles) {
-        const ti = circleDraw(state, c.lens).texIndex;
-        if (!developed[ti]) developed[ti] = developLens(ctx, state, ti);
-      }
+      developed = developDrawn(ctx, state, drawnLenses(ctx, state));
     }
     // All or nothing: one composite program serves every circle.
     const anyDeveloped = layout.circles.length > 0 && layout.circles.every((c) => {
@@ -914,5 +1197,6 @@
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
     makeFloatExportTarget, readCompositionStripsFloat,
     developLens, releaseDeveloped, runDevelop, makeDevTarget, freeDevTarget,
+    developInfo, developSettled, setDevelopBudget,
   };
 });

@@ -2,7 +2,11 @@
   'use strict';
   const api = factory();
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else root.Detail = api;
+  else {
+    root.Detail = api;
+    // For the develop workers (devcpu.js workerSource).
+    (root.DevFactories = root.DevFactories || {}).Detail = factory;
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 
@@ -107,23 +111,29 @@
   }
 
   // One a-trous smoothing step with holes `step` px apart, clamped at the
-  // edges. `img` is a Float32Array of w * h * 3 values.
+  // edges. `img` is a Float32Array of w * h * 3 values. The B3 kernel is
+  // separable: rows, then columns.
   function blur(img, w, h, step) {
+    const tmp = new Float32Array(img.length);
     const out = new Float32Array(img.length);
+    const [w0, w1, w2] = B3;
+    // Clamped tap positions (pixel offsets * 3) along a row / column.
+    const taps = (n) => [-2, -1, 1, 2].map((i) => Int32Array.from({ length: n }, (_, x) => Math.min(n - 1, Math.max(0, x + i * step)) * 3));
+    const [l2, l1, r1, r2] = taps(w);
     for (let y = 0; y < h; y++) {
+      const row = y * w * 3;
       for (let x = 0; x < w; x++) {
-        let a = 0, b = 0, c = 0;
-        for (let j = -2; j <= 2; j++) {
-          const yy = Math.min(h - 1, Math.max(0, y + j * step));
-          for (let i = -2; i <= 2; i++) {
-            const xx = Math.min(w - 1, Math.max(0, x + i * step));
-            const wt = B3[i + 2] * B3[j + 2];
-            const o = (yy * w + xx) * 3;
-            a += wt * img[o]; b += wt * img[o + 1]; c += wt * img[o + 2];
-          }
+        const a = row + l2[x], b = row + l1[x], m = row + x * 3, c = row + r1[x], d = row + r2[x];
+        for (let ch = 0; ch < 3; ch++) {
+          tmp[m + ch] = w0 * (img[a + ch] + img[d + ch]) + w1 * (img[b + ch] + img[c + ch]) + w2 * img[m + ch];
         }
-        const o = (y * w + x) * 3;
-        out[o] = a; out[o + 1] = b; out[o + 2] = c;
+      }
+    }
+    const [u2, u1, d1, d2] = taps(h);
+    for (let y = 0; y < h; y++) {
+      const a = u2[y] * w, b = u1[y] * w, m = y * w * 3, c = d1[y] * w, d = d2[y] * w;
+      for (let i = 0; i < w * 3; i++) {
+        out[m + i] = w0 * (tmp[a + i] + tmp[d + i]) + w1 * (tmp[b + i] + tmp[c + i]) + w2 * tmp[m + i];
       }
     }
     return out;
@@ -153,19 +163,36 @@
     for (let k = 0; k < LEVELS; k++) {
       const d = details[k];
       const step = 1 << k;
+      // Each coefficient's squares summed over its 3 x 3 neighbourhood
+      // (taps `step` apart, clamped): along rows, then columns.
+      const sq = new Float32Array(d.length);
+      for (let i = 0; i < d.length; i++) sq[i] = d[i] * d[i];
+      const rowSum = new Float32Array(d.length);
       for (let y = 0; y < h; y++) {
+        const row = y * w;
         for (let x = 0; x < w; x++) {
-          const e = [0, 0, 0];
-          for (let j = -1; j <= 1; j++) {
-            const yy = Math.min(h - 1, Math.max(0, y + j * step));
-            for (let i = -1; i <= 1; i++) {
-              const o = (yy * w + Math.min(w - 1, Math.max(0, x + i * step))) * 3;
-              e[0] += d[o] * d[o]; e[1] += d[o + 1] * d[o + 1]; e[2] += d[o + 2] * d[o + 2];
-            }
+          const a = (row + Math.max(0, x - step)) * 3, m = (row + x) * 3, c = (row + Math.min(w - 1, x + step)) * 3;
+          rowSum[m] = sq[a] + sq[m] + sq[c];
+          rowSum[m + 1] = sq[a + 1] + sq[m + 1] + sq[c + 1];
+          rowSum[m + 2] = sq[a + 2] + sq[m + 2] + sq[c + 2];
+        }
+      }
+      // detailCoef, inlined.
+      const lp = lps[k];
+      const [t0, t1, t2] = lp.thresh;
+      const boost = lp.boost, sy = SHARPEN_FLOOR * lp.sigma[0], sy2 = sy * sy + TINY;
+      for (let y = 0; y < h; y++) {
+        const up = Math.max(0, y - step) * w * 3, dn = Math.min(h - 1, y + step) * w * 3, m0 = y * w * 3;
+        for (let x = 0; x < w * 3; x += 3) {
+          const o = m0 + x;
+          let yv = shrink(d[o], (rowSum[up + x] + rowSum[o] + rowSum[dn + x]) / 9, t0);
+          const c1 = shrink(d[o + 1], (rowSum[up + x + 1] + rowSum[o + 1] + rowSum[dn + x + 1]) / 9, t1);
+          const c2 = shrink(d[o + 2], (rowSum[up + x + 2] + rowSum[o + 2] + rowSum[dn + x + 2]) / 9, t2);
+          if (boost > 0) {
+            const y2 = yv * yv;
+            yv *= 1 + boost * (y2 / (y2 + sy2));
           }
-          const o = (y * w + x) * 3;
-          const r = detailCoef([d[o], d[o + 1], d[o + 2]], [e[0] / 9, e[1] / 9, e[2] / 9], lps[k]);
-          out[o] += r[0]; out[o + 1] += r[1]; out[o + 2] += r[2];
+          out[o] += yv; out[o + 1] += c1; out[o + 2] += c2;
         }
       }
     }

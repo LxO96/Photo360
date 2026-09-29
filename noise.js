@@ -2,7 +2,11 @@
   'use strict';
   const api = factory();
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else root.Noise = api;
+  else {
+    root.Noise = api;
+    // For the develop workers (devcpu.js workerSource).
+    (root.DevFactories = root.DevFactories || {}).Noise = factory;
+  }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   'use strict';
 

@@ -245,6 +245,7 @@
 
   .note { color: var(--mut); font-size: 11px; line-height: 1.4; margin: 2px 0 6px; font-variant-numeric: tabular-nums; }
   .note:empty { display: none; }
+  .note.warn { color: var(--warn); }
   .actions { display: flex; justify-content: flex-end; margin-top: 6px; gap: 6px; }
   .actions.tools { justify-content: flex-start; margin: 0 0 4px; }
   /* A tool that is waiting for input on the image (Straighten, Pick). */
@@ -511,6 +512,7 @@
       <summary>Detail</summary>
       <div class="body">
         <div class="note">Works at pixel level: judge it at 100% zoom.</div>
+        <div id="detailMem" class="note"></div>
         <div class="sub-h">Sharpening</div>
         <div class="row"><label for="sharpenAmount">Amount</label>
           <input id="sharpenAmount" type="range" min="0" max="150" step="1" value="0">
@@ -565,6 +567,8 @@
   <script src="edge.js"></script>
   <script src="detail.js"></script>
   <script src="noise.js"></script>
+  <script src="devplan.js"></script>
+  <script src="devcpu.js"></script>
   <script src="autotone.js"></script>
   <script src="exif.js"></script>
   <script src="dng.js"></script>
