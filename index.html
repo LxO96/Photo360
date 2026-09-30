@@ -112,6 +112,10 @@
   .thumb.error { border-color: var(--err); }
   .thumb.error::after { content: '!'; position: absolute; top: 3px; left: 6px; color: var(--err); font-weight: 700; }
   .thumb.loading { opacity: .55; }
+  .thumb .hdr { position: absolute; top: 3px; left: 4px; font-size: 9px; line-height: 13px; padding: 0 3px;
+    border-radius: 2px; background: rgba(0, 0, 0, .65); color: var(--accent); }
+  .thumb .hdr.set { cursor: pointer; }
+  .thumb.error .hdr { left: 16px; }
 
   /* -- Stage ------------------------------------------------------------ */
   #stage {
@@ -445,6 +449,7 @@
       <button id="stripToggle" class="btn ghost" type="button" aria-expanded="true" title="Show or hide the photos">Photos <span id="stripCount"></span></button>
       <span id="stripNote"></span>
       <span class="spring"></span>
+      <button id="mergeHdr" class="btn ghost" type="button" disabled title="Select two or more raw photos of one bracket">Merge HDR</button>
       <button id="copyEdits" class="btn ghost" type="button" title="Copy this photo's edits (Ctrl+Shift+C)">Copy edits</button>
       <button id="pasteEdits" class="btn ghost" type="button" disabled title="Paste the copied edits onto the selected photos (Ctrl+Shift+V); Ctrl-click or Shift-click photos to select them">Paste</button>
     </div>
@@ -697,6 +702,7 @@
   <script src="settings.js"></script>
   <script src="history.js"></script>
   <script src="shortcuts.js"></script>
+  <script src="hdrmerge.js"></script>
   <script src="source.js"></script>
   <script src="photos.js"></script>
   <script src="thumbs.js"></script>

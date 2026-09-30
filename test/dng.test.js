@@ -147,3 +147,39 @@ test('it reads Make and CalibrationIlluminant1 for the DNG export', () => {
     assert.ok(Number.isInteger(d.calibrationIlluminant1) && d.calibrationIlluminant1 > 0, f);
   }
 });
+
+// A minimal uncompressed 4x4 CFA TIFF with no Exif IFD (so no exposure).
+function buildMinimalCfaTiff() {
+  const entries = [
+    [256, 3, 1, 4], [257, 3, 1, 4], [258, 3, 1, 16], [259, 3, 1, 1], [262, 3, 1, 32803],
+    [273, 4, 1, 0 /* patched */], [277, 3, 1, 1], [279, 4, 1, 32], [33422, 1, 4, 0x02010100],
+  ];
+  const ifdSize = 2 + entries.length * 12 + 4;
+  const planeOffset = 8 + ifdSize;
+  const buf = new Uint8Array(planeOffset + 32);
+  const dv = new DataView(buf.buffer);
+  buf[0] = 0x49; buf[1] = 0x49; dv.setUint16(2, 42, true); dv.setUint32(4, 8, true);
+  dv.setUint16(8, entries.length, true);
+  entries.forEach(([tag, type, count, value], i) => {
+    const e = 10 + i * 12;
+    dv.setUint16(e, tag, true); dv.setUint16(e + 2, type, true); dv.setUint32(e + 4, count, true);
+    if (tag === 273) value = planeOffset;
+    if (type === 3) dv.setUint16(e + 8, value, true); else dv.setUint32(e + 8, value, true);
+  });
+  return buf;
+}
+
+test('it reads exposure time and ISO from the Exif IFD', () => {
+  const a = Dng.parse(load('IMG_20240825_174907_00_020.dng'));
+  assert.ok(Math.abs(1 / a.exposureTime - 217) < 1, String(1 / a.exposureTime));
+  assert.strictEqual(a.iso, 100);
+  const b = Dng.parse(new Uint8Array(fs.readFileSync(path.join(DIR, 'Noise test files', 'IMG_20240825_174907_00_019.dng'))));
+  assert.ok(Math.abs(1 / b.exposureTime - 867) < 2, String(1 / b.exposureTime));
+});
+
+test('a DNG without an Exif IFD gives null exposure and ISO', () => {
+  const d = Dng.parse(buildMinimalCfaTiff());
+  assert.ok(d, Dng.lastRejectionReason());
+  assert.strictEqual(d.exposureTime, null);
+  assert.strictEqual(d.iso, null);
+});

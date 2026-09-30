@@ -84,15 +84,14 @@
     return (arrangement === 'stacked' || arrangement === 'side') ? arrangement : null;
   }
 
-  // Decodes an uncompressed DNG into a descriptor carrying one Uint16Array
-  // Bayer plane per lens (`planes`), not yet uploaded to the GPU.
-  async function decodeDng(file, buf, maxTextureSize) {
-    const bytes = new Uint8Array(buf);
+  // One DNG's parse, lens layout and Bayer planes (Uint16Array, one per
+  // lens): what decodeDng and decodeMerged are built from.
+  function dngFrame(bytes, maxTextureSize) {
     const d = Dng.parse(bytes);
     if (!d) throw formattedError(Dng.lastRejectionReason());
     const layout = Lens.detectLayout(d.width, d.height);
     if (layout.kind === 'unsupported') throw formattedError(UNSUPPORTED_MSG);
-    if (layout.lensSize > maxTextureSize) {
+    if (maxTextureSize && layout.lensSize > maxTextureSize) {
       throw formattedError(
         'This GPU caps textures at ' + maxTextureSize + ' px; this raw file\'s ' +
         layout.lensSize + 'px lenses cannot be downscaled without corrupting the sensor ' +
@@ -107,6 +106,13 @@
       }
       planes.push(plane);
     }
+    return { d, layout, planes };
+  }
+
+  // The descriptor of a raw photo: frame `f` (dngFrame), with `planes` in
+  // place of its own when given (a merge).
+  function rawDescriptor(f, name, planes, metaExtra) {
+    const { d, layout } = f;
     const calibration = Lens.calibrationFor(d.model, layout.arrangement);
     const colorMatrix1 = d.colorMatrix1;
     // Task 17: the per-lens control is Kelvin/tint, not a raw neutral
@@ -123,16 +129,16 @@
       lensSize: layout.lensSize,
       uploadedLensSize: layout.lensSize,
       overLimit: false,
-      planes,
+      planes: planes || f.planes,
       isRaw: true,
-      rawMeta: {
+      rawMeta: Object.assign({
         cfaPattern: d.cfaPattern, blackLevel: d.blackLevel,
         whiteLevel: d.whiteLevel, camToSrgb: d.camToSrgb,
         colorMatrix1,
         // For the DNG export's tags.
         make: d.make, model: d.model, dateTime: d.dateTimeOriginal,
         calibrationIlluminant1: d.calibrationIlluminant1,
-      },
+      }, metaExtra || {}),
       // Magnitude and sign (GL.circleDraw applies -90 to physical A, +90 to
       // physical B) verified in the browser against all three supplied raw
       // files -- see app.js's previous inline comment (now here) and the
@@ -144,10 +150,50 @@
       calibration,
       calibrationGuessedFromShape: !calibration.model && layout.arrangement === 'stacked',
       thetaMaxDeg: calibration.thetaMaxDeg,
-      sourceName: file.name,
+      sourceName: name,
       sourceExif: Exif.buildApp1({ make: '', model: d.model, dateTimeOriginal: d.dateTimeOriginal }),
       orientationDefault: defaultOrientationFor(layout.arrangement),
     };
+  }
+
+  // Decodes an uncompressed DNG into a descriptor carrying one Uint16Array
+  // Bayer plane per lens (`planes`), not yet uploaded to the GPU.
+  async function decodeDng(file, buf, maxTextureSize) {
+    return rawDescriptor(dngFrame(new Uint8Array(buf), maxTextureSize), file.name);
+  }
+
+  // Merges a bracket set of DNGs (hdrmerge.js) into one raw descriptor:
+  // float planes in the reference (median) exposure's units -- black 0,
+  // white 1, up to rawMeta.hdrMax -- with the reference frame's colour,
+  // white balance, camera and date. Files are read one at a time and each
+  // frame's planes dropped once merged; onProgress(done, total) after each
+  // lens, with a yield so the page stays responsive.
+  async function decodeMerged(files, maxTextureSize, onProgress) {
+    const frames = [];
+    for (const file of files) {
+      frames.push(dngFrame(new Uint8Array(await file.arrayBuffer()), maxTextureSize));
+    }
+    const check = HdrMerge.canMerge(frames.map((f) => Object.assign({}, f.d)));
+    if (!check.ok) throw formattedError(check.reason);
+    const ref = HdrMerge.referenceIndex(frames.map((f) => f.d.exposureTime));
+    const size = frames[ref].layout.lensSize, lenses = frames[ref].layout.lenses.length;
+    const planes = [];
+    let hdrMax = 1;
+    for (let lens = 0; lens < lenses; lens++) {
+      const m = HdrMerge.mergePlanes(frames.map((f) => ({
+        plane: f.planes[lens], t: f.d.exposureTime, black: f.d.blackLevel, white: f.d.whiteLevel,
+      })), size, size);
+      planes.push(m.plane);
+      hdrMax = m.hdrMax;
+      for (const f of frames) f.planes[lens] = null;
+      if (onProgress) onProgress(lens + 1, lenses);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    const stem = files[0].name.replace(/\.[^.]+$/, '');
+    return rawDescriptor(frames[ref], stem + '_HDR.dng', planes, {
+      blackLevel: 0, whiteLevel: 1, floatPlanes: true, hdrMax,
+      exposureTime: frames[ref].d.exposureTime, members: files.length,
+    });
   }
 
   // Decodes an .insp/.jpg into a descriptor carrying one ImageBitmap per
@@ -210,7 +256,7 @@
   }
 
   return {
-    decode, decodeDng, decodeJpeg, probeSize, extractBayerPlane,
+    decode, decodeDng, decodeMerged, dngFrame, decodeJpeg, probeSize, extractBayerPlane,
     defaultOrientationFor, HEAD_PROBE_BYTES, UNSUPPORTED_MSG,
   };
 });

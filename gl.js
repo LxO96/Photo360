@@ -136,6 +136,13 @@
   // reasoning as GL.circleDraw for texture/roll. `physicalLens` must be the
   // *physical* lens ('A'/'B'), not the output slot label -- see circleDraw's
   // own comment for why that distinction matters under `swap`.
+  // The photo's brightest value in units of white: a merged HDR photo's
+  // hdrMax (hdrmerge.js), 1 for everything else. The raw path clamps to it
+  // and the tone shoulder rolls it off (edge.js applyTone).
+  function rawMaxOf(state) {
+    return (state.rawMeta && state.rawMeta.hdrMax > 1) ? state.rawMeta.hdrMax : 1;
+  }
+
   function setRawUniforms(gl, program, ctx, texIndex, state, physicalLens) {
     const meta = state.rawMeta;
     const size = ctx.textureSize[texIndex];
@@ -145,6 +152,7 @@
     gl.uniform4i(u('uCfaPattern'), meta.cfaPattern[0], meta.cfaPattern[1], meta.cfaPattern[2], meta.cfaPattern[3]);
     gl.uniform1f(u('uBlackLevel'), meta.blackLevel);
     gl.uniform1f(u('uWhiteLevel'), meta.whiteLevel);
+    gl.uniform1f(u('uRawMax'), rawMaxOf(state));
     gl.uniform3f(u('uWhiteBalance'), wb[0], wb[1], wb[2]);
     // uCamToSrgb is row-major (dng.js); WebGL2 allows `transpose: true` on
     // uniformMatrix3fv (unlike WebGL1), so it can be uploaded as-is instead
@@ -175,7 +183,7 @@
     const bins = Edge.PROFILE_BINS;
     ensureProfileTargets(ctx, bins);
     const [a, b] = ctx.profileTargets;
-    const profileProgram = state.isRaw ? ctx.profileBuildRaw : ctx.profileBuild;
+    const profileProgram = state.isRaw ? rawProgram(ctx, state, 'profileBuildRaw') : ctx.profileBuild;
 
     gl.bindVertexArray(ctx.vao);
     gl.disable(gl.BLEND);
@@ -275,6 +283,22 @@
   // of the image) -- see shaders.js's sampleRawLensAt for why the vertical
   // flip the JPEG path needs is handled in the sampling math instead of
   // here.
+  // Float raw planes (a merged HDR photo, hdrmerge.js) read through the
+  // float variants of the raw programs (shaders.js *_F_FS), compiled the
+  // first time one is needed.
+  const FLOAT_RAW_SOURCES = {
+    compositeRaw: 'COMPOSITE_RAW_F_FS', compositeRawDev: 'COMPOSITE_RAW_DEV_F_FS',
+    devInputRaw: 'DEV_INPUT_RAW_F_FS', tbDownRaw: 'TB_DOWN_RAW_F_FS', profileBuildRaw: 'PROFILE_BUILD_RAW_F_FS',
+  };
+  function rawProgram(ctx, state, name) {
+    if (!(state.rawMeta && state.rawMeta.floatPlanes)) return ctx[name];
+    const key = name + 'Float';
+    if (!ctx[key]) ctx[key] = program(ctx.gl, Shaders.FULLSCREEN_VS, Shaders[FLOAT_RAW_SOURCES[name]]);
+    return ctx[key];
+  }
+
+  // A Uint16Array plane (a DNG as stored) is R16UI; a Float32Array one (a
+  // merged HDR photo: black 0, white 1, values up to hdrMax) is R32F.
   function makeBayerTexture(gl, plane, width, height) {
     const t = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, t);
@@ -282,7 +306,11 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16UI, width, height, 0, gl.RED_INTEGER, gl.UNSIGNED_SHORT, plane);
+    if (plane instanceof Float32Array) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, plane);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16UI, width, height, 0, gl.RED_INTEGER, gl.UNSIGNED_SHORT, plane);
+    }
     return { tex: t, size: { width, height } };
   }
 
@@ -509,7 +537,7 @@
   function devInput(ctx, state, texIndex, target, region) {
     const gl = ctx.gl;
     const raw = !!state.isRaw;
-    const input = raw ? ctx.devInputRaw : ctx.devInputRgb;
+    const input = raw ? rawProgram(ctx, state, 'devInputRaw') : ctx.devInputRgb;
     gl.bindVertexArray(ctx.vao);
     gl.disable(gl.BLEND);
     devPass(ctx, input, target, region, (u) => {
@@ -859,7 +887,7 @@
     const reg = { w: low.w, h: low.h };
     gl.bindVertexArray(ctx.vao);
     gl.disable(gl.BLEND);
-    const down = state.isRaw ? ctx.tbDownRaw : ctx.tbDown;
+    const down = state.isRaw ? rawProgram(ctx, state, 'tbDownRaw') : ctx.tbDown;
     devPass(ctx, down, S0, reg, (u) => {
       bindTex(gl, 0, ctx.textures[texIndex]);
       gl.uniform1i(u('uLens'), 0);
@@ -921,7 +949,8 @@
       return !ctx.textures[ti] || developed[ti];
     }) && !!(developed[0] || developed[1]);
     const compositeProgram = state.isRaw
-      ? (state.dngOutput ? ctx.compositeDng : (anyDeveloped ? ctx.compositeRawDev : ctx.compositeRaw))
+      ? (state.dngOutput ? ctx.compositeDng
+        : rawProgram(ctx, state, anyDeveloped ? 'compositeRawDev' : 'compositeRaw'))
       : ctx.composite;
     gl.bindFramebuffer(gl.FRAMEBUFFER, targetFbo || null);
     gl.bindVertexArray(ctx.vao);
@@ -1007,6 +1036,7 @@
       gl.uniform1f(u('uTerminatorDesaturate'), state.edge.terminatorDesaturate);
       gl.uniform1f(u('uTerminatorCoolShift'), state.edge.terminatorCoolShift);
       gl.uniform3f(u('uTone'), state.tone.exposureEv, state.tone.contrast, state.tone.saturation);
+      gl.uniform1f(u('uRawMax'), rawMaxOf(state));
       gl.uniform1f(u('uMono'), state.tone.mono ? 1 : 0);
       gl.uniform4f(u('uToneCurve'), state.tone.highlights || 0, state.tone.shadows || 0,
         state.tone.whites || 0, state.tone.blacks || 0);

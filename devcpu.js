@@ -23,7 +23,7 @@
   function rawSub(plane, w, h, region) {
     const px = Math.max(0, region.x - 2), py = Math.max(0, region.y - 2);
     const pw = Math.min(w, region.x + region.w + 2) - px, ph = Math.min(h, region.y + region.h + 2) - py;
-    const sub = new Uint16Array(pw * ph);
+    const sub = new plane.constructor(pw * ph);   // Uint16Array, or Float32Array (a merged HDR photo)
     for (let y = 0; y < ph; y++) sub.set(plane.subarray((py + y) * w + px, (py + y) * w + px + pw), y * pw);
     return { plane: sub, pw, ph, px, py };
   }

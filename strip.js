@@ -13,6 +13,7 @@
       if (!t) return;
       const id = Number(t.dataset.id);
       if (e.target.closest('.rm')) { handlers.remove(id); return; }
+      if (e.target.closest('.hdr.set')) { handlers.selectSet(id); return; }
       if (e.shiftKey) handlers.select(id, 'range');
       else if (e.ctrlKey || e.metaKey) handlers.select(id, 'toggle');
       else handlers.open(id);
@@ -35,8 +36,20 @@
           n.setAttribute('role', 'option');
           n.innerHTML = '<span class="name"></span><button class="rm" type="button" aria-label="Remove from the strip">&times;</button>';
         }
-        n.title = e.error ? e.file.name + ' — ' + e.error : e.file.name;
-        n.querySelector('.name').textContent = e.file.name;
+        const name = Photos.nameOf(e);
+        n.title = e.error ? name + ' — ' + e.error : name;
+        n.querySelector('.name').textContent = name;
+        // HDR: a member of a bracket set (click: select the set), or a
+        // merged photo.
+        const hdrText = e.members ? 'HDR' : e.set ? 'HDR ' + e.set.length : '';
+        let hdr = n.querySelector('.hdr');
+        if (hdrText && !hdr) { hdr = document.createElement('span'); hdr.className = 'hdr'; n.appendChild(hdr); }
+        if (hdr && !hdrText) hdr.remove();
+        if (hdrText) {
+          hdr.textContent = hdrText;
+          hdr.classList.toggle('set', !!e.set);
+          hdr.title = e.set ? 'One of ' + e.set.length + ' bracketed exposures: click to select them all' : 'Merged HDR photo';
+        }
         const bg = e.thumb ? 'url("' + e.thumb + '")' : '';
         if (n.style.backgroundImage !== bg) n.style.backgroundImage = bg;
         n.classList.toggle('current', e.id === list.currentId);

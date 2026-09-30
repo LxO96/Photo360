@@ -261,6 +261,9 @@
   // before the terminator); this is the JS reference TONE_GLSL mirrors.
   // In order:
   //   1. Exposure: a gain on the display values (2^EV), as before.
+  //   1b. For a photo brighter than white (rawMax > 1, a merged HDR photo):
+  //      the highlight shoulder (shoulder()), on lightness and on the local
+  //      base, before everything below -- also with every slider at 0.
   //   2. The luminance curve (Highlights / Shadows, then Whites / Blacks)
   //      and Contrast, on lightness l = sRGB-encoded luminance (so a grey's
   //      l is its display value). Highlights and Shadows act on the
@@ -422,20 +425,36 @@
 
   // rgb: display-encoded; coef: [A, B] of the local base (tonebase.js) or
   // absent for the global curve.
-  function applyTone(rgb, tone, coef) {
+  // Brighter than white (a merged HDR photo, rawMax > 1): lightness above
+  // SHOULDER_KNEE is compressed so the headroom H -- the lightness a fully
+  // clipped white reaches after Exposure -- lands exactly on 1. Slope 1 at
+  // the knee, monotone; the identity when H <= 1, so ordinary files never
+  // see it.
+  const SHOULDER_KNEE = 0.75;
+  function shoulder(l, H) {
+    const K = SHOULDER_KNEE;
+    if (H <= 1 || l <= K) return l;
+    const x = (l - K) / (1 - K), X = (H - K) / (1 - K);
+    return K + (1 - K) * x * (1 + x / (X * X)) / (1 + x);
+  }
+
+  // `rawMax`: the photo's brightest value in units of white (hdrMax of a
+  // merged photo; 1, the default, for everything else).
+  function applyTone(rgb, tone, coef, rawMax) {
     const curve = curveNonzero(tone);
-    if (tone.exposureEv === 0 && tone.contrast === 0 && tone.saturation === 0 && !curve) {
+    const g = Math.pow(2, tone.exposureEv);
+    const H = rawMax > 1 ? srgbEncode(rawMax) * g : 1;
+    if (H <= 1 && tone.exposureEv === 0 && tone.contrast === 0 && tone.saturation === 0 && !curve) {
       return rgb.slice ? rgb.slice() : [rgb[0], rgb[1], rgb[2]];
     }
-    const g = Math.pow(2, tone.exposureEv);
     let lin = [srgbDecode(rgb[0] * g), srgbDecode(rgb[1] * g), srgbDecode(rgb[2] * g)];
     const Y = lumaOf(lin);
     const l = srgbEncode(Y);
-    let l2 = l;
+    let l2 = shoulder(l, H);
     if (curve) {
-      const base = clamp01(coef ? coef[0] * l + g * coef[1] : l);
+      const base = clamp01(shoulder(coef ? coef[0] * l + g * coef[1] : l, H));
       const hb = hsCurve(base, tone);
-      l2 = hb + (l - base) * Math.max(1 + DETAIL_GAIN * Math.abs(hb - base), hsSlope(base, tone));
+      l2 = hb + (l2 - base) * Math.max(1 + DETAIL_GAIN * Math.abs(hb - base), hsSlope(base, tone));
       const t = clamp01(l2);
       l2 = l2 + (levels(t, tone) - t);
     }
@@ -456,7 +475,7 @@
   return {
     DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight,
     PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS,
-    applyTone, toneCurve, toneBump, hsCurve, hsSlope, levels, contrastCurve, lightness, srgbDecode, srgbEncode,
+    applyTone, shoulder, SHOULDER_KNEE, toneCurve, toneBump, hsCurve, hsSlope, levels, contrastCurve, lightness, srgbDecode, srgbEncode,
     toOklab, fromOklab, maxChroma, saturate, gamutMap, mono,
   };
 });

@@ -106,3 +106,39 @@ test('Source.UNSUPPORTED_MSG matches the message decodeDng throws for an unsuppo
   // exported constant's text so app.js's error copy and this module agree.
   assert.match(Source.UNSUPPORTED_MSG, /2:1 or 1:2 dual fisheye/);
 });
+
+// -- HDR: merging a bracket set (hdrmerge.js) ------------------------------
+test('decodeMerged merges the 174907 bracket pair into float planes', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  global.Wb = global.Wb || require('../wb.js');
+  global.HdrMerge = global.HdrMerge || require('../hdrmerge.js');
+  const DIR = path.join(__dirname, '..', 'Testfiles');
+  const fileOf = (p) => ({ name: path.basename(p), arrayBuffer: async () => {
+    const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); } });
+  const shortP = path.join(DIR, 'Noise test files', 'IMG_20240825_174907_00_019.dng');
+  const refP = path.join(DIR, 'IMG_20240825_174907_00_020.dng');
+  const d = await Source.decodeMerged([fileOf(shortP), fileOf(refP)], 16384);
+  assert.strictEqual(d.kind, 'dng');
+  assert.ok(d.planes[0] instanceof Float32Array);
+  assert.ok(d.rawMeta.floatPlanes);
+  assert.strictEqual(d.rawMeta.blackLevel, 0);
+  assert.strictEqual(d.rawMeta.whiteLevel, 1);
+  const ref = Source.dngFrame(new Uint8Array(fs.readFileSync(refP)));
+  const sh = Source.dngFrame(new Uint8Array(fs.readFileSync(shortP)));
+  const ratio = ref.d.exposureTime / sh.d.exposureTime;
+  assert.ok(Math.abs(d.rawMeta.hdrMax - ratio) < 1e-9, String(d.rawMeta.hdrMax));
+  assert.strictEqual(d.sourceName, 'IMG_20240825_174907_00_019_HDR.dng');
+  // Where _020 (the reference) is clipped, the merge holds _019 x the ratio.
+  let checked = 0;
+  for (let i = 0; i < ref.planes[0].length && checked < 2000; i += 97) {
+    const nRef = (ref.planes[0][i] - ref.d.blackLevel) / (ref.d.whiteLevel - ref.d.blackLevel);
+    if (nRef < 0.99) continue;
+    const nSh = (sh.planes[0][i] - sh.d.blackLevel) / (sh.d.whiteLevel - sh.d.blackLevel);
+    if (nSh > 0.75 || nSh < 0.3) continue;
+    const want = nSh * ratio;
+    assert.ok(Math.abs(d.planes[0][i] - want) <= 0.03 * want, i + ': ' + d.planes[0][i] + ' vs ' + want);
+    checked++;
+  }
+  assert.ok(checked > 50, 'clipped samples checked: ' + checked);
+});

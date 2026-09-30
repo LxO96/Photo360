@@ -22,6 +22,8 @@
   const PASTE_SKIP = [];
 
   const keyOf = (file) => file.name + '|' + file.size + '|' + file.lastModified;
+  // A photo's name: its file's, or its own (a merged HDR photo has no file).
+  const nameOf = (entry) => entry.name || (entry.file ? entry.file.name : '');
   const clone = (v) => JSON.parse(JSON.stringify(v));
 
   function pasteable(edits) {
@@ -90,6 +92,18 @@
       }
       return { added, skipped };
     };
+    // A photo with no file of its own (a merged HDR photo: `fields` carry
+    // its key, name and members), placed after `afterId`; the one already
+    // there if its key is.
+    list.insertAfter = (afterId, fields) => {
+      const have = list.entries.find((e) => e.key === fields.key);
+      if (have) return have;
+      const entry = Object.assign({ id: nextId++, file: null, key: '', thumb: null, rendered: false,
+        edits: null, history: null, edited: false, error: null }, fields);
+      const i = list.indexOf(afterId);
+      list.entries.splice(i < 0 ? list.entries.length : i + 1, 0, entry);
+      return entry;
+    };
     list.neighbour = (id, dir) => list.entries[list.indexOf(id) + dir] || null;
     list.remove = (id) => {
       const i = list.indexOf(id);
@@ -115,5 +129,5 @@
     return list;
   }
 
-  return { INDEX_KEY, RECORD_PREFIX, CAP, SUPPORTED, PASTE_SKIP, keyOf, pasteable, createStore, createList };
+  return { INDEX_KEY, RECORD_PREFIX, CAP, SUPPORTED, PASTE_SKIP, keyOf, nameOf, pasteable, createStore, createList };
 });

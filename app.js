@@ -452,10 +452,18 @@
     clearMessages();
     let builtTextures = null;
     try {
-      const buf = await file.arrayBuffer();
+      // A merged HDR photo ({ members, name }, openPhoto) is merged from
+      // its bracket's files (Source.decodeMerged); anything else is a file.
+      const merged = !!file.members;
+      const buf = merged ? null : await file.arrayBuffer();
       if (my !== loadSeq) return false;
       ensureCtx();
-      const descriptor = await Source.decode(file, buf, ctx.maxTextureSize);
+      const descriptor = merged
+        ? await Source.decodeMerged(file.members, ctx.maxTextureSize, (i, n) => {
+          if (my === loadSeq) stripNote('Merging ' + file.members.length + ' exposures… ' + Math.round(100 * i / n) + '%');
+        })
+        : await Source.decode(file, buf, ctx.maxTextureSize);
+      if (merged) stripNote('');
       if (my !== loadSeq) {
         if (descriptor.bitmaps) for (const b of descriptor.bitmaps) b.close();
         return false;
@@ -1759,7 +1767,12 @@
     const w = Math.max(1, Math.round(g.width * k)), h = Math.max(1, Math.round(g.height * k));
     const gl = ctx.gl;
     const saved = state.tone;
-    state.tone = { ...DEFAULTS.tone };
+    // A merged HDR photo is rendered darker by its headroom (so nothing
+    // clips in the 8-bit frame, and the shoulder is off), and AutoTone
+    // reads it back in its real range.
+    const hdrMax = state.rawMeta && state.rawMeta.hdrMax > 1 ? state.rawMeta.hdrMax : 1;
+    const scale = hdrMax > 1 ? Edge.srgbEncode(hdrMax) : 1;
+    state.tone = { ...DEFAULTS.tone, exposureEv: -Math.log2(scale) };
     const px = new Uint8Array(w * h * 4);
     const target = GL.makeExportTarget(gl, w, h);
     try {
@@ -1774,7 +1787,7 @@
       cx: c.cx, cy: c.cy, radius: c.radius * photo,
     })));
     const hist = Scopes.histogram(px, w, h, { bins: 256, mode: 'luma', include });
-    const t = AutoTone.solve(hist.channels[0]);
+    const t = AutoTone.solve(hist.channels[0], { rawMax: hdrMax, scale });
     if (!t) return;
     state.tone = Object.assign({}, state.tone, t);
     syncControlsFromState();
@@ -2328,13 +2341,22 @@
 
   // DNG is only offered for raw sources; loading a JPEG/.insp while it is
   // selected falls back to JPEG.
+  // A merged HDR photo can't be written as DNG yet (the 16-bit writer
+  // would clip it): it exports as JPEG while DNG stays the chosen format
+  // for the raw photos.
+  const isMergedHdr = () => !!(state.rawMeta && state.rawMeta.floatPlanes);
+  function effectiveFormat() {
+    return state.format === 'dng' && isMergedHdr() ? 'jpeg' : state.format;
+  }
   function updateExportLabel() {
     const dngOpt = formatEl.querySelector('option[value="dng"]');
-    dngOpt.disabled = !state.isRaw;
+    dngOpt.disabled = !state.isRaw || isMergedHdr();
+    dngOpt.title = isMergedHdr() ? 'DNG of a merged HDR photo comes with HDR export' : '';
     if (state.format === 'dng' && !state.isRaw) state.format = 'jpeg';
-    formatEl.value = state.format;
-    exportBtn.textContent = { png: 'Export PNG', dng: 'Export DNG' }[state.format] || 'Export JPEG';
-    qualityEl.disabled = state.format !== 'jpeg';
+    const fmt = effectiveFormat();
+    formatEl.value = fmt;
+    exportBtn.textContent = { png: 'Export PNG', dng: 'Export DNG' }[fmt] || 'Export JPEG';
+    qualityEl.disabled = fmt !== 'jpeg';
   }
 
   formatEl.addEventListener('input', () => {
@@ -2547,9 +2569,9 @@
       for (let i = 0; i < targets.length && !exportRun.cancel; i++) {
         stripNote('Exporting ' + (i + 1) + ' of ' + targets.length + ' — Esc to stop');
         const ok = (await openPhoto(targets[i], true)) &&
-          (await exportImage(Object.assign({}, opts, { format: opts.format === 'dng' && !state.isRaw ? 'jpeg' : opts.format })));
+          (await exportImage(Object.assign({}, opts, { format: opts.format === 'dng' && (!state.isRaw || isMergedHdr()) ? 'jpeg' : opts.format })));
         if (ok) done++;
-        else failed.push(targets[i].file.name + (errorEl.textContent ? ' (' + errorEl.textContent + ')' : ''));
+        else failed.push(Photos.nameOf(targets[i]) + (errorEl.textContent ? ' (' + errorEl.textContent + ')' : ''));
       }
     } finally {
       const stopped = exportRun.cancel;
@@ -2569,7 +2591,7 @@
   exportBtn.addEventListener('click', () => {
     if (!ctx || !state.sourceLensSize) return;
     if (photos.selected().length > 1) { exportSelected(); return; }
-    exportImage({ format: state.format, quality: state.quality, padToSensorSquare: state.padToSensorSquare });
+    exportImage({ format: effectiveFormat(), quality: state.quality, padToSensorSquare: state.padToSensorSquare });
   });
 
   // Print: the same full-resolution render as Export (same geometry and
@@ -2692,10 +2714,16 @@
     open: (id) => { const e = photos.byId(id); if (e) openPhoto(e); },
     select: (id, mode) => { photos.select(id, mode); drawStrip(); },
     remove: (id) => removePhoto(id),
+    selectSet: (id) => selectSet(id),
     toggle: () => { state.stripShown = !state.stripShown; saveSettings(); drawStrip(); },
   });
   function drawStrip(scroll) {
     strip.render(photos, { shown: state.stripShown, loadingId, scroll });
+    // Merge HDR: the selected raw photos, when they can merge.
+    const sel = photos.selected().filter((e) => e.dng && !e.members);
+    const can = HdrMerge.canMerge(sel.map((e) => e.dng));
+    mergeHdrBtn.disabled = !can.ok || !!exportRun;
+    mergeHdrBtn.title = can.ok ? 'Merge the ' + sel.length + ' selected exposures into one HDR photo' : can.reason;
     // Several selected: Export writes each of them (exportSelected).
     updateExportLabel();
     const n = photos.selected().length;
@@ -2743,7 +2771,15 @@
     loadingId = entry.id;
     drawStrip();
     const edits = entry.edits || photoStore.load(entry.key);
-    const ok = await loadFile(entry.file, { edits, history: entry.history, beforeCommit: leavePhoto });
+    const source = entry.members ? { members: entry.members.map((m) => m.file), name: entry.name } : entry.file;
+    const ok = await loadFile(source, { edits, history: entry.history, beforeCommit: leavePhoto });
+    // A merged photo opened for the first time starts from Auto tone, so
+    // the highlights it recovered show at once.
+    if (ok && entry.members && !edits) {
+      restoring = true;
+      try { autoTone(); } finally { restoring = false; }
+      resetHistory();
+    }
     if (ok) {
       photos.currentId = entry.id;
       photos.select(entry.id, 'only');
@@ -2880,6 +2916,7 @@
     if (wasCurrent) leavePhoto();
     const next = photos.remove(id);
     if (e.thumb) URL.revokeObjectURL(e.thumb);
+    if (e.dng) updateSets();
     if (wasCurrent) {
       photos.currentId = null;
       if (next) await openPhoto(next);
@@ -2908,6 +2945,12 @@
   function queueThumbs(entries) {
     for (const e of entries) {
       thumbQueue = thumbQueue.then(async () => {
+        if (!e.file || !photos.byId(e.id)) return;
+        // A DNG's header: exposure and capture time, for bracket sets.
+        if (/\.dng$/i.test(e.file.name) && e.dng === undefined) {
+          e.dng = await Thumbs.dngHeader(e.file);
+          updateSets();
+        }
         if (e.thumb || !photos.byId(e.id)) return;
         try {
           const blob = await Thumbs.quick(e.file);
@@ -2918,6 +2961,38 @@
       });
     }
   }
+
+  // -- HDR: bracket sets and merging (hdrmerge.js) --
+  const mergeHdrBtn = document.getElementById('mergeHdr');
+  function updateSets() {
+    const sets = HdrMerge.detectSets(photos.entries.filter((e) => e.dng && !e.members)
+      .map((e) => ({ id: e.id, meta: e.dng })));
+    for (const e of photos.entries) e.set = null;
+    for (const s of sets) for (const id of s) photos.byId(id).set = s;
+    drawStrip();
+  }
+  function selectSet(id) {
+    const e = photos.byId(id);
+    if (!e || !e.set) return;
+    const have = new Set(photos.selected().map((x) => x.id));
+    for (const x of e.set) if (!have.has(x)) photos.select(x, 'toggle');
+    drawStrip();
+  }
+  // The selected exposures merged into a new photo after the last of them
+  // (or the one already made from them), opened.
+  function mergeSelected() {
+    if (exportRun) return Promise.resolve(false);
+    const sel = photos.selected().filter((e) => e.dng && !e.members)
+      .sort((a, b) => photos.indexOf(a.id) - photos.indexOf(b.id));
+    if (!HdrMerge.canMerge(sel.map((e) => e.dng)).ok) return Promise.resolve(false);
+    const key = HdrMerge.mergeKey(sel.map((e) => e.key));
+    const stem = Photos.nameOf(sel[0]).replace(/\.[^.]+$/, '');
+    const entry = photos.insertAfter(sel[sel.length - 1].id, { key, name: stem + '_HDR', members: sel });
+    entry.edited = photoStore.has(key);
+    drawStrip();
+    return openPhoto(entry);
+  }
+  mergeHdrBtn.addEventListener('click', () => mergeSelected());
 
   function stepPhoto(dir) {
     const from = targetPhoto();
@@ -3272,6 +3347,12 @@
     const u = (n) => gl.getUniformLocation(prog, n);
     const out = new Float32Array(256 * 4);
     let maxDiff = 0, worst = null;
+    // rawMax 4 and 16: a merged HDR photo (the shoulder), inputs up to its
+    // brightest value.
+    for (const rawMax of [1, 4, 16]) {
+    const scale = rawMax > 1 ? Edge.srgbEncode(rawMax) : 1;
+    gl.uniform1f(u('uRawMax'), rawMax);
+    gl.uniform1f(u('uInputScale'), scale);
     for (const local of [false, true]) {
       for (const t of TONE_PARITY_CASES) {
         gl.uniform3f(u('uTone'), t.exposureEv, t.contrast, t.saturation);
@@ -3280,13 +3361,15 @@
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         gl.readPixels(0, 0, 256, 1, gl.RGBA, gl.FLOAT, out);
         for (let x = 0; x < 256; x++) {
-          const want = Edge.applyTone(toneParityInput(x), t, local ? toneParityCoef(x) : undefined);
+          const want = Edge.applyTone(toneParityInput(x).map((v) => v * scale), t,
+            local ? toneParityCoef(x) : undefined, rawMax);
           for (let c = 0; c < 3; c++) {
             const d = Math.abs(out[x * 4 + c] - want[c]);
-            if (d > maxDiff) { maxDiff = d; worst = { tone: t, local, x, c, gpu: out[x * 4 + c], js: want[c] }; }
+            if (d > maxDiff) { maxDiff = d; worst = { tone: t, rawMax, local, x, c, gpu: out[x * 4 + c], js: want[c] }; }
           }
         }
       }
+    }
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.deleteFramebuffer(fbo); gl.deleteTexture(tex); gl.deleteProgram(prog);
@@ -3356,6 +3439,54 @@
     return { maxDiff, cases: DETAIL_PARITY_CASES.length, worst };
   }
 
+  // Float raw parity (a merged HDR photo's input path): with a DNG open,
+  // renders the composition from its 16-bit planes and again from float
+  // copies ((v - black) / (white - black), black 0, white 1), Detail off,
+  // and compares. Leaves everything as it was.
+  function checkFloatRawParity() {
+    if (!ctx || !state.isRaw || state.rawMeta.floatPlanes) return null;
+    const gl = ctx.gl;
+    const g = GL.exportGeometry(state);
+    const k = Math.min(1, 512 / Math.max(g.width, g.height));
+    const w = Math.max(1, Math.round(g.width * k)), h = Math.max(1, Math.round(g.height * k));
+    const shown = Object.assign({}, state, { detail: DEFAULTS.detail });
+    const renderFloat = (st) => {
+      const t = GL.makeFloatExportTarget(gl, w, h, true);
+      const out = new Float32Array(w * h * 4);
+      try {
+        GL.renderComposition(ctx, st, w, h, t.fbo);
+        GL.readCompositionStripsFloat(gl, t.fbo, w, h, h, (rows, y) => out.set(rows, y * w * 4));
+      } finally { GL.deleteExportTarget(gl, t); }
+      return out;
+    };
+    const a = renderFloat(shown);
+    const saved = ctx.textures.slice();
+    const made = [];
+    const meta = state.rawMeta;
+    try {
+      for (let i = 0; i < ctx.textures.length; i++) {
+        const info = ctx.lensInfo[i], size = ctx.textureSize[i];
+        if (!info || !info.plane || !size) continue;
+        const range = meta.whiteLevel - meta.blackLevel;
+        const f = Float32Array.from(info.plane, (v) => (v - meta.blackLevel) / range);
+        const t = GL.makeBayerTexture(gl, f, size.width, size.height);
+        made.push(t.tex);
+        ctx.textures[i] = t.tex;
+      }
+      const b = renderFloat(Object.assign({}, shown, {
+        rawMeta: Object.assign({}, meta, { blackLevel: 0, whiteLevel: 1, floatPlanes: true, hdrMax: 1 }),
+      }));
+      let maxDiff = 0;
+      for (let i = 0; i < a.length; i++) maxDiff = Math.max(maxDiff, Math.abs(a[i] - b[i]));
+      console.log('float raw parity: max abs diff =', maxDiff, maxDiff < 1e-3 ? '(OK, below 1e-3)' : '(FAIL, exceeds 1e-3)');
+      return { maxDiff };
+    } finally {
+      for (let i = 0; i < saved.length; i++) ctx.textures[i] = saved[i];
+      for (const t of made) gl.deleteTexture(t);
+      render();
+    }
+  }
+
   window.App = {
     loadFile, state, render, rollFor: Lens.rollFor, checkParity, checkToneParity, checkDetailParity,
     setZoom, zoomToFit, getZoom: () => (zoom ? Object.assign({}, zoom) : null),
@@ -3376,13 +3507,14 @@
     photos: () => {
       const sel = new Set(photos.selected().map((e) => e.id));
       return photos.entries.map((e) => ({
-        id: e.id, name: e.file.name, edited: e.edited, error: e.error, thumb: !!e.thumb, rendered: e.rendered,
+        id: e.id, name: Photos.nameOf(e), edited: e.edited, error: e.error, thumb: !!e.thumb, rendered: e.rendered,
+        hdr: e.set ? e.set.length : 0, merged: !!e.members,
         current: e.id === photos.currentId, selected: sel.has(e.id),
       }));
     },
     openPhotoAt: (i) => openPhoto(photos.entries[i]),
     selectPhoto: (i, mode) => { photos.select(photos.entries[i].id, mode); drawStrip(); },
     removePhotoAt: (i) => removePhoto(photos.entries[i].id),
-    copyEdits, pasteEdits, exportSelected,
+    copyEdits, pasteEdits, exportSelected, checkFloatRawParity, mergeSelected,
   };
 })();

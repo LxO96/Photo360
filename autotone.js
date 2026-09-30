@@ -71,16 +71,18 @@
     return Array.from(bins, (v, i) => (i > top ? 0 : v));
   }
 
-  function mapLuma(y, t) {
-    const out = Edge.applyTone([y, y, y], t)[0];
+  // Where a grey of lightness y lands with tone t (rawMax: a merged HDR
+  // photo's, so the highlight shoulder is simulated too).
+  function mapLumaR(y, t, rawMax) {
+    const out = Edge.applyTone([y, y, y], t, undefined, rawMax)[0];
     return Math.min(1, Math.max(0, out));
   }
 
   // The value of `key` in [lo, hi] (monotone effect) that maps y closest
   // to target, by bisection. `increasing`: does raising the value raise
   // the output?
-  function solveFor(t, key, y, target, lo, hi, increasing) {
-    const at = (v) => mapLuma(y, Object.assign({}, t, { [key]: v }));
+  function solveForR(t, key, y, target, lo, hi, increasing, rawMax) {
+    const at = (v) => mapLumaR(y, Object.assign({}, t, { [key]: v }), rawMax);
     let a = lo, b = hi;
     for (let i = 0; i < 40; i++) {
       const m = (a + b) / 2;
@@ -90,8 +92,16 @@
     return (a + b) / 2;
   }
 
+  // opts (a merged HDR photo): { rawMax, scale } -- `bins` hold lightness
+  // / scale (scale = srgbEncode(rawMax), so its tone-off frame fits in 8
+  // bits); percentiles are read back in the photo's real range, and its
+  // top bin is not clipping.
   function solve(bins, opts) {
-    const p = (q) => percentile(bins, q);
+    const S = (opts && opts.scale) || 1, R = (opts && opts.rawMax) || 1;
+    const mapLuma = (y, t) => mapLumaR(y, t, R);
+    const solveFor = (t, key, y, target, lo, hi, inc) => solveForR(t, key, y, target, lo, hi, inc, R);
+    const pct = (b, q) => { const v = percentile(b, q); return v === null ? null : v * S; };
+    const p = (q) => pct(bins, q);
     const median = p(0.5);
     if (median === null) return null;
     const t = {
@@ -102,7 +112,7 @@
     // 1. Exposure.
     let ev = Math.log2(MID_TARGET / Math.max(median, 1e-4));
     if (ev < 0) ev *= EV_SHARE_DOWN;
-    if (ev > 0) {
+    if (ev > 0 && R <= 1) {   // (with headroom, the shoulder keeps it from clipping)
       const p99 = p(0.99);
       if (p99 > 0) ev = Math.min(ev, Math.max(0, Math.log2(CLIP_GUARD / p99)));
     }
@@ -117,7 +127,7 @@
     // display-space pipeline a clipped value has none to recover, and
     // pulling it down just turns blown sky grey. The 90th percentile is
     // taken over the unclipped pixels.
-    const p90 = percentile(unclipped(bins), 0.9), p10 = p(0.1);
+    const p90 = pct(S === 1 ? unclipped(bins) : bins, 0.9), p10 = p(0.1);
     const hi = p90 === null ? 0 : mapLuma(p90, t);
     if (hi > HIGH_FROM && hi < CLIPPED) {
       const h = hi > HIGH_TARGET ? solveFor(t, 'highlights', p90, HIGH_TARGET, HIGH_CAP, 0, true) : 0;

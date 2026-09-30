@@ -134,3 +134,36 @@ test('clipped sky is not pulled grey by Highlights, and blacks stay gentle', () 
   assert.ok(t.highlights >= -30, JSON.stringify(t));
   assert.ok(t.blacks >= -45, JSON.stringify(t));
 });
+
+// A merged HDR photo: its histogram is of lightness / scale (so nothing
+// clips in 8 bits), scale = srgbEncode(rawMax).
+test('a merged photo: sky beyond white comes back under 1, mid-tones stay', () => {
+  const scale = Edge.srgbEncode(4);
+  const bins = new Array(256).fill(0);
+  const put = (l, n) => { bins[Math.round(l / scale * 255)] += n; };
+  for (let i = 0; i < 60; i++) put(0.35 + i * 0.004, 10);
+  for (let i = 0; i < 25; i++) put(1.3 + i * 0.008, 10);
+  for (let i = 0; i < 15; i++) put(0.05 + i * 0.01, 10);
+  const t = AutoTone.solve(bins, { rawMax: 4, scale });
+  const T = Object.assign({ saturation: 0 }, t);
+  const sky = Edge.applyTone([1.45, 1.45, 1.45], T, undefined, 4)[0];
+  const mid = Edge.applyTone([0.47, 0.47, 0.47], T, undefined, 4)[0];
+  assert.ok(sky < 0.99, 'sky ' + sky + ' ' + JSON.stringify(t));
+  assert.ok(mid > 0.35 && mid < 0.6, 'mid ' + mid + ' ' + JSON.stringify(t));
+});
+
+test('a dark merged photo is brought up: its bright sky does not hold Exposure back', () => {
+  // Read in 8-bit units the sky would look close to clipping and cap the
+  // exposure; with its headroom the shoulder keeps it from clipping.
+  const scale = Edge.srgbEncode(4);
+  const bins = new Array(256).fill(0);
+  const put = (l, n) => { bins[Math.round(l / scale * 255)] += n; };
+  for (let i = 0; i < 70; i++) put(0.12 + i * 0.002, 10);   // dark mid-tones around 0.19
+  for (let i = 0; i < 30; i++) put(1.3 + i * 0.008, 10);    // sky beyond white
+  const t = AutoTone.solve(bins, { rawMax: 4, scale });
+  const T = Object.assign({ saturation: 0 }, t);
+  const mid = Edge.applyTone([0.19, 0.19, 0.19], T, undefined, 4)[0];
+  const sky = Edge.applyTone([1.5, 1.5, 1.5], T, undefined, 4)[0];
+  assert.ok(mid > 0.36, 'mid ' + mid + ' ' + JSON.stringify(t));
+  assert.ok(sky < 0.995, 'sky ' + sky);
+});

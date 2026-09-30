@@ -158,5 +158,10 @@
     return /\.dng$/i.test(file.name) ? quickDng(file) : quickJpeg(file);
   }
 
-  return { SIZE, exifThumbnail, dngDecimate, quick };
+  // A DNG's header (Dng.parse) without reading its plane, or null.
+  async function dngHeader(file) {
+    try { return await dngMeta(file); } catch (e) { return null; }
+  }
+
+  return { SIZE, exifThumbnail, dngDecimate, quick, dngHeader };
 });

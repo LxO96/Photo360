@@ -73,6 +73,23 @@ it. A dot marks an edited photo; × removes one from the strip.
   and the current Output settings (DNG only for raw photos, JPEG for the
   rest), one download each. Esc stops it.
 
+### HDR (bracket merge)
+
+Raw (DNG) exposure brackets of a still scene — the same camera, second and
+ISO, different shutter speeds — are recognised in the strip and marked
+**HDR n**; click the marker to select the whole set (or Ctrl-select raw
+photos by hand), then **Merge HDR**. The merge becomes a new photo,
+`<first>_HDR`, next to them: each sensor block is taken from the cleanest
+exposure that isn't clipping there (longer exposures count more; a block
+nearing white in one frame comes wholly from a shorter one, so highlights
+keep their colour), in the middle exposure's brightness. The result keeps
+the range the longest exposure clipped, and the tone controls roll that
+brighter-than-white range off instead of clipping it (see Tone). It opens
+with Auto tone applied, and edits like any photo; it is merged again from
+its files each time it is opened (a second or two). JPEG / .insp brackets
+aren't merged, there is no alignment or ghost removal (use a still
+camera), and a merged photo can't be exported as DNG yet.
+
 ### Browser requirement
 
 The renderer needs **WebGL2** with the `EXT_color_buffer_float` extension
@@ -314,6 +331,12 @@ Ordinary global grade applied to the photograph before the rim is
 composited, in Lightroom's order: **Exposure** (stops), **Contrast**,
 **Highlights**, **Shadows**, **Whites**, **Blacks**, **Saturation**. All
 default to neutral (no change).
+
+A merged HDR photo has light brighter than white. For it (only), a
+highlight shoulder runs first: lightness above 0.75 is compressed smoothly
+so the brightest value lands exactly on white, even with every slider at
+0 — raising Exposure pushes more of the range into the shoulder instead of
+clipping it; Highlights and Whites then shape it as usual.
 
 **Auto** sets Exposure, Contrast, Highlights, Shadows, Whites and Blacks
 from the photo; Saturation stays yours. It measures the whole composition

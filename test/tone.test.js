@@ -219,3 +219,60 @@ test('both composite shaders and the tone parity shader share one TONE_GLSL', ()
     assert.ok(Shaders[name].includes('applyTone(img, uTone, uToneCurve, toneCoef'), name);
   }
 });
+
+const Z = { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 };
+
+test('shoulder: identity below the knee, H lands on 1, slope 1 at the knee, monotone', () => {
+  const K = Edge.SHOULDER_KNEE;
+  assert.strictEqual(Edge.shoulder(0.5, 3), 0.5);
+  assert.ok(Math.abs(Edge.shoulder(3, 3) - 1) < 1e-12);
+  const d = 1e-6;
+  assert.ok(Math.abs((Edge.shoulder(K + d, 3) - Edge.shoulder(K, 3)) / d - 1) < 1e-3);
+  let prev = -1;
+  for (let l = 0; l <= 3; l += 0.01) { const v = Edge.shoulder(l, 3); assert.ok(v >= prev); prev = v; }
+});
+
+test('rawMax 1 is unchanged at +2 EV (the shoulder never touches ordinary files)', () => {
+  const t = { ...Z, exposureEv: 2, highlights: -30 };
+  for (const v of [0.1, 0.4, 0.8, 1]) {
+    assert.deepStrictEqual(Edge.applyTone([v, v * 0.9, v * 0.7], t, undefined, 1),
+      Edge.applyTone([v, v * 0.9, v * 0.7], t));
+  }
+});
+
+test('with headroom, the shoulder is active with every slider at 0 and keeps highlights apart', () => {
+  const enc = Edge.srgbEncode(4);                       // a clipped white of a rawMax-4 photo
+  const a = Edge.applyTone([enc, enc, enc], Z, undefined, 4)[0];
+  const b = Edge.applyTone([enc * 0.8, enc * 0.8, enc * 0.8], Z, undefined, 4)[0];
+  assert.ok(Math.abs(a - 1) < 1e-6, 'white lands on 1: ' + a);
+  assert.ok(b < a - 0.01, 'a brighter-than-white grey below it stays distinct: ' + b);
+  assert.deepStrictEqual(Edge.applyTone([0.3, 0.3, 0.3], Z, undefined, 4).map((v) => +v.toFixed(12)), [0.3, 0.3, 0.3]);
+});
+
+test('exposure moves more of the range into the shoulder', () => {
+  const enc = Edge.srgbEncode(4);
+  const at0 = Edge.applyTone([enc / 2, enc / 2, enc / 2], Z, undefined, 4)[0];
+  const up = Edge.applyTone([enc / 2, enc / 2, enc / 2], { ...Z, exposureEv: 1 }, undefined, 4)[0];
+  assert.ok(up > at0 && up < 0.99, at0 + ' -> ' + up);
+});
+
+test('the float raw variants differ from the integer ones only in the sampler type', () => {
+  const S = require('../shaders.js');
+  for (const n of ['COMPOSITE_RAW', 'COMPOSITE_RAW_DEV', 'DEV_INPUT_RAW', 'TB_DOWN_RAW', 'PROFILE_BUILD_RAW']) {
+    const a = S[n + '_FS'], b = S[n + '_F_FS'];
+    assert.ok(b, n);
+    assert.strictEqual(b, a.replace('uniform highp usampler2D uLens;', 'uniform highp sampler2D uLens;'), n);
+  }
+  assert.ok(!/clamp\(rawCameraLinearAt\(p\), 0\.0, 1\.0\)/.test(S.RAW_SAMPLE_GLSL || S.COMPOSITE_RAW_FS), 'raw clamp uses uRawMax');
+  assert.ok(/clamp\(rawCameraLinearAt\(p\), 0\.0, uRawMax\)/.test(S.COMPOSITE_RAW_FS));
+});
+
+// The rim glow is measured from the photo (PROFILE_BUILD, through
+// sampleRawLensAt): a merged HDR photo's brighter-than-white values must
+// not make it stronger -- the profile samples are capped at white.
+test('the rim profile samples a raw lens capped at white', () => {
+  const S = require('../shaders.js');
+  const m = S.PROFILE_BUILD_RAW_FS.match(/vec3 sampleRawLensAt\([^)]*\) \{[\s\S]*?\n  \}/);
+  assert.ok(m, 'sampleRawLensAt found');
+  assert.match(m[0], /return min\(demosaicAt\(ivec2\(px, py\)\), vec3\(1\.0\)\);/);
+});

@@ -25,6 +25,7 @@
   // measured from (see the task-7 brief's controller decision #3). u is
   // normalised so u = 1.0 is the crop edge.
   const SAMPLE_LENS_GLSL = `
+  uniform float uRawMax;   // brightest value in units of white (1 but for a merged HDR photo)
   vec3 sampleLensAt(sampler2D lens, float u, float theta, float cropFrac, float roll) {
     float a = theta + roll;
     vec2 off = vec2(cos(a), sin(a)) * (u * cropFrac * 0.5);
@@ -62,6 +63,7 @@
   // read directly from the DNG's CFAPattern tag (dng.js).
   const RAW_SAMPLE_GLSL = `
   uniform highp usampler2D uLens;
+  uniform float uRawMax;       // brightest value in units of white: hdrMax of a merged HDR photo, else 1
   uniform ivec2 uLensSize;
   uniform ivec4 uCfaPattern;   // colour (0=R,1=G,2=B) at (0,0),(1,0),(0,1),(1,1)
   uniform float uBlackLevel, uWhiteLevel;
@@ -124,11 +126,11 @@
   uniform sampler2D uDeveloped;
   vec3 rawCameraAt(ivec2 p) {
     ivec2 c = clamp(p, ivec2(0), uLensSize - ivec2(1));
-    return clamp(texelFetch(uDeveloped, c, 0).rgb, 0.0, 1.0);
+    return clamp(texelFetch(uDeveloped, c, 0).rgb, 0.0, uRawMax);
   }
 #else
   vec3 rawCameraAt(ivec2 p) {
-    return clamp(rawCameraLinearAt(p), 0.0, 1.0);
+    return clamp(rawCameraLinearAt(p), 0.0, uRawMax);
   }
 #endif
 
@@ -144,8 +146,9 @@
     // sky in these files: leaving the overshoot in produced a false magenta
     // patch (high R and B, near-zero G) exactly where the sky clipped;
     // clamping here first renders it a plausible white/pale blue instead.
-    lin = clamp(lin / uWhiteBalance, 0.0, 1.0);
-    vec3 srgbLinear = clamp(uCamToSrgb * lin, 0.0, 1.0);
+    // White is uRawMax for a merged HDR photo (1 otherwise).
+    lin = clamp(lin / uWhiteBalance, 0.0, uRawMax);
+    vec3 srgbLinear = clamp(uCamToSrgb * lin, 0.0, uRawMax);
     return srgbEncode(srgbLinear);
   }
 
@@ -165,7 +168,10 @@
     vec2 uv = vec2(0.5) + off;
     int px = int(floor(uv.x * float(uLensSize.x)));
     int py = int(floor((1.0 - uv.y) * float(uLensSize.y)));
-    return demosaicAt(ivec2(px, py));
+    // Capped at white: the rim glow is measured from display values, and
+    // a merged HDR photo's brighter-than-white light must not strengthen
+    // it (a no-op for everything else, which never exceeds 1).
+    return min(demosaicAt(ivec2(px, py)), vec3(1.0));
   }
 
   // See SAMPLE_LENS_GLSL's functions of the same names.
@@ -302,19 +308,29 @@
     return t < 1.0 ? Y + (lin - Y) * t : lin;
   }
 
-  // tone = (exposureEv, contrast, saturation); curve as hsCurve's c.
-  vec3 applyTone(vec3 rgb, vec3 tone, vec4 curve, vec2 coef) {
+  // The highlight shoulder (edge.js shoulder): brighter than white only.
+  float toneShoulder(float l, float H) {
+    const float K = 0.75;
+    if (H <= 1.0 || l <= K) return l;
+    float x = (l - K) / (1.0 - K), X = (H - K) / (1.0 - K);
+    return K + (1.0 - K) * x * (1.0 + x / (X * X)) / (1.0 + x);
+  }
+
+  // tone = (exposureEv, contrast, saturation); curve as hsCurve's c;
+  // rawMax as edge.js applyTone's.
+  vec3 applyTone(vec3 rgb, vec3 tone, vec4 curve, vec2 coef, float rawMax) {
     bool cv = toneCurveNonzero(curve);
-    if (tone.x == 0.0 && tone.y == 0.0 && tone.z == 0.0 && !cv) return rgb;
     float g = pow(2.0, tone.x);
+    float H = rawMax > 1.0 ? srgbEncode1(rawMax) * g : 1.0;
+    if (H <= 1.0 && tone.x == 0.0 && tone.y == 0.0 && tone.z == 0.0 && !cv) return rgb;
     vec3 lin = srgbDecode3(rgb * g);
     float Y = dot(lin, TONE_LUMA);
     float l = srgbEncode1(Y);
-    float l2 = l;
+    float l2 = toneShoulder(l, H);
     if (cv) {
-      float base = clamp(coef.x * l + g * coef.y, 0.0, 1.0);
+      float base = clamp(toneShoulder(coef.x * l + g * coef.y, H), 0.0, 1.0);
       float hb = hsCurve(base, curve);
-      l2 = hb + (l - base) * max(1.0 + 3.0 * abs(hb - base), hsSlope(base, curve));
+      l2 = hb + (l2 - base) * max(1.0 + 3.0 * abs(hb - base), hsSlope(base, curve));
       float t = clamp(l2, 0.0, 1.0);
       l2 = l2 + (toneLevels(t, curve) - t);
     }
@@ -547,7 +563,7 @@
       if (uJpegWbOn > 0.5) img = srgbEncode3(gamutMap(uJpegWb * srgbDecode3(img)));
       vec2 toneCoef = uToneLocal > 0.5
         ? texture(uToneBase, lensTexelPos(uv) * uToneBaseScale).rg : vec2(1.0, 0.0);
-      img = applyTone(img, uTone, uToneCurve, toneCoef);
+      img = applyTone(img, uTone, uToneCurve, toneCoef, uRawMax);
       float term = terminator(u);
       float fade = 1.0 - term;
       img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);
@@ -820,16 +836,28 @@
   uniform vec3 uTone;
   uniform vec4 uToneCurve;
   uniform float uLocal;
+  uniform float uRawMax;
+  uniform float uInputScale;   // srgbEncode(uRawMax): inputs brighter than white
   out vec4 fragColor;
   ` + TONE_GLSL + `
   void main() {
     float x = floor(gl_FragCoord.x);
-    vec3 rgb = vec3(x / 255.0, (255.0 - x) / 255.0 * 0.8 + 0.1, mod(x * 37.0, 256.0) / 255.0);
+    vec3 rgb = vec3(x / 255.0, (255.0 - x) / 255.0 * 0.8 + 0.1, mod(x * 37.0, 256.0) / 255.0) * uInputScale;
     // A local base's (A, B), varied along x (App's toneParityCoef).
     vec2 coef = uLocal > 0.5 ? vec2(mod(x * 29.0, 64.0) / 64.0, mod(x * 13.0, 32.0) / 64.0) : vec2(1.0, 0.0);
-    fragColor = vec4(applyTone(rgb, uTone, uToneCurve, coef), 1.0);
+    fragColor = vec4(applyTone(rgb, uTone, uToneCurve, coef, uRawMax), 1.0);
   }`;
   const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS, true);
+
+  // Float raw planes (a merged HDR photo, hdrmerge.js: black 0, white 1,
+  // values up to hdrMax) are R32F textures, read through these: the same
+  // shaders with a float sampler.
+  const toFloatRaw = (s) => replaceOrThrow(s, 'uniform highp usampler2D uLens;', 'uniform highp sampler2D uLens;');
+  const COMPOSITE_RAW_F_FS = toFloatRaw(COMPOSITE_RAW_FS);
+  const COMPOSITE_RAW_DEV_F_FS = toFloatRaw(COMPOSITE_RAW_DEV_FS);
+  const DEV_INPUT_RAW_F_FS = toFloatRaw(DEV_INPUT_RAW_FS);
+  const TB_DOWN_RAW_F_FS = toFloatRaw(TB_DOWN_RAW_FS);
+  const PROFILE_BUILD_RAW_F_FS = toFloatRaw(PROFILE_BUILD_RAW_FS);
 
   // Browser-side detail parity (app.js checkDetailParity): writes a 64 x 64
   // synthetic opponent image (App's detailParityInput computes the same
@@ -851,5 +879,6 @@
     COMPOSITE_RAW_FS, COMPOSITE_RAW_DEV_FS, COMPOSITE_DNG_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS,
     DEV_INPUT_RAW_FS, DEV_INPUT_RGB_FS, DEV_BLUR_FS, DEV_DETAIL_FS, DEV_FINAL_FS, DEV_PARITY_INPUT_FS,
     TB_DOWN_FS, TB_DOWN_RAW_FS, TB_BOX_FS, TB_COEF_FS,
+    COMPOSITE_RAW_F_FS, COMPOSITE_RAW_DEV_F_FS, DEV_INPUT_RAW_F_FS, TB_DOWN_RAW_F_FS, PROFILE_BUILD_RAW_F_FS,
   };
 });

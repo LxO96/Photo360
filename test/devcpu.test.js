@@ -146,3 +146,33 @@ test('the pool runs jobs without workers too (node), in order', async () => {
   assert.strictEqual(re, null);
   pool.close();
 });
+
+// A merged HDR photo (hdrmerge.js) is a float plane, black 0, white 1.
+test('a float raw plane develops like its integer twin', () => {
+  const w = 120, h = 90;
+  const plane = rawPlane(w, h);
+  const range = RAW.white - RAW.black;
+  const fplane = Float32Array.from(plane, (v) => (v - RAW.black) / range);
+  const FRAW = Object.assign({}, RAW, { black: 0, white: 1 });
+  const sigmas = Noise.rawLevelSigmas(Detail);
+  const region = { x: 0, y: 0, w, h }, core = { x: 10, y: 10, w: 60, h: 50 };
+  const a = DevCpu.developTile({ kind: 'raw', region, core, params: P, sigmas,
+    raw: Object.assign(DevCpu.rawSub(plane, w, h, region), RAW) });
+  const sub = DevCpu.rawSub(fplane, w, h, region);
+  assert.ok(sub.plane instanceof Float32Array, 'rawSub keeps the float type');
+  const b = DevCpu.developTile({ kind: 'raw', region, core, params: P, sigmas, raw: Object.assign(sub, FRAW) });
+  let max = 0;
+  for (let i = 0; i < a.data.length; i++) max = Math.max(max, Math.abs(a.data[i] - b.data[i]));
+  assert.ok(max < 1e-5, String(max));
+});
+
+test('the noise fit reads a float plane the same', () => {
+  const w = 400, h = 300;
+  const plane = rawPlane(w, h);
+  const range = RAW.white - RAW.black;
+  const fplane = Float32Array.from(plane, (v) => (v - RAW.black) / range);
+  const a = Noise.fitProfile(plane, w, h, RAW.cfa, RAW.black, RAW.white);
+  const b = Noise.fitProfile(fplane, w, h, RAW.cfa, 0, 1);
+  assert.ok(Math.abs(b.a - a.a) <= 0.01 * Math.abs(a.a) + 1e-9, a.a + ' vs ' + b.a);
+  assert.ok(Math.abs(b.b - a.b) <= 0.01 * Math.abs(a.b) + 1e-9, a.b + ' vs ' + b.b);
+});

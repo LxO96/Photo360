@@ -98,3 +98,14 @@ test('selection: only, toggle, range; the current photo is always in it', () => 
   l.currentId = b.id;
   assert.deepStrictEqual(l.selected(), [b]);
 });
+
+test('insertAfter places a virtual entry after another, deduped by key', () => {
+  const l = Photos.createList();
+  const [a, b] = l.add([f('a.dng'), f('b.dng')]).added;
+  const m = l.insertAfter(a.id, { key: 'HDR|x', file: null, name: 'a_HDR' });
+  assert.deepStrictEqual(l.entries.map((e) => e.id), [a.id, m.id, b.id]);
+  assert.strictEqual(m.key, 'HDR|x');
+  assert.strictEqual(l.insertAfter(b.id, { key: 'HDR|x', file: null }), m);
+  assert.strictEqual(Photos.nameOf(m), 'a_HDR');
+  assert.strictEqual(Photos.nameOf(a), 'a.dng');
+});

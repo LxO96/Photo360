@@ -31,6 +31,10 @@
   const TAG_COLOR_MATRIX1 = 50721; // 0xC621
   const TAG_AS_SHOT_NEUTRAL = 50728; // 0xC628
   const TAG_CALIBRATION_ILLUMINANT1 = 50778; // 0xC65A
+  // Exposure (for merging brackets, hdrmerge.js), in the Exif IFD.
+  const TAG_EXIF_IFD = 34665; // 0x8769
+  const TAG_EXPOSURE_TIME = 33434; // 0x829A
+  const TAG_ISO = 34855; // 0x8827
   const ILLUMINANT_D65 = 21;
 
   const PHOTOMETRIC_CFA = 32803;
@@ -268,7 +272,7 @@
         TAG_PHOTOMETRIC, TAG_MODEL, TAG_STRIP_OFFSETS, TAG_SAMPLES_PER_PIXEL,
         TAG_STRIP_BYTE_COUNTS, TAG_DATETIME, TAG_SUB_IFDS, TAG_CFA_PATTERN,
         TAG_BLACK_LEVEL, TAG_WHITE_LEVEL, TAG_COLOR_MATRIX1, TAG_AS_SHOT_NEUTRAL,
-        TAG_MAKE, TAG_CALIBRATION_ILLUMINANT1,
+        TAG_MAKE, TAG_CALIBRATION_ILLUMINANT1, TAG_EXIF_IFD, TAG_EXPOSURE_TIME, TAG_ISO,
       ]);
 
       const found0 = scanIfd(bytes, r, ifd0Offset, wanted);
@@ -278,6 +282,25 @@
       const modelVals = found0[TAG_MODEL] && readAscii(bytes, r, found0[TAG_MODEL], tiffStart);
       const makeVals = found0[TAG_MAKE] && readAscii(bytes, r, found0[TAG_MAKE], tiffStart);
       const dateVals = (found0[TAG_DATETIME] && readAscii(bytes, r, found0[TAG_DATETIME], tiffStart)) || '';
+
+      // Exposure time (seconds) and ISO, or null when the file has no Exif
+      // IFD or leaves them out.
+      let exposureTime = null, iso = null;
+      // TIFF/EP-style files (these cameras) keep them in IFD0 itself;
+      // others in the Exif IFD, whose pointer may be typed LONG or IFD (13,
+      // which readValues does not know): either way the entry's 4-byte value.
+      const readExposure = (f) => {
+        const et = tagValues(bytes, r, tiffStart, f[TAG_EXPOSURE_TIME]);
+        if (et && et[0] > 0 && exposureTime === null) exposureTime = et[0];
+        const is = tagValues(bytes, r, tiffStart, f[TAG_ISO]);
+        if (is && is[0] > 0 && iso === null) iso = is[0];
+      };
+      readExposure(found0);
+      const exifEntry = found0[TAG_EXIF_IFD];
+      const exifPtr = exifEntry && exifEntry.count === 1 ? r.u32(exifEntry.entryOffset + 8) : 0;
+      if (exifPtr > 0 && exifPtr + 2 <= bytes.length) {
+        readExposure(scanIfd(bytes, r, exifPtr, new Set([TAG_EXPOSURE_TIME, TAG_ISO])));
+      }
 
       // Decide which IFD actually holds the CFA plane: IFD0 itself if its
       // PhotometricInterpretation already says CFA, else the first SubIFD
@@ -387,6 +410,8 @@
         make: makeVals ? makeVals.replace(/\0+$/, '').trim() : '',
         calibrationIlluminant1: illumVals && illumVals[0] > 0 ? illumVals[0] : ILLUMINANT_D65,
         model: modelVals ? modelVals.replace(/\0+$/, '').trim() : '',
+        exposureTime,
+        iso,
         dateTimeOriginal: dateVals ? String(dateVals).replace(/\0+$/, '').trim() : '',
       };
     } catch (e) {
