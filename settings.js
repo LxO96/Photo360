@@ -25,7 +25,7 @@
     'fovDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone', 'detail',
     'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels', 'scopeScale',
-    'keyLayout', 'jpegWb',
+    'keyLayout', 'jpegWb', 'stripShown',
   ];
 
   // Task 18: the side panel's collapsible sections, in display order, and

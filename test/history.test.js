@@ -75,3 +75,8 @@ test('the edit snapshot leaves out the view preferences, and only those', () => 
   assert.deepStrictEqual(Object.keys(snap).sort(), keys.filter((k) => !History.VIEW_KEYS.includes(k)).sort());
   for (const k of ['tone', 'detail', 'edge', 'rollDeg', 'rawWb', 'fovDeg']) assert.ok(k in snap, k);
 });
+
+test('the strip being shown is a view preference, not an edit', () => {
+  assert.ok(History.VIEW_KEYS.includes('stripShown'));
+  assert.ok(Settings.PERSISTED_KEYS.includes('stripShown'));
+});

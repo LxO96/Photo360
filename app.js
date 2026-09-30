@@ -178,6 +178,8 @@
     scopeChannels: 'luma',
     // Keyboard layout for the shortcuts (shortcuts.js LAYOUTS).
     keyLayout: 'standard',
+    // The photo strip (several photos open) shown or collapsed.
+    stripShown: true,
   };
   // The built-in defaults, snapshotted before stored settings are merged in:
   // what double-clicking a slider resets it to (see the NUM `path`s).
@@ -336,7 +338,9 @@
   // a throw partway through a load used to leave textures from two
   // different files, or a texture uploaded under the wrong shader's
   // assumptions, mixed together).
-  function applyLoadedDescriptor(descriptor) {
+  // `restore` (openPhoto): { edits, history } -- the photo's own edits and
+  // undo history, when it has been opened or edited before.
+  function applyLoadedDescriptor(descriptor, restore) {
     const patch = {
       calibration: descriptor.calibration,
       calibrationGuessedFromShape: descriptor.calibrationGuessedFromShape,
@@ -373,6 +377,16 @@
     patch.swap = Settings.resolveSwapForLoad(state.swap, descriptor.lensCount);
     if (descriptor.orientationDefault) patch.orientation = descriptor.orientationDefault;
     Object.assign(state, patch);
+    // This photo's own edits, sanitized like stored settings, win over what
+    // the file itself says (its as-shot white balance); the lens-count
+    // guards above still apply to them.
+    if (restore && restore.edits) {
+      const clean = Settings.sanitize(state, Object.assign(Settings.serialize(state), restore.edits));
+      for (const k of Object.keys(restore.edits)) if (k in clean) state[k] = JSON.parse(JSON.stringify(clean[k]));
+      if (descriptor.lensCount === 1) state.sensors = 'A';
+      state.swap = Settings.resolveSwapForLoad(state.swap, descriptor.lensCount);
+      syncControlsFromState();
+    }
     zoom = null;   // zoom is per view, not per file: every load starts at Fit
 
     dropEl.classList.add('hidden');
@@ -393,9 +407,18 @@
     beforeView = false;
     stopMatch();
     render();
-    scheduleSave();
-    // History is per photo.
-    resetHistory();
+    // Saving the settings is not an edit of the photo (noteEdit).
+    restoring = true;
+    try { scheduleSave(); } finally { restoring = false; }
+    // History is per photo: a photo opened before gets its own back.
+    if (restore && restore.history) {
+      editHistory = restore.history;
+      if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+      historyPending = false;
+    } else {
+      editHistory = History.create();
+      resetHistory();
+    }
   }
 
   // The single load entry point for every source kind (.insp/.jpg/.dng).
@@ -420,13 +443,23 @@
     renderFrame = requestAnimationFrame(() => { renderFrame = 0; render(); });
   }
 
-  async function loadFile(file) {
+  // Resolves true when this file is now the open one; false when it failed
+  // (the error is shown) or a newer load started meanwhile (openPhoto
+  // switching again before this one decoded) and it gave way.
+  let loadSeq = 0;
+  async function loadFile(file, restore) {
+    const my = ++loadSeq;
     clearMessages();
     let builtTextures = null;
     try {
       const buf = await file.arrayBuffer();
+      if (my !== loadSeq) return false;
       ensureCtx();
       const descriptor = await Source.decode(file, buf, ctx.maxTextureSize);
+      if (my !== loadSeq) {
+        if (descriptor.bitmaps) for (const b of descriptor.bitmaps) b.close();
+        return false;
+      }
       const gl = ctx.gl;
       builtTextures = [];
       try {
@@ -454,6 +487,9 @@
         warn('This GPU caps textures at ' + ctx.maxTextureSize +
              ' px; the image is being downscaled from ' + descriptor.lensSize + ' px.');
       }
+      // The photo on screen until now keeps what was done to it while this
+      // one decoded (openPhoto).
+      if (restore && restore.beforeCommit) restore.beforeCommit();
       // Nothing below this line can throw before ctx/state are consistent
       // again -- see this function's own top comment.
       GL.commitLenses(ctx, builtTextures);
@@ -463,7 +499,8 @@
       // guard as false and can never delete textures that GL.commitLenses
       // has already committed and this file now depends on.
       builtTextures = null;
-      applyLoadedDescriptor(descriptor);
+      applyLoadedDescriptor(descriptor, restore);
+      return true;
     } catch (e) {
       // A throw after some (but not all) textures were built -- e.g. the
       // second of two lenses failing to decode -- must not leak the ones
@@ -471,6 +508,7 @@
       // otherwise commit an incomplete set).
       if (builtTextures) for (const b of builtTextures) ctx.gl.deleteTexture(b.tex);
       fail(describeLoadError(e));
+      return false;
     }
   }
 
@@ -2388,13 +2426,13 @@
     const exportState = Object.assign({}, state, {
       format: opts.format, quality: opts.quality, padToSensorSquare: opts.padToSensorSquare,
     });
-    if (opts.format === 'dng') { exportDng(exportState); return; }
+    if (opts.format === 'dng') return exportDng(exportState);
     const g = GL.exportGeometry(exportState);
     try {
       // Developing on the CPU: wait for the current settings' result.
       await GL.developSettled(ctx, exportState);
       const outCanvas = renderFullCanvas(exportState, 'export');
-      if (!outCanvas) return;
+      if (!outCanvas) return false;
 
       const blob = await new Promise((resolve, reject) => {
         outCanvas.toBlob(
@@ -2412,11 +2450,13 @@
       download(new Blob([out], { type: blob.type }),
         Lens.exportFilename(state.sourceName, label, state.fovDeg,
           opts.format === 'png' ? 'png' : 'jpg'));
+      return true;
     } catch (e) {
       fail(e.message === 'TOBLOB_FAILED'
         ? `The browser could not encode a ${g.width}x${g.height} image. ` +
           'Try PNG, a smaller FOV, or exporting one lens at a time.'
         : 'Export failed: ' + e.message);
+      return false;
     }
   }
 
@@ -2446,7 +2486,7 @@
     if (g.width > limit || g.height > limit) {
       fail(`This GPU caps render targets at ${limit}px; the requested export ` +
         `(${g.width}x${g.height}) exceeds it. ` + smaller);
-      return;
+      return false;
     }
     let target = null;
     try {
@@ -2454,7 +2494,7 @@
       if (!target.complete) {
         fail(`This GPU could not allocate a ${g.width}x${g.height} float render target ` +
           `(framebuffer status ${target.status}). ` + smaller);
-        return;
+        return false;
       }
       GL.renderComposition(ctx, dngState, g.width, g.height, target.fbo);
       const data = new Uint16Array(g.width * g.height * 3);
@@ -2473,8 +2513,10 @@
       });
       download(new Blob([bytes], { type: 'image/x-adobe-dng' }),
         Lens.exportFilename(state.sourceName, GL.exportLabel(state), state.fovDeg, 'dng'));
+      return true;
     } catch (e) {
       fail('DNG export failed: ' + e.message);
+      return false;
     } finally {
       if (target) GL.deleteExportTarget(gl, target);
     }
@@ -2488,8 +2530,45 @@
     setTimeout(() => URL.revokeObjectURL(url), 10000);
   }
 
+  // Export with several photos selected: opens, renders and saves each in
+  // turn with its own edits and the current Output settings (a DNG only
+  // for raw photos; the others as JPEG), then returns to the photo that
+  // was open. Esc stops after the photo being written.
+  let exportRun = null;
+  async function exportSelected() {
+    if (exportRun) return;
+    const targets = photos.selected();
+    const back = currentPhoto();
+    const opts = { format: state.format, quality: state.quality, padToSensorSquare: state.padToSensorSquare };
+    exportRun = { cancel: false };
+    let done = 0;
+    const failed = [];
+    try {
+      for (let i = 0; i < targets.length && !exportRun.cancel; i++) {
+        stripNote('Exporting ' + (i + 1) + ' of ' + targets.length + ' — Esc to stop');
+        const ok = (await openPhoto(targets[i], true)) &&
+          (await exportImage(Object.assign({}, opts, { format: opts.format === 'dng' && !state.isRaw ? 'jpeg' : opts.format })));
+        if (ok) done++;
+        else failed.push(targets[i].file.name + (errorEl.textContent ? ' (' + errorEl.textContent + ')' : ''));
+      }
+    } finally {
+      const stopped = exportRun.cancel;
+      state.format = opts.format;
+      if (back && photos.byId(back.id)) await openPhoto(back, true);
+      exportRun = null;
+      for (const e of targets) if (photos.byId(e.id) && e.id !== photos.currentId) photos.select(e.id, 'toggle');
+      drawStrip();
+      stripNote((stopped ? 'Export stopped: ' : 'Exported ') + done + (done === 1 ? ' photo' : ' photos'));
+      if (failed.length) fail('Not exported: ' + failed.join('; '));
+    }
+  }
+  document.addEventListener('keydown', (e) => {
+    if (exportRun && e.key === 'Escape') { exportRun.cancel = true; e.preventDefault(); e.stopImmediatePropagation(); }
+  }, true);
+
   exportBtn.addEventListener('click', () => {
     if (!ctx || !state.sourceLensSize) return;
+    if (photos.selected().length > 1) { exportSelected(); return; }
     exportImage({ format: state.format, quality: state.quality, padToSensorSquare: state.padToSensorSquare });
   });
 
@@ -2537,7 +2616,7 @@
   // slider drag, or a held arrow key, is one step. Snapshots are the
   // persisted settings minus the view preferences (history.js).
   const HISTORY_IDLE_MS = 400;
-  const editHistory = History.create();
+  let editHistory = History.create();   // the open photo's (applyLoadedDescriptor swaps it)
   let historyTimer = null, historyPending = false, pointerHeld = false, restoring = false;
   const editSnapshot = () => History.editSnapshot(Settings.serialize(state));
 
@@ -2545,6 +2624,8 @@
     if (restoring) return;
     if (beforeView) { beforeView = false; updateBeforeBadge(); requestRender(); }
     historyPending = true;
+    const cur = currentPhoto();
+    if (cur && !cur.edited) { cur.edited = true; drawStrip(); }
     if (historyTimer) clearTimeout(historyTimer);
     historyTimer = setTimeout(() => { historyTimer = null; if (!pointerHeld) commitHistory(); }, HISTORY_IDLE_MS);
   }
@@ -2553,7 +2634,7 @@
     if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
     if (!historyPending) return;
     historyPending = false;
-    editHistory.record(editSnapshot());
+    if (editHistory.record(editSnapshot())) { storeCurrent(); scheduleThumb(); }
   }
 
   function resetHistory() {
@@ -2582,6 +2663,7 @@
     } finally {
       restoring = false;
     }
+    scheduleThumb();
   }
 
   function undo() {
@@ -2593,6 +2675,255 @@
     commitHistory();
     const s = editHistory.redo();
     if (s) applySnapshot(s);
+  }
+
+  // -- Photos (the strip: photos.js, strip.js, thumbs.js) -------------------
+  // Any number of files can be open; only one -- the current photo -- is
+  // decoded onto the GPU (loadFile). Switching keeps the photo being left's
+  // edits and undo history in its strip entry, and its edits in storage
+  // (by name, size and date) once it has been edited, so it opens again as
+  // it was left, now or on a later visit. A photo never opened starts from
+  // the settings in use (the last-used ones), as a single file always did.
+  const photos = Photos.createList();
+  const photoStore = Photos.createStore(window.localStorage);
+  const stripNoteEl = document.getElementById('stripNote');
+  let loadingId = null;
+  const strip = Strip.create(document.getElementById('strip'), {
+    open: (id) => { const e = photos.byId(id); if (e) openPhoto(e); },
+    select: (id, mode) => { photos.select(id, mode); drawStrip(); },
+    remove: (id) => removePhoto(id),
+    toggle: () => { state.stripShown = !state.stripShown; saveSettings(); drawStrip(); },
+  });
+  function drawStrip(scroll) {
+    strip.render(photos, { shown: state.stripShown, loadingId, scroll });
+    // Several selected: Export writes each of them (exportSelected).
+    updateExportLabel();
+    const n = photos.selected().length;
+    if (n > 1) exportBtn.textContent = exportBtn.textContent.replace(/^Export/, 'Export ' + n);
+  }
+  function stripNote(text) { stripNoteEl.textContent = text || ''; }
+  const currentPhoto = () => photos.byId(photos.currentId);
+  // Where next / previous count from: the photo being opened, if any, so
+  // quick key presses walk on instead of reopening the same neighbour.
+  const targetPhoto = () => photos.byId(loadingId) || currentPhoto();
+
+  // The open photo's edits into its entry and, once edited, storage: at
+  // every settled change (commitHistory), so they survive the tab closing,
+  // and when leaving it.
+  function storeCurrent() {
+    const cur = currentPhoto();
+    if (!cur || !loaded()) return;
+    // A copy: the snapshot shares objects (tone, detail...) with the live
+    // state, which the next photo's sliders change in place.
+    cur.edits = JSON.parse(JSON.stringify(editSnapshot()));
+    if (cur.edited) photoStore.save(cur.key, cur.edits);
+    warnIfStoreFull();
+  }
+  // Kept on screen: shown again after each load (which clears the
+  // messages as it starts), never while one is starting.
+  function warnIfStoreFull() {
+    if (!photoStore.fellBack || loadingId !== null) return;
+    warn('Browser storage is full or unavailable: edits are kept only until this page is closed.');
+  }
+
+  function leavePhoto() {
+    const cur = currentPhoto();
+    if (!cur || !loaded()) return;
+    commitHistory();
+    cur.history = editHistory;
+    storeCurrent();
+    if (!cur.rendered || zoom) snapshotThumb(cur, true);
+  }
+
+  // `byExport`: Export N's own switching; nothing else switches meanwhile.
+  async function openPhoto(entry, byExport) {
+    if (exportRun && !byExport) return false;
+    if (entry.id === photos.currentId && loaded() && loadingId === null) return true;
+    leavePhoto();
+    loadingId = entry.id;
+    drawStrip();
+    const edits = entry.edits || photoStore.load(entry.key);
+    const ok = await loadFile(entry.file, { edits, history: entry.history, beforeCommit: leavePhoto });
+    if (ok) {
+      photos.currentId = entry.id;
+      photos.select(entry.id, 'only');
+      entry.error = null;
+    } else if (loadingId === entry.id && errorEl.textContent) {
+      entry.error = errorEl.textContent;
+    }
+    if (loadingId === entry.id) loadingId = null;
+    if (ok && entry.pastedPending) {
+      // Edits pasted while it was closed: one undo step on its history.
+      entry.pastedPending = false;
+      historyPending = true;
+      commitHistory();
+    }
+    drawStrip(true);
+    if (ok) scheduleThumb();
+    warnIfStoreFull();
+    return ok;
+  }
+
+  // The open photo's strip thumbnail, as edited: the preview canvas cropped
+  // to the composition (previewPlace), copied straight after a render (a
+  // WebGL canvas can only be read in the task that drew it). At Fit the
+  // canvas holds the whole composition; zoomed in, only `force` (leaving
+  // the photo) renders once at Fit for it.
+  function snapshotThumb(entry, force) {
+    if (!entry || entry.id !== photos.currentId || !loaded() || beforeView) return;
+    if (zoom && !force) return;
+    const saved = zoom;
+    zoom = null;
+    render();
+    const p = previewPlace;
+    const s = Thumbs.SIZE / Math.max(p.w, p.h);
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(p.w * s));
+    c.height = Math.max(1, Math.round(p.h * s));
+    c.getContext('2d').drawImage(canvas, p.x, p.y, p.w, p.h, 0, 0, c.width, c.height);
+    if (saved) { zoom = saved; render(); }
+    c.toBlob((b) => {
+      if (!b || !photos.byId(entry.id)) return;
+      if (entry.thumb) URL.revokeObjectURL(entry.thumb);
+      entry.thumb = URL.createObjectURL(b);
+      entry.rendered = true;
+      drawStrip();
+    }, 'image/jpeg', 0.85);
+  }
+  // After an edit settles or a photo opens -- once Detail has developed,
+  // when that runs on the CPU in the background.
+  let thumbFrame = 0;
+  function scheduleThumb() {
+    const entry = currentPhoto();
+    if (!entry || !ctx) return;
+    GL.developSettled(ctx, state).catch(() => {}).then(() => {
+      if (thumbFrame) cancelAnimationFrame(thumbFrame);
+      thumbFrame = requestAnimationFrame(() => { thumbFrame = 0; snapshotThumb(entry); });
+    });
+  }
+
+  // Copy / paste edits (Ctrl+Shift+C / V): every edit (Photos.pasteable),
+  // onto every selected photo. A photo that is not
+  // open gets them in its stored edits, and as an undo step when it opens.
+  let clipboardEdits = null;
+  const copyEditsBtn = document.getElementById('copyEdits');
+  const pasteEditsBtn = document.getElementById('pasteEdits');
+  function copyEdits() {
+    if (!loaded()) return false;
+    commitHistory();
+    clipboardEdits = Photos.pasteable(editSnapshot());
+    pasteEditsBtn.disabled = false;
+    stripNote(photos.entries.length > 1 ? 'Edits copied — Ctrl-click photos, then Paste' : 'Edits copied');
+  }
+  function pasteEdits() {
+    if (!clipboardEdits || !loaded()) return false;
+    const targets = photos.selected();
+    for (const e of targets) {
+      const edits = JSON.parse(JSON.stringify(clipboardEdits));
+      if (e.id === photos.currentId) {
+        // The lens-count guards a load applies (applyLoadedDescriptor).
+        if (state.lensCount === 1) edits.sensors = 'A';
+        if ('swap' in edits) edits.swap = Settings.resolveSwapForLoad(edits.swap, state.lensCount);
+        commitHistory();
+        applySnapshot(Object.assign(editSnapshot(), edits));
+        historyPending = true;
+        commitHistory();
+        e.edited = true;
+      } else {
+        const base = e.edits || photoStore.load(e.key) || {};
+        e.edits = Object.assign({}, base, edits);
+        e.edited = true;
+        e.pastedPending = true;
+        photoStore.save(e.key, e.edits);
+        warnIfStoreFull();
+        // Its rendered thumbnail is out of date: back to the quick one.
+        if (e.rendered) {
+          e.rendered = false;
+          if (e.thumb) URL.revokeObjectURL(e.thumb);
+          e.thumb = null;
+          queueThumbs([e]);
+        }
+      }
+    }
+    drawStrip();
+    stripNote('Edits pasted onto ' + targets.length + (targets.length === 1 ? ' photo' : ' photos'));
+  }
+  copyEditsBtn.addEventListener('click', () => copyEdits());
+  pasteEditsBtn.addEventListener('click', () => pasteEdits());
+
+  // New files join the strip (a file already in it is not added twice).
+  // The first opens when nothing is open yet, and a single file chosen or
+  // dropped on its own opens straight away, as it always did.
+  function addFiles(files) {
+    const list = Array.from(files);
+    const { added, skipped } = photos.add(list);
+    for (const e of added) e.edited = photoStore.has(e.key);
+    drawStrip();
+    queueThumbs(added);
+    let opened = Promise.resolve(false);
+    if (list.length === 1 && !skipped.length) {
+      const e = added[0] || photos.entries.find((x) => x.key === Photos.keyOf(list[0]));
+      if (e) opened = openPhoto(e);
+    } else if (added.length && !loaded() && loadingId === null) {
+      opened = openPhoto(added[0]);
+    }
+    // After openPhoto, whose load clears the messages as it starts.
+    if (skipped.length) warn('Not a photo this app opens (.insp, .jpg, .dng): ' + skipped.join(', '));
+    return opened;
+  }
+
+  async function removePhoto(id) {
+    const e = photos.byId(id);
+    if (!e || exportRun) return;
+    if (id === loadingId) { loadSeq++; loadingId = null; }
+    const wasCurrent = id === photos.currentId;
+    if (wasCurrent) leavePhoto();
+    const next = photos.remove(id);
+    if (e.thumb) URL.revokeObjectURL(e.thumb);
+    if (wasCurrent) {
+      photos.currentId = null;
+      if (next) await openPhoto(next);
+      else closePhoto();
+    }
+    drawStrip();
+  }
+
+  // The last photo removed: back to the empty drop screen.
+  function closePhoto() {
+    loadSeq++;
+    if (ctx) for (let i = 0; i < 2; i++) GL.releaseLens(ctx, i);
+    stopMatch();
+    Object.assign(state, { sourceName: '', sourceLensSize: 0 });
+    document.body.classList.remove('loaded');
+    dropEl.classList.remove('hidden');
+    exportBtn.disabled = true;
+    printBtn.disabled = true;
+    updateFileHeader();
+    editHistory = History.create();
+    resetHistory();
+  }
+
+  // Quick thumbnails (thumbs.js), one file at a time in the background.
+  let thumbQueue = Promise.resolve();
+  function queueThumbs(entries) {
+    for (const e of entries) {
+      thumbQueue = thumbQueue.then(async () => {
+        if (e.thumb || !photos.byId(e.id)) return;
+        try {
+          const blob = await Thumbs.quick(e.file);
+          if (e.thumb || !photos.byId(e.id)) return;
+          e.thumb = URL.createObjectURL(blob);
+          drawStrip();
+        } catch (err) { /* the tile keeps its name on black */ }
+      });
+    }
+  }
+
+  function stepPhoto(dir) {
+    const from = targetPhoto();
+    const next = from && photos.neighbour(from.id, dir);
+    if (!next) return false;
+    openPhoto(next);
   }
 
   // -- Keyboard shortcuts (shortcuts.js) -----------------------------------
@@ -2759,6 +3090,10 @@
     // With nothing loaded, Ctrl+P is the browser's own print.
     print: () => { if (!loaded()) return false; printImage(); },
     help: () => toggleHelp(),
+    copyEdits: () => copyEdits(),
+    pasteEdits: () => pasteEdits(),
+    nextPhoto: () => stepPhoto(1),
+    prevPhoto: () => stepPhoto(-1),
   };
 
   document.addEventListener('keydown', (e) => {
@@ -2809,11 +3144,14 @@
   // button stays visible in the header bar regardless of whether a file is
   // loaded.
   openBtnEl.addEventListener('click', () => fileEl.click());
-  fileEl.addEventListener('change', () => fileEl.files[0] && loadFile(fileEl.files[0]));
+  fileEl.addEventListener('change', () => {
+    if (fileEl.files.length) addFiles(fileEl.files);
+    fileEl.value = '';   // choosing the same file again still fires
+  });
   document.addEventListener('dragover', (e) => { e.preventDefault(); });
   document.addEventListener('drop', (e) => {
     e.preventDefault();
-    if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
   });
   window.addEventListener('resize', render);
   // The stage can change size without the window doing so (the panel's
@@ -3033,5 +3371,18 @@
     developSettled: () => GL.developSettled(ctx, state),
     developBudget: (bytes) => { GL.setDevelopBudget(ctx, bytes); render(); },
     undo, redo, canUndo: () => editHistory.canUndo(), canRedo: () => editHistory.canRedo(), autoWhiteBalance,
+    // The photo strip, for checking it.
+    addFiles,
+    photos: () => {
+      const sel = new Set(photos.selected().map((e) => e.id));
+      return photos.entries.map((e) => ({
+        id: e.id, name: e.file.name, edited: e.edited, error: e.error, thumb: !!e.thumb, rendered: e.rendered,
+        current: e.id === photos.currentId, selected: sel.has(e.id),
+      }));
+    },
+    openPhotoAt: (i) => openPhoto(photos.entries[i]),
+    selectPhoto: (i, mode) => { photos.select(photos.entries[i].id, mode); drawStrip(); },
+    removePhotoAt: (i) => removePhoto(photos.entries[i].id),
+    copyEdits, pasteEdits, exportSelected,
   };
 })();

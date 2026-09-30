@@ -113,3 +113,26 @@ test('every action in the help list has a key, and every row a label', () => {
     if (row.action) assert.ok(row.keys.length, row.action);
   }
 });
+
+test('photo navigation: PageDown/PageUp, and Ctrl+arrows off the sliders', () => {
+  assert.strictEqual(Shortcuts.match(k('PageDown'), FREE), 'nextPhoto');
+  assert.strictEqual(Shortcuts.match(k('PageUp'), SLIDER), 'prevPhoto');
+  assert.strictEqual(Shortcuts.match(k('ArrowRight', { ctrlKey: true }), FREE), 'nextPhoto');
+  assert.strictEqual(Shortcuts.match(k('ArrowLeft', { ctrlKey: true }), FREE), 'prevPhoto');
+  assert.strictEqual(Shortcuts.match(k('ArrowRight', { ctrlKey: true }), SLIDER), null);
+  assert.strictEqual(Shortcuts.match(k('ArrowRight', { ctrlKey: true }), TYPING), null);
+  assert.strictEqual(Shortcuts.match(k('PageDown'), TYPING), null);
+});
+
+test('copy and paste edits, not while typing', () => {
+  assert.strictEqual(Shortcuts.match(k('C', { ctrlKey: true, shiftKey: true }), FREE), 'copyEdits');
+  assert.strictEqual(Shortcuts.match(k('V', { ctrlKey: true, shiftKey: true }), SLIDER), 'pasteEdits');
+  assert.strictEqual(Shortcuts.match(k('V', { ctrlKey: true, shiftKey: true }), TYPING), null);
+  assert.strictEqual(Shortcuts.match(k('c', { ctrlKey: true }), FREE), null);
+});
+
+test('the swedish layout has the photo keys too', () => {
+  const SV = { typing: false, onSlider: false, layout: 'swedish' };
+  assert.strictEqual(Shortcuts.match(k('PageDown'), SV), 'nextPhoto');
+  assert.strictEqual(Shortcuts.match(k('C', { ctrlKey: true, shiftKey: true }), SV), 'copyEdits');
+});

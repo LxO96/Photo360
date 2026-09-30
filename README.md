@@ -50,6 +50,29 @@ browser.
 Drop an `.insp`, `.jpg`, or `.dng` dual-fisheye file onto the page (or click
 to choose one) to get started.
 
+### Several photos
+
+Open or drop any number of files at once and they line up in a strip under
+the picture; click one to open it. Each photo keeps its own edits and undo
+history, and its edits are remembered in the browser (by file name, size
+and date, for the 500 most recently edited photos), so the same file opens
+as you left it next time. A photo you have not edited yet starts from the
+settings you were last using. Only the open photo is decoded, so a big
+folder costs little memory; switching re-reads the file (a second or two
+for a DNG).
+
+The strip first shows the camera's own thumbnail (a coarse read of the raw
+data for a DNG), then a picture of the photo as edited once you have opened
+it. A dot marks an edited photo; × removes one from the strip.
+
+- **Copy edits / Paste** (Ctrl+Shift+C / Ctrl+Shift+V) copy every edit,
+  levelling included, onto every selected photo.
+  Ctrl-click or Shift-click photos to select them; the open photo is always
+  included.
+- With several selected, **Export N** writes each one with its own edits
+  and the current Output settings (DNG only for raw photos, JPEG for the
+  rest), one download each. Esc stops it.
+
 ### Browser requirement
 
 The renderer needs **WebGL2** with the `EXT_color_buffer_float` extension
@@ -95,11 +118,13 @@ while you type in a number box, and Ctrl+Z there undoes the typing.
 | Ctrl+0, Ctrl+1, Ctrl+= / Ctrl+− | Fit, 100%, zoom in / out |
 | `\` (Swedish: < or §) | Before, while held: Tone and Detail off until you let go |
 | Ctrl+O, Ctrl+Shift+E, Ctrl+P | Open, Export, Print |
+| Page Down / Page Up, or Ctrl+→ / Ctrl+← | Next / previous photo in the strip (Ctrl+arrows not on a slider, where they fine-adjust) |
+| Ctrl+Shift+C / Ctrl+Shift+V | Copy edits / paste them onto the selected photos |
 
 History records edits to the picture (Framing, Level, White balance, Edge,
 Tone, Detail), one step per finished change: a whole slider drag, a held
 arrow key, an Auto click. Open sections, the scopes and zoom are not edits.
-Opening a file starts a new history. `history.js` and `shortcuts.js` hold
+Each photo has its own history, kept while the page is open. `history.js` and `shortcuts.js` hold
 the logic and the table.
 
 ### Scopes

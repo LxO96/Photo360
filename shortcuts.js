@@ -13,7 +13,10 @@
   // means either; a `layout` limits a key to one keyboard layout (LAYOUTS)
   // and `show` may differ per layout the same way. Single keys (no ctrl)
   // never fire while typing in a number box, and neither do undo/redo
-  // there (the box's own text undo).
+  // there (the box's own text undo). A row's `noTyping` keeps a Ctrl key
+  // out of number boxes too (copy / paste edits: the box's own copy and
+  // paste), and a key's `offSlider` keeps it off the sliders, where
+  // Ctrl+arrows fine-adjust (and out of number boxes: word jumps).
   //
   // Layouts: on a Swedish keyboard \ needs AltGr (which reads as
   // Ctrl+Alt), so before/after moves to < (beside left Shift) or §. The
@@ -43,6 +46,12 @@
     { group: 'File', label: 'Open', show: 'Ctrl+O', action: 'open', keys: [{ key: 'o', ctrl: true }] },
     { group: 'File', label: 'Export', show: 'Ctrl+Shift+E', action: 'export', keys: [{ key: 'e', ctrl: true, shift: true }] },
     { group: 'File', label: 'Print', show: 'Ctrl+P', action: 'print', keys: [{ key: 'p', ctrl: true, shift: false }] },
+    { group: 'Photos', label: 'Next / previous photo', show: 'Page Down / Page Up  or  Ctrl+→ / Ctrl+←',
+      action: null, keys: [] },
+    { group: 'Photos', label: 'Copy edits', show: 'Ctrl+Shift+C', action: 'copyEdits',
+      keys: [{ key: 'c', ctrl: true, shift: true }], noTyping: true },
+    { group: 'Photos', label: 'Paste edits (onto the selected photos)', show: 'Ctrl+Shift+V', action: 'pasteEdits',
+      keys: [{ key: 'v', ctrl: true, shift: true }], noTyping: true },
     { group: 'Help', label: 'This list', show: '?', action: 'help', keys: [{ key: '?' }] },
   ];
   // Keys with no row of their own in the list (shown combined above).
@@ -55,6 +64,8 @@
     { action: 'nudgeDown', keys: [{ key: '-' }], slider: true },
     { action: 'rotateCw', keys: [{ key: 'r', shift: false }] },
     { action: 'rotateCcw', keys: [{ key: 'r', shift: true }] },
+    { action: 'nextPhoto', keys: [{ key: 'pagedown' }, { key: 'arrowright', ctrl: true, offSlider: true }] },
+    { action: 'prevPhoto', keys: [{ key: 'pageup' }, { key: 'arrowleft', ctrl: true, offSlider: true }] },
   ];
   const ALL = TABLE.filter((r) => r.action).concat(EXTRA);
 
@@ -71,7 +82,8 @@
         if (k.key !== key || !!k.ctrl !== ctrl) continue;
         if (k.layout && k.layout !== layout) continue;
         if (k.shift !== undefined && k.shift !== !!ev.shiftKey) continue;
-        if (ctx.typing && (!ctrl || row.action === 'undo' || row.action === 'redo')) continue;
+        if (k.offSlider && ctx.onSlider) continue;
+        if (ctx.typing && (!ctrl || row.noTyping || k.offSlider || row.action === 'undo' || row.action === 'redo')) continue;
         if (row.slider && !ctx.onSlider) continue;
         return row.action;
       }

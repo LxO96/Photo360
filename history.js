@@ -15,7 +15,7 @@
 
   // The keys of a Settings.serialize()d state that are edits (undoable);
   // the rest -- open panels, the scopes -- are view preferences.
-  const VIEW_KEYS = ['panels', 'scopesShown', 'scopeMode', 'scopeChannels', 'scopeScale', 'keyLayout'];
+  const VIEW_KEYS = ['panels', 'scopesShown', 'scopeMode', 'scopeChannels', 'scopeScale', 'keyLayout', 'stripShown'];
 
   function editSnapshot(serialized) {
     const out = {};
