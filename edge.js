@@ -416,6 +416,22 @@
     return t < 1 ? lin.map((v) => Y + (v - Y) * t) : lin;
   }
 
+  // Ultra HDR (ultrahdr.js): how much brighter an HDR screen may show this
+  // pixel than the SDR picture -- the light the edit compressed (scene
+  // luminance after Exposure over the toned luminance), at least 1, at most
+  // D, faded in over the bright tones (GAIN_FROM..GAIN_FULL lightness) so
+  // mid-tones and faces stay the SDR picture exactly.
+  const GAIN_FROM = 0.6, GAIN_FULL = 0.9;
+  function toneGain(rgb, tone, coef, rawMax, D) {
+    const g = Math.pow(2, tone.exposureEv);
+    const yScene = lumaOf([srgbDecode(rgb[0] * g), srgbDecode(rgb[1] * g), srgbDecode(rgb[2] * g)]);
+    const out = applyTone(rgb, tone, coef, rawMax);
+    const ySdr = lumaOf([srgbDecode(out[0]), srgbDecode(out[1]), srgbDecode(out[2])]);
+    const b = Math.min(D, Math.max(1, yScene / Math.max(ySdr, 1e-6)));
+    const k = Math.min(1, Math.max(0, (srgbEncode(ySdr) - GAIN_FROM) / (GAIN_FULL - GAIN_FROM)));
+    return Math.pow(b, k * k * (3 - 2 * k));
+  }
+
   // Black & white (tone.mono): the finished colour -- photo and rim --
   // as a grey of the same lightness. COMPOSITE_FS applies it last.
   function mono(rgb) {
@@ -475,7 +491,7 @@
   return {
     DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight,
     PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS,
-    applyTone, shoulder, SHOULDER_KNEE, toneCurve, toneBump, hsCurve, hsSlope, levels, contrastCurve, lightness, srgbDecode, srgbEncode,
+    applyTone, toneGain, shoulder, SHOULDER_KNEE, toneCurve, toneBump, hsCurve, hsSlope, levels, contrastCurve, lightness, srgbDecode, srgbEncode,
     toOklab, fromOklab, maxChroma, saturate, gamutMap, mono,
   };
 });

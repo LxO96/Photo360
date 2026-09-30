@@ -655,12 +655,19 @@
         <div class="row sel"><label for="format">Format</label>
           <select id="format">
             <option value="jpeg">JPEG</option>
+            <option value="uhdr" disabled>Ultra HDR JPEG (raw sources)</option>
             <option value="png">PNG (lossless)</option>
             <option value="dng" disabled>DNG (linear raw, raw sources)</option>
           </select></div>
         <div class="row"><label for="quality">JPEG quality</label>
           <input id="quality" type="range" min="60" max="100" step="1" value="95">
           <span class="val"><input id="qualityOut" class="num" type="text" inputmode="numeric" aria-label="JPEG quality"><i></i></span></div>
+        <div id="hdrHeadroomRow" class="row sel hidden"><label for="hdrHeadroom">HDR headroom</label>
+          <select id="hdrHeadroom" title="How much brighter than white HDR screens may show the highlights">
+            <option value="1">1 stop (2×)</option>
+            <option value="2" selected>2 stops (4×)</option>
+            <option value="3">3 stops (8×)</option>
+          </select></div>
         <label class="check"><input id="padToSensorSquare" type="checkbox"> Pad to sensor square (upscales)</label>
       </div>
     </details>
@@ -704,6 +711,7 @@
   <script src="shortcuts.js"></script>
   <script src="hdrmerge.js"></script>
   <script src="source.js"></script>
+  <script src="ultrahdr.js"></script>
   <script src="photos.js"></script>
   <script src="thumbs.js"></script>
   <script src="strip.js"></script>

@@ -276,3 +276,39 @@ test('the rim profile samples a raw lens capped at white', () => {
   assert.ok(m, 'sampleRawLensAt found');
   assert.match(m[0], /return min\(demosaicAt\(ivec2\(px, py\)\), vec3\(1\.0\)\);/);
 });
+
+const ZT = { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 };
+
+test('toneGain: an unedited pixel has gain 1', () => {
+  for (const v of [0.1, 0.5, 0.9, 1]) assert.strictEqual(Edge.toneGain([v, v, v], ZT, undefined, 1, 4), 1);
+});
+
+test('toneGain: mid-tones stay 1 even when highlights were pulled down', () => {
+  const t = { ...ZT, highlights: -80 };
+  assert.strictEqual(Edge.toneGain([0.4, 0.4, 0.4], t, undefined, 1, 4), 1);
+});
+
+test('toneGain: a compressed highlight gets back its real ratio, capped at D', () => {
+  const t = { ...ZT, highlights: -80 };
+  const rgb = [0.95, 0.95, 0.95];
+  const sdr = Edge.applyTone(rgb, t)[0];
+  const ratio = Edge.srgbDecode(0.95) / Edge.srgbDecode(sdr);
+  const w = (x) => { const k = Math.min(1, Math.max(0, (x - 0.6) / 0.3)); return k * k * (3 - 2 * k); };
+  const g = Edge.toneGain(rgb, t, undefined, 1, 4);
+  assert.ok(Math.abs(g - Math.pow(Math.min(4, ratio), w(sdr))) < 1e-9, g);
+  assert.ok(g > 1.05, 'visible boost ' + g);
+});
+
+test('toneGain: a merged photo highlight is capped at D', () => {
+  const enc = Edge.srgbEncode(8);                          // 8x white in an hdrMax-16 photo
+  assert.ok(Math.abs(Edge.toneGain([enc, enc, enc], ZT, undefined, 16, 4) - 4) < 1e-9);
+  assert.ok(Math.abs(Edge.toneGain([enc, enc, enc], ZT, undefined, 16, 2) - 2) < 1e-9);
+});
+
+test('the composite has a gain mode writing the offset log-gain', () => {
+  const S = require('../shaders.js');
+  for (const n of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS', 'COMPOSITE_RAW_F_FS']) {
+    assert.match(S[n], /uniform float uGainOut;/, n);
+    assert.match(S[n], /toneGain\(img0, uTone, uToneCurve, toneCoef, uRawMax, uGainD\)/, n);
+  }
+});

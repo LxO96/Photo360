@@ -109,6 +109,9 @@
     padToSensorSquare: false,
     format: 'jpeg',
     quality: 95,
+    // Ultra HDR JPEG: how many stops brighter than white HDR screens may
+    // show the highlights (1..3). Like format and quality, not persisted.
+    hdrHeadroom: 2,
     // -- Raw (DNG) source state (Task 16) -----------------------------
     // True only while the currently loaded file is an uncompressed DNG.
     // Drives which shader program renderComposition/buildProfile pick
@@ -2345,7 +2348,9 @@
   // would clip it): it exports as JPEG while DNG stays the chosen format
   // for the raw photos.
   const isMergedHdr = () => !!(state.rawMeta && state.rawMeta.floatPlanes);
+  // Ultra HDR is for raw photos; a JPEG/.insp source exports plain JPEG.
   function effectiveFormat() {
+    if (state.format === 'uhdr' && !state.isRaw) return 'jpeg';
     return state.format === 'dng' && isMergedHdr() ? 'jpeg' : state.format;
   }
   function updateExportLabel() {
@@ -2353,12 +2358,22 @@
     dngOpt.disabled = !state.isRaw || isMergedHdr();
     dngOpt.title = isMergedHdr() ? 'DNG of a merged HDR photo comes with HDR export' : '';
     if (state.format === 'dng' && !state.isRaw) state.format = 'jpeg';
+    const uhdrOpt = formatEl.querySelector('option[value="uhdr"]');
+    uhdrOpt.disabled = !state.isRaw;
+    uhdrOpt.title = state.isRaw ? '' : 'Ultra HDR needs a raw (DNG) photo';
     const fmt = effectiveFormat();
-    formatEl.value = fmt;
-    exportBtn.textContent = { png: 'Export PNG', dng: 'Export DNG' }[fmt] || 'Export JPEG';
-    qualityEl.disabled = fmt !== 'jpeg';
+    // Ultra HDR stays the choice shown on a JPEG/.insp photo (which itself
+    // exports plain JPEG, as the button says): Export N still writes the
+    // raw photos of a selection as Ultra HDR (drawStrip's label).
+    formatEl.value = state.format === 'uhdr' ? 'uhdr' : fmt;
+    exportBtn.textContent = { png: 'Export PNG', dng: 'Export DNG', uhdr: 'Export Ultra HDR' }[fmt] || 'Export JPEG';
+    qualityEl.disabled = fmt !== 'jpeg' && fmt !== 'uhdr';
+    hdrHeadroomRowEl.classList.toggle('hidden', state.format !== 'uhdr');
   }
 
+  const hdrHeadroomRowEl = document.getElementById('hdrHeadroomRow');
+  const hdrHeadroomEl = document.getElementById('hdrHeadroom');
+  hdrHeadroomEl.addEventListener('input', () => { state.hdrHeadroom = Number(hdrHeadroomEl.value); });
   formatEl.addEventListener('input', () => {
     state.format = formatEl.value;
     updateExportLabel();
@@ -2467,7 +2482,8 @@
       // PNG carries no EXIF -- Exif.reattach only applies to the JPEG
       // container, so a PNG export has no capture time or camera embedded
       // (see README's Output section).
-      const out = opts.format === 'jpeg' ? Exif.reattach(bytes, state.sourceExif) : bytes;
+      let out = opts.format === 'jpeg' || opts.format === 'uhdr' ? Exif.reattach(bytes, state.sourceExif) : bytes;
+      if (opts.format === 'uhdr') out = await withGainMap(exportState, g, out, opts.hdrHeadroom || 2);
       const label = GL.exportLabel(state);
       download(new Blob([out], { type: blob.type }),
         Lens.exportFilename(state.sourceName, label, state.fovDeg,
@@ -2480,6 +2496,38 @@
         : 'Export failed: ' + e.message);
       return false;
     }
+  }
+
+  // Ultra HDR: the gain map (the composite's gain mode, shaders.js) at a
+  // quarter of the export's width and height, as 8-bit recovery values in
+  // a grey JPEG, appended to the SDR JPEG `sdr` with its metadata
+  // (ultrahdr.js).
+  async function withGainMap(exportState, g, sdr, headroom) {
+    const gl = ctx.gl;
+    const gw = Math.max(1, Math.round(g.width / 4)), gh = Math.max(1, Math.round(g.height / 4));
+    const t = GL.makeFloatExportTarget(gl, gw, gh, false);
+    const logGain = new Float32Array(gw * gh);
+    try {
+      if (!t.complete) throw new Error('no float target for the gain map');
+      GL.renderComposition(ctx, Object.assign({}, exportState, { gainOut: true, gainD: Math.pow(2, headroom) }), gw, gh, t.fbo);
+      GL.readCompositionStripsFloat(gl, t.fbo, gw, gh, gh, (rows, y, n) => {
+        for (let r = 0; r < n; r++) for (let x = 0; x < gw; x++) logGain[(y + r) * gw + x] = rows[(r * gw + x) * 4];
+      });
+    } finally {
+      GL.deleteExportTarget(gl, t);
+    }
+    const rec = UltraHdr.recoveryBytes(logGain);
+    const c = document.createElement('canvas');
+    c.width = gw; c.height = gh;
+    const im = new ImageData(gw, gh);
+    for (let i = 0; i < gw * gh; i++) {
+      const v = rec.bytes[i];
+      im.data[i * 4] = v; im.data[i * 4 + 1] = v; im.data[i * 4 + 2] = v; im.data[i * 4 + 3] = 255;
+    }
+    c.getContext('2d').putImageData(im, 0, 0);
+    const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.85));
+    if (!blob) throw new Error('TOBLOB_FAILED');
+    return UltraHdr.assemble(sdr, new Uint8Array(await blob.arrayBuffer()), rec.maxLog);
   }
 
   // DNG export (raw sources): renders linear camera RGB with the lens edge
@@ -2561,7 +2609,8 @@
     if (exportRun) return;
     const targets = photos.selected();
     const back = currentPhoto();
-    const opts = { format: state.format, quality: state.quality, padToSensorSquare: state.padToSensorSquare };
+    const opts = { format: state.format, quality: state.quality, padToSensorSquare: state.padToSensorSquare,
+      hdrHeadroom: state.hdrHeadroom };
     exportRun = { cancel: false };
     let done = 0;
     const failed = [];
@@ -2569,7 +2618,10 @@
       for (let i = 0; i < targets.length && !exportRun.cancel; i++) {
         stripNote('Exporting ' + (i + 1) + ' of ' + targets.length + ' — Esc to stop');
         const ok = (await openPhoto(targets[i], true)) &&
-          (await exportImage(Object.assign({}, opts, { format: opts.format === 'dng' && (!state.isRaw || isMergedHdr()) ? 'jpeg' : opts.format })));
+          (await exportImage(Object.assign({}, opts, {
+            format: (opts.format === 'dng' && (!state.isRaw || isMergedHdr())) || (opts.format === 'uhdr' && !state.isRaw)
+              ? 'jpeg' : opts.format,
+          })));
         if (ok) done++;
         else failed.push(Photos.nameOf(targets[i]) + (errorEl.textContent ? ' (' + errorEl.textContent + ')' : ''));
       }
@@ -2591,7 +2643,8 @@
   exportBtn.addEventListener('click', () => {
     if (!ctx || !state.sourceLensSize) return;
     if (photos.selected().length > 1) { exportSelected(); return; }
-    exportImage({ format: effectiveFormat(), quality: state.quality, padToSensorSquare: state.padToSensorSquare });
+    exportImage({ format: effectiveFormat(), quality: state.quality, padToSensorSquare: state.padToSensorSquare,
+      hdrHeadroom: state.hdrHeadroom });
   });
 
   // Print: the same full-resolution render as Export (same geometry and
@@ -2727,7 +2780,13 @@
     // Several selected: Export writes each of them (exportSelected).
     updateExportLabel();
     const n = photos.selected().length;
-    if (n > 1) exportBtn.textContent = exportBtn.textContent.replace(/^Export/, 'Export ' + n);
+    if (n > 1) {
+      const base = state.format === 'uhdr' ? 'Export Ultra HDR' : exportBtn.textContent;
+      exportBtn.textContent = base.replace(/^Export/, 'Export ' + n);
+      exportBtn.title = state.format === 'uhdr' ? 'Raw photos as Ultra HDR JPEG, the others as JPEG' : '';
+    } else {
+      exportBtn.title = '';
+    }
   }
   function stripNote(text) { stripNoteEl.textContent = text || ''; }
   const currentPhoto = () => photos.byId(photos.currentId);
@@ -3439,6 +3498,52 @@
     return { maxDiff, cases: DETAIL_PARITY_CASES.length, worst };
   }
 
+  // Ultra HDR gain parity: TONE_PARITY_FS in its gain mode against
+  // Edge.toneGain, over the tone cases, rawMax 1 / 4 / 16 and D 2 / 4 / 8.
+  function checkGainParity() {
+    ensureCtx();
+    const gl = ctx.gl;
+    const prog = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.TONE_PARITY_FS);
+    const t = GL.makeFloatExportTarget(gl, 256, 1, true);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    gl.viewport(0, 0, 256, 1);
+    gl.useProgram(prog);
+    const u = (n) => gl.getUniformLocation(prog, n);
+    const out = new Float32Array(256 * 4);
+    let maxDiff = 0, worst = null;
+    gl.uniform1f(u('uGainOut'), 1);
+    for (const rawMax of [1, 4, 16]) {
+      const scale = rawMax > 1 ? Edge.srgbEncode(rawMax) : 1;
+      gl.uniform1f(u('uRawMax'), rawMax);
+      gl.uniform1f(u('uInputScale'), scale);
+      for (const D of [2, 4, 8]) {
+        gl.uniform1f(u('uGainD'), D);
+        for (const local of [false, true]) {
+          for (const tn of TONE_PARITY_CASES) {
+            gl.uniform3f(u('uTone'), tn.exposureEv, tn.contrast, tn.saturation);
+            gl.uniform4f(u('uToneCurve'), tn.highlights, tn.shadows, tn.whites, tn.blacks);
+            gl.uniform1f(u('uLocal'), local ? 1 : 0);
+            gl.drawArrays(gl.TRIANGLES, 0, 3);
+            gl.readPixels(0, 0, 256, 1, gl.RGBA, gl.FLOAT, out);
+            for (let x = 0; x < 256; x++) {
+              const want = Edge.toneGain(toneParityInput(x).map((v) => v * scale), tn,
+                local ? toneParityCoef(x) : undefined, rawMax, D);
+              const d = Math.abs(out[x * 4] - want);
+              if (d > maxDiff) { maxDiff = d; worst = { tone: tn, rawMax, D, local, x, gpu: out[x * 4], js: want }; }
+            }
+          }
+        }
+      }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    GL.deleteExportTarget(gl, t);
+    gl.deleteProgram(prog);
+    console.log('gain parity: max abs diff =', maxDiff, maxDiff < 1e-3 ? '(OK, below 1e-3)' : '(FAIL, exceeds 1e-3)');
+    return { maxDiff, worst };
+  }
+
   // Float raw parity (a merged HDR photo's input path): with a DNG open,
   // renders the composition from its 16-bit planes and again from float
   // copies ((v - black) / (white - black), black 0, white 1), Detail off,
@@ -3515,6 +3620,6 @@
     openPhotoAt: (i) => openPhoto(photos.entries[i]),
     selectPhoto: (i, mode) => { photos.select(photos.entries[i].id, mode); drawStrip(); },
     removePhotoAt: (i) => removePhoto(photos.entries[i].id),
-    copyEdits, pasteEdits, exportSelected, checkFloatRawParity, mergeSelected,
+    copyEdits, pasteEdits, exportSelected, checkFloatRawParity, mergeSelected, checkGainParity,
   };
 })();

@@ -457,6 +457,18 @@ fallbacks, and `App.developInfo()` shows the path in use.
   preview does, so blown sky doesn't turn magenta; everything below that is
   left alone, so bright colours keep their latitude. Uncompressed: about
   67 MB per ONE X lens.
+- **Ultra HDR JPEG** — raw (DNG) sources, merged HDR photos included;
+  JPEG / .insp sources export a plain JPEG instead. The normal JPEG (same
+  quality slider, same EXIF) plus a gain map (`ultrahdr.js`, Ultra HDR v1.1
+  with ISO 21496-1 metadata): on an HDR screen — Android 14+, Chrome / Edge
+  on an HDR display, iOS 18 / macOS 15 — the highlights are shown brighter,
+  everywhere else it is the ordinary JPEG. Only light the edit compressed
+  is given back: where Highlights, Whites, the HDR shoulder or Exposure
+  squeezed or clipped a highlight, the HDR version shows it nearer its
+  real brightness, faded in over the bright tones so mid-tones and faces
+  stay exactly the JPEG. **HDR headroom** (1–3 stops, default 2) caps how
+  much brighter than white it may go. A merged HDR photo gains the most; an
+  unedited single DNG looks the same in HDR. The rim glow is not boosted.
 - **Pad to sensor square** — see "Export sizing" below.
 - **Export** — renders at full resolution to an offscreen buffer (so the
   on-screen preview is never touched) and downloads the result. The

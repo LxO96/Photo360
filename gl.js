@@ -1037,6 +1037,8 @@
       gl.uniform1f(u('uTerminatorCoolShift'), state.edge.terminatorCoolShift);
       gl.uniform3f(u('uTone'), state.tone.exposureEv, state.tone.contrast, state.tone.saturation);
       gl.uniform1f(u('uRawMax'), rawMaxOf(state));
+      gl.uniform1f(u('uGainOut'), state.gainOut ? 1 : 0);   // Ultra HDR gain map pass
+      gl.uniform1f(u('uGainD'), state.gainD || 1);
       gl.uniform1f(u('uMono'), state.tone.mono ? 1 : 0);
       gl.uniform4f(u('uToneCurve'), state.tone.highlights || 0, state.tone.shadows || 0,
         state.tone.whites || 0, state.tone.blacks || 0);

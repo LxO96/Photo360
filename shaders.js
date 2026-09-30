@@ -344,6 +344,16 @@
     }
     if (tone.z != 0.0) lin = saturateOklab(lin, 1.0 + tone.z);
     return srgbEncode3(gamutMap(lin));
+  }
+
+  // Ultra HDR gain (edge.js toneGain).
+  float toneGain(vec3 rgb, vec3 tone, vec4 curve, vec2 coef, float rawMax, float D) {
+    float g = pow(2.0, tone.x);
+    float yScene = dot(srgbDecode3(rgb * g), TONE_LUMA);
+    vec3 outc = applyTone(rgb, tone, curve, coef, rawMax);
+    float ySdr = dot(srgbDecode3(outc), TONE_LUMA);
+    float b = clamp(yScene / max(ySdr, 1e-6), 1.0, D);
+    return pow(b, smoothstep(0.6, 0.9, srgbEncode1(ySdr)));
   }`;
 
 
@@ -542,6 +552,11 @@
   // JPEG / .insp white balance (jpegwb.js matrix), linear sRGB; off for raw.
   uniform mat3  uJpegWb;
   uniform float uJpegWbOn;
+  // Ultra HDR (app.js exportImage): 1 writes the photo's gain -- log2 of
+  // (Ysdr * gain + 1/64) / (Ysdr + 1/64), the gain map's offset form --
+  // instead of colour; uGainD caps the gain (2^headroom).
+  uniform float uGainOut;
+  uniform float uGainD;
   out vec4 fragColor;
   ` + SAMPLE_LENS_GLSL + TONE_GLSL + EDGE_GLSL + `
 
@@ -563,7 +578,14 @@
       if (uJpegWbOn > 0.5) img = srgbEncode3(gamutMap(uJpegWb * srgbDecode3(img)));
       vec2 toneCoef = uToneLocal > 0.5
         ? texture(uToneBase, lensTexelPos(uv) * uToneBaseScale).rg : vec2(1.0, 0.0);
+      vec3 img0 = img;
       img = applyTone(img, uTone, uToneCurve, toneCoef, uRawMax);
+      if (uGainOut > 0.5) {
+        float gn = toneGain(img0, uTone, uToneCurve, toneCoef, uRawMax, uGainD);
+        float ys = dot(srgbDecode3(img), TONE_LUMA);
+        fragColor = vec4(log2((ys * gn + 0.015625) / (ys + 0.015625)), 0.0, 0.0, 1.0);
+        return;
+      }
       float term = terminator(u);
       float fade = 1.0 - term;
       img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);
@@ -571,6 +593,7 @@
       img *= term;
     }
 
+    if (uGainOut > 0.5) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }   // outside the photo
     vec3 outColor = img + rimLight(u, theta);
     if (uMono > 0.5) outColor = toneMono(outColor);
     fragColor = vec4(outColor, 1.0);
@@ -838,6 +861,8 @@
   uniform float uLocal;
   uniform float uRawMax;
   uniform float uInputScale;   // srgbEncode(uRawMax): inputs brighter than white
+  uniform float uGainOut;      // 1: write toneGain (App.checkGainParity) instead
+  uniform float uGainD;
   out vec4 fragColor;
   ` + TONE_GLSL + `
   void main() {
@@ -845,7 +870,9 @@
     vec3 rgb = vec3(x / 255.0, (255.0 - x) / 255.0 * 0.8 + 0.1, mod(x * 37.0, 256.0) / 255.0) * uInputScale;
     // A local base's (A, B), varied along x (App's toneParityCoef).
     vec2 coef = uLocal > 0.5 ? vec2(mod(x * 29.0, 64.0) / 64.0, mod(x * 13.0, 32.0) / 64.0) : vec2(1.0, 0.0);
-    fragColor = vec4(applyTone(rgb, uTone, uToneCurve, coef, uRawMax), 1.0);
+    fragColor = uGainOut > 0.5
+      ? vec4(toneGain(rgb, uTone, uToneCurve, coef, uRawMax, uGainD), 0.0, 0.0, 1.0)
+      : vec4(applyTone(rgb, uTone, uToneCurve, coef, uRawMax), 1.0);
   }`;
   const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS, true);
 
