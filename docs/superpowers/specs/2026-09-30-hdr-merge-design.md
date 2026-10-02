@@ -30,9 +30,13 @@ longer exposures and shadows noisy in the shorter ones both come out clean.
   (already done for its quick thumbnail): camera model, capture time
   (DateTime, to the second), ISO, exposure time, sensor size, CFA pattern,
   black/white level.
-- DNGs with the same model, capture second, ISO, sensor size and CFA
-  pattern, and at least two different exposure times, form a set. Files
-  with the same exposure time as another member are left out of that set.
+- DNGs with the same model, capture second, sensor size and CFA pattern,
+  and at least two different exposures, form a set. Exposure is shutter
+  time × ISO (changed 2026-09-30: the ONE X's brackets step the ISO too,
+  e.g. 1/146 s ISO 100 + 1/60 s ISO 164 = 2 EV; its raw values follow the
+  product, measured 3.997× for 3.990×). Scaling and the reference use it;
+  the noise weight stays the shutter time. Files
+  with the same exposure as another member are left out of that set.
 - The strip marks each member tile with a small "HDR n" marker (n = set
   size) in the tile's top-left corner.
 - Test data: `IMG_20240825_174907_00_019.dng` (1/867 s) and `_020`

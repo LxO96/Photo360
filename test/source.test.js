@@ -142,3 +142,34 @@ test('decodeMerged merges the 174907 bracket pair into float planes', async () =
   }
   assert.ok(checked > 50, 'clipped samples checked: ' + checked);
 });
+
+test('decodeMerged merges an ISO-stepped pair (173735: 1/146 s ISO 100 + 1/60 s ISO 164)', async () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  global.Wb = global.Wb || require('../wb.js');
+  global.HdrMerge = global.HdrMerge || require('../hdrmerge.js');
+  const DIR = path.join(__dirname, '..', 'Testfiles', 'HDR');
+  const fileOf = (p) => ({ name: path.basename(p), arrayBuffer: async () => {
+    const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); } });
+  const shortP = path.join(DIR, 'IMG_20240825_173735_00_003.dng');
+  const refP = path.join(DIR, 'IMG_20240825_173735_00_004.dng');
+  const d = await Source.decodeMerged([fileOf(shortP), fileOf(refP)], 16384);
+  const ref = Source.dngFrame(new Uint8Array(fs.readFileSync(refP)));
+  const sh = Source.dngFrame(new Uint8Array(fs.readFileSync(shortP)));
+  const ratio = HdrMerge.exposureOf(ref.d) / HdrMerge.exposureOf(sh.d);
+  assert.ok(Math.abs(ratio - 3.99) < 0.02, String(ratio));
+  assert.ok(Math.abs(d.rawMeta.hdrMax - ratio) < 1e-9);
+  let checked = 0;
+  for (let L = 0; L < 2; L++) {
+    for (let i = 0; i < ref.planes[L].length && checked < 3000; i += 97) {
+      const nRef = (ref.planes[L][i] - ref.d.blackLevel) / (ref.d.whiteLevel - ref.d.blackLevel);
+      if (nRef < 0.99) continue;
+      const nSh = (sh.planes[L][i] - sh.d.blackLevel) / (sh.d.whiteLevel - sh.d.blackLevel);
+      if (nSh > 0.75 || nSh < 0.3) continue;
+      const want = nSh * ratio;
+      assert.ok(Math.abs(d.planes[L][i] - want) <= 0.03 * want, i + ': ' + d.planes[L][i] + ' vs ' + want);
+      checked++;
+    }
+  }
+  assert.ok(checked > 50, 'clipped samples checked: ' + checked);
+});

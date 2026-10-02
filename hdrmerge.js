@@ -21,13 +21,19 @@
   // frame take the shortest frame.
   const KNEE = 0.80, CLIP = 0.95;
 
+  // A frame's exposure: shutter time x ISO (in ISO 100 seconds). Brackets
+  // may step the ISO as well as the time (the ONE X's do), and the raw
+  // values follow the product -- measured on its 2 EV pairs: 3.997x for a
+  // predicted 3.990x.
+  const exposureOf = (m) => m.exposureTime * ((m.iso > 0 ? m.iso : 100) / 100);
   const second = (m) => String(m.dateTimeOriginal || '').slice(0, 19);
-  const sameShot = (a, b) => a.model === b.model && second(a) === second(b) && a.iso === b.iso &&
+  const sameShot = (a, b) => a.model === b.model && second(a) === second(b) &&
     a.width === b.width && a.height === b.height && String(a.cfaPattern) === String(b.cfaPattern);
+  const sameExposure = (a, b) => Math.abs(exposureOf(a) / exposureOf(b) - 1) < 1e-3;
 
   // items: [{ id, meta }] (meta as Dng.parse gives it). Sets of two or
-  // more with distinct exposure times, ids in order of exposure; a second
-  // photo with an exposure already in the set is left out of it.
+  // more with distinct exposures (exposureOf), ids in order of exposure; a
+  // second photo with an exposure already in the set is left out of it.
   function detectSets(items) {
     const sets = [], used = new Set();
     const usable = (it) => it.meta && it.meta.exposureTime > 0 && second(it.meta);
@@ -36,12 +42,12 @@
       const group = [it];
       for (const o of items) {
         if (o === it || used.has(o.id) || !usable(o) || !sameShot(it.meta, o.meta)) continue;
-        if (group.some((g) => Math.abs(g.meta.exposureTime - o.meta.exposureTime) < 1e-9)) continue;
+        if (group.some((g) => sameExposure(g.meta, o.meta))) continue;
         group.push(o);
       }
       if (group.length < 2) continue;
       for (const g of group) used.add(g.id);
-      sets.push(group.sort((a, b) => a.meta.exposureTime - b.meta.exposureTime).map((g) => g.id));
+      sets.push(group.sort((a, b) => exposureOf(a.meta) - exposureOf(b.meta)).map((g) => g.id));
     }
     return sets;
   }
@@ -56,10 +62,12 @@
       if (m.width !== a.width || m.height !== a.height || String(m.cfaPattern) !== String(a.cfaPattern)) {
         return { ok: false, reason: 'The photos differ in size.' };
       }
-      if (m.iso !== a.iso) return { ok: false, reason: 'The photos differ in ISO.' };
     }
-    const times = new Set(metas.map((m) => m.exposureTime.toPrecision(6)));
-    if (times.size !== metas.length) return { ok: false, reason: 'Two photos have the same exposure.' };
+    for (let i = 0; i < metas.length; i++) {
+      for (let j = i + 1; j < metas.length; j++) {
+        if (sameExposure(metas[i], metas[j])) return { ok: false, reason: 'Two photos have the same exposure.' };
+      }
+    }
     return { ok: true, reason: '' };
   }
 
@@ -76,17 +84,20 @@
     return t * t * (3 - 2 * t);
   };
 
-  // frames: [{ plane (Uint16Array, w x h CFA), t (seconds), black, white }].
+  // frames: [{ plane (Uint16Array, w x h CFA), t (seconds), iso (default
+  // 100), black, white }]. Scaling and the reference go by exposure (t x
+  // ISO); the noise weight by t alone (the light collected -- ISO only
+  // amplifies it).
   function mergePlanes(frames, w, h) {
     const n = frames.length;
-    const times = frames.map((f) => f.t);
-    const ref = referenceIndex(times);
-    const tRef = times[ref];
+    const exps = frames.map((f) => exposureOf({ exposureTime: f.t, iso: f.iso }));
+    const ref = referenceIndex(exps);
+    const eRef = exps[ref];
     let shortest = 0;
-    for (let i = 1; i < n; i++) if (times[i] < times[shortest]) shortest = i;
-    const hdrMax = tRef / times[shortest];
+    for (let i = 1; i < n; i++) if (exps[i] < exps[shortest]) shortest = i;
+    const hdrMax = eRef / exps[shortest];
     // Sample -> reference units: (v - black) * scale[i].
-    const scale = frames.map((f) => tRef / (f.t * (f.white - f.black)));
+    const scale = frames.map((f, i) => eRef / (exps[i] * (f.white - f.black)));
     const out = new Float32Array(w * h);
     const weight = new Float64Array(n);
     const idx = new Int32Array(4);
@@ -127,5 +138,5 @@
     return { plane: out, hdrMax, ref };
   }
 
-  return { KNEE, CLIP, detectSets, canMerge, mergeKey, referenceIndex, mergePlanes };
+  return { KNEE, CLIP, exposureOf, detectSets, canMerge, mergeKey, referenceIndex, mergePlanes };
 });

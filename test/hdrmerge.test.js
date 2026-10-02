@@ -6,17 +6,21 @@ const H = require('../hdrmerge.js');
 const meta = (o) => Object.assign({ model: 'X', dateTimeOriginal: '2024:08:25 17:49:07', iso: 100,
   exposureTime: 1 / 200, width: 8, height: 4, cfaPattern: [0, 1, 1, 2] }, o);
 
-test('detectSets groups same second / model / ISO / size, distinct exposures', () => {
+test('detectSets groups same second / model / size, distinct exposures (time x ISO)', () => {
   const items = [
     { id: 1, meta: meta({ exposureTime: 1 / 800 }) },
     { id: 2, meta: meta({ exposureTime: 1 / 200 }) },
     { id: 3, meta: meta({ exposureTime: 1 / 200 }) },                 // duplicate exposure
     { id: 4, meta: meta({ exposureTime: 1 / 50 }) },
     { id: 5, meta: meta({ dateTimeOriginal: '2024:08:25 17:49:08' }) }, // another second, alone
-    { id: 6, meta: meta({ iso: 200, exposureTime: 1 / 800 }) },         // another ISO, alone
+    { id: 6, meta: meta({ iso: 200, exposureTime: 1 / 800 }) },         // ISO 200: exposure 1/400 at ISO 100
+    { id: 8, meta: meta({ iso: 400, exposureTime: 1 / 400 }) },         // = 1/100 at ISO 100 ...
+    { id: 9, meta: meta({ iso: 200, exposureTime: 1 / 200 }) },         // ... the same exposure again: left out
     { id: 7, meta: meta({ exposureTime: null }) },                      // no exposure: never grouped
   ];
-  assert.deepStrictEqual(H.detectSets(items), [[1, 2, 4]]);
+  // ISO is part of the exposure (brackets may step the ISO too).
+  // The two left out (3, 9) differ from each other: a second bracket.
+  assert.deepStrictEqual(H.detectSets(items), [[1, 6, 2, 8, 4], [3, 9]]);
 });
 
 test('canMerge explains why not', () => {
@@ -24,7 +28,8 @@ test('canMerge explains why not', () => {
   assert.match(H.canMerge([meta()]).reason, /two/i);
   assert.match(H.canMerge([meta(), meta()]).reason, /exposure/i);
   assert.match(H.canMerge([meta({ exposureTime: 1 / 800 }), meta({ width: 16 })]).reason, /size/i);
-  assert.match(H.canMerge([meta({ exposureTime: 1 / 800 }), meta({ iso: 400 })]).reason, /ISO/);
+  assert.ok(H.canMerge([meta({ exposureTime: 1 / 800 }), meta({ iso: 400 })]).ok, 'ISO steps are exposure steps');
+  assert.match(H.canMerge([meta({ exposureTime: 1 / 400, iso: 200 }), meta({ exposureTime: 1 / 200, iso: 100 })]).reason, /exposure/i);
 });
 
 test('mergeKey is order independent', () => {
@@ -87,4 +92,20 @@ test('longer exposures weigh more where both are usable', () => {
     { plane: long, t: 1, black: 100, white: 4100 }], W, Hh, CFA);
   // weights 0.25 : 1, the short frame's error (40 / 4000 / 0.25 = 0.04) is cut to a fifth
   assert.ok(Math.abs(m.plane[0] - (0.2 + 0.04 / 5)) < 2e-3, String(m.plane[0]));
+});
+
+test('ISO is part of the exposure: t x ISO sets the scale and the reference', () => {
+  const scene = Float32Array.from({ length: W * Hh }, (_, i) => 0.02 + 3.5 * i / (W * Hh));
+  // The short frame at 1/4 of the time; the long one at half the time but
+  // twice the ISO -- as the camera's ISO-stepped brackets do.
+  const frames = [
+    { plane: expose(scene, 0.25), t: 0.25, iso: 100, black: 100, white: 4100 },
+    { plane: expose(scene, 1), t: 0.5, iso: 200, black: 100, white: 4100 },
+  ];
+  const m = H.mergePlanes(frames, W, Hh);
+  assert.strictEqual(m.ref, 1);
+  assert.strictEqual(m.hdrMax, 4);
+  for (let i = 0; i < scene.length; i++) {
+    assert.ok(Math.abs(m.plane[i] - scene[i]) <= 0.01 * scene[i] + 0.002, i + ': ' + m.plane[i] + ' vs ' + scene[i]);
+  }
 });

@@ -75,8 +75,9 @@ it. A dot marks an edited photo; × removes one from the strip.
 
 ### HDR (bracket merge)
 
-Raw (DNG) exposure brackets of a still scene — the same camera, second and
-ISO, different shutter speeds — are recognised in the strip and marked
+Raw (DNG) exposure brackets of a still scene — the same camera and second,
+different exposures (shutter time × ISO: the ONE X steps both) — are
+recognised in the strip and marked
 **HDR n**; click the marker to select the whole set (or Ctrl-select raw
 photos by hand), then **Merge HDR**. The merge becomes a new photo,
 `<first>_HDR`, next to them: each sensor block is taken from the cleanest

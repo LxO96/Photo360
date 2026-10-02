@@ -175,13 +175,13 @@
     }
     const check = HdrMerge.canMerge(frames.map((f) => Object.assign({}, f.d)));
     if (!check.ok) throw formattedError(check.reason);
-    const ref = HdrMerge.referenceIndex(frames.map((f) => f.d.exposureTime));
+    const ref = HdrMerge.referenceIndex(frames.map((f) => HdrMerge.exposureOf(f.d)));
     const size = frames[ref].layout.lensSize, lenses = frames[ref].layout.lenses.length;
     const planes = [];
     let hdrMax = 1;
     for (let lens = 0; lens < lenses; lens++) {
       const m = HdrMerge.mergePlanes(frames.map((f) => ({
-        plane: f.planes[lens], t: f.d.exposureTime, black: f.d.blackLevel, white: f.d.whiteLevel,
+        plane: f.planes[lens], t: f.d.exposureTime, iso: f.d.iso, black: f.d.blackLevel, white: f.d.whiteLevel,
       })), size, size);
       planes.push(m.plane);
       hdrMax = m.hdrMax;
