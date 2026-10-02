@@ -172,6 +172,11 @@
   body:not(.loaded) #scopeBox { display: none; }
   /* Match lenses: target / source circles (app.js drawMatch). Sizes are
      in canvas pixels; --px is canvas pixels per CSS pixel. */
+  #sunLayer { position: absolute; z-index: 4; pointer-events: none; overflow: visible; }
+  #sunLayer .s-ring { fill: rgba(255, 220, 120, .12); stroke: #ffd36b; stroke-width: calc(2px * var(--px, 1)); pointer-events: all; cursor: move; }
+  #sunLayer .s-halo { fill: none; stroke: rgba(0, 0, 0, .55); stroke-width: calc(4.5px * var(--px, 1)); }
+  #sunLayer .s-ray { stroke: #ffd36b; stroke-width: calc(2px * var(--px, 1)); stroke-linecap: round; }
+  #sunLayer .s-pip.out .s-ring { fill: none; stroke-dasharray: calc(3px * var(--px, 1)) calc(3px * var(--px, 1)); }
   #matchLayer { position: absolute; z-index: 4; pointer-events: none; overflow: visible; }
   #matchLayer .m-line { stroke: #ffffff; stroke-width: calc(1.5px * var(--px, 1)); stroke-dasharray: calc(6px * var(--px, 1)) calc(5px * var(--px, 1)); opacity: .85; }
   #matchLayer .m-halo { fill: none; stroke: rgba(0, 0, 0, .55); stroke-width: calc(4px * var(--px, 1)); pointer-events: stroke; cursor: move; }
@@ -267,6 +272,23 @@
     border: 1px solid var(--line-2); border-radius: 2px; padding: 0 4px; line-height: 14px;
   }
   details.sec > .body { padding: 6px 12px 10px; }
+  /* The Edge panel: the rim look gallery, then its sliders under Adjust. */
+  .looks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 2px 0 8px; }
+  .looks .look { display: flex; flex-direction: column; gap: 3px; padding: 0; border: 0; background: none;
+    color: var(--fg-2); font: inherit; font-size: 10.5px; line-height: 1.2; cursor: pointer; text-align: center; min-width: 0; }
+  .looks .look canvas { width: 100%; aspect-ratio: 1; display: block; border-radius: 5px; background: #000;
+    outline: 1px solid var(--line); outline-offset: -1px; }
+  .looks .look:hover canvas { outline-color: var(--fg-2); }
+  .looks .look.current { color: var(--fg); }
+  .looks .look.current canvas { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .looks .look .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .looks .look .ed { color: var(--mut); font-size: 9.5px; }
+  details.sub { margin-top: 2px; }
+  details.sub > summary { list-style: none; cursor: pointer; color: var(--fg-2); font-size: 11px; padding: 4px 0; }
+  details.sub > summary::-webkit-details-marker { display: none; }
+  details.sub > summary::before { content: '\25B8'; display: inline-block; width: 12px; transition: transform .12s; }
+  details.sub[open] > summary::before { transform: rotate(90deg); }
+  details.sub > summary:hover { color: var(--fg); }
 
   /* One control per row: label | slider | editable value. */
   .row {
@@ -417,6 +439,7 @@
     <canvas id="guides"></canvas>
     <div id="beforeBadge" class="hidden">Before</div>
     <svg id="matchLayer" class="hidden" aria-label="Match lenses: Target and Matching colour circles"></svg>
+    <svg id="sunLayer" class="hidden" aria-label="The sun: drag to move it"></svg>
     <div id="help" class="hidden" role="dialog" aria-label="Keyboard shortcuts">
       <div class="help-head"><span>Keyboard shortcuts</span>
         <button class="close btn ghost sq" type="button" aria-label="Close">&times;</button></div>
@@ -493,10 +516,10 @@
         <label class="check"><input id="swap" type="checkbox"> Swap A and B</label>
         <div id="swapHint" class="note hidden">A single-lens file has no lens B to swap in.</div>
         <div class="row"><label for="gap">Gap</label>
-          <input id="gap" type="range" min="0" max="25" step="0.5" value="16">
+          <input id="gap" type="range" min="0" max="25" step="0.5" value="0">
           <span class="val"><input id="gapOut" class="num" type="text" inputmode="decimal" aria-label="Gap, percent"><i>%</i></span></div>
         <div class="row"><label for="margin">Margin</label>
-          <input id="margin" type="range" min="0" max="25" step="0.5" value="8">
+          <input id="margin" type="range" min="0" max="25" step="0.5" value="0">
           <span class="val"><input id="marginOut" class="num" type="text" inputmode="decimal" aria-label="Margin, percent"><i>%</i></span></div>
       </div>
     </details>
@@ -582,6 +605,9 @@
     <details class="sec" data-panel="edge">
       <summary>Edge</summary>
       <div class="body">
+        <div id="lookGallery" class="looks" role="listbox" aria-label="Rim look"></div>
+        <details class="sub" data-panel="edgeAdjust">
+          <summary>Adjust</summary>
         <div class="row"><label for="edgeIntensity">Intensity</label>
           <input id="edgeIntensity" type="range" min="0" max="4" step="0.00001">
           <span class="val"><input id="edgeIntensityOut" class="num" type="text" inputmode="decimal" aria-label="Edge intensity"><i></i></span></div>
@@ -603,7 +629,13 @@
         <div class="row"><label for="falloffSoftness" title="Falloff softness">Falloff soft.</label>
           <input id="falloffSoftness" type="range" min="0.3" max="4" step="0.05">
           <span class="val"><input id="falloffSoftnessOut" class="num" type="text" inputmode="decimal" aria-label="Falloff softness"><i></i></span></div>
-        <div class="actions"><button id="resetEdge" class="btn ghost" type="button">Reset to X1 classic</button></div>
+        <label class="check" title="Glare on the rim from the sun, strongest on the side facing it"><input id="sunOn" type="checkbox" checked> Sun glare</label>
+        <div class="row"><label for="sunStrength">Strength</label>
+          <input id="sunStrength" type="range" min="0" max="200" step="1" value="100">
+          <span class="val"><input id="sunStrengthOut" class="num" type="text" inputmode="decimal" aria-label="Sun glare strength, percent"><i>%</i></span></div>
+        <div id="sunNote" class="note"></div>
+        <div class="actions"><button id="sunDetect" class="btn ghost" type="button" title="Look for the sun again (drag the sun marker to place it by hand)">Re-detect sun</button></div>
+        </details>
       </div>
     </details>
 
@@ -716,6 +748,7 @@
   <script src="autowb.js"></script>
   <script src="wbmatch.js"></script>
   <script src="jpegwb.js"></script>
+  <script src="sundetect.js"></script>
   <script src="shaders.js"></script>
   <script src="gl.js"></script>
   <script src="settings.js"></script>

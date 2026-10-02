@@ -350,3 +350,12 @@ test('the four new Tone sliders persist and clamp to -100..100', () => {
   assert.strictEqual(out.tone.whites, -100);
   assert.strictEqual(out.tone.blacks, 0);
 });
+
+// Sun glare: a photo's sun is one of its edits, sanitized like the rest.
+test('sun is persisted and sanitized: status enum, strength range, dir and tint shapes', () => {
+  const defaults = { sun: { on: true, status: 'pending', dir: [0, 0, 1], strength: 1, tint: [1, 1, 1] } };
+  assert.ok(Settings.PERSISTED_KEYS.includes('sun'));
+  const s = Settings.sanitize(defaults, { sun: { on: false, status: 'bogus', dir: [0.6, 0, 0.8], strength: 9, tint: [1, 0.8] } }).sun;
+  assert.deepStrictEqual(s, { on: false, status: 'pending', dir: [0.6, 0, 0.8], strength: 2, tint: [1, 1, 1] });
+  assert.strictEqual(Settings.sanitize(defaults, { sun: { status: 'manual' } }).sun.status, 'manual');
+});

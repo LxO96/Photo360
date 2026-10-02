@@ -223,13 +223,16 @@ const CHANNELS = ['r', 'g', 'b'];
 test('the COMPOSITE_FS shader source still matches this test\'s transcription of it', () => {
   const Shaders = require('../shaders.js');
   const src = Shaders.COMPOSITE_FS;
-  assert.ok(src.includes('const vec3 COOL = vec3(0.82, 0.92, 1.12)'),
-    'COMPOSITE_FS\'s COOL constant no longer matches COMPOSITE_COOL above -- update both');
+  // The cast is now the look's castColor (edge.js PRESETS), X1 classic's
+  // being the old fixed COOL this transcribes.
+  const c = Edge.PRESETS.x1classic.castColor;
+  assert.deepStrictEqual(c, [COMPOSITE_COOL.r, COMPOSITE_COOL.g, COMPOSITE_COOL.b],
+    'X1 classic castColor no longer matches COMPOSITE_COOL above -- update both');
   assert.ok(
-    src.includes('img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);') &&
-    src.includes('img = mix(img, img * COOL, fade * uTerminatorCoolShift);') &&
-    src.includes('img *= term;'),
-    'COMPOSITE_FS\'s desaturate -> cool-shift -> terminator ordering changed -- ' +
+    src.includes('img = mix(img, vec3(l), fade * uTerminatorDesaturate);') &&
+    src.includes('img = mix(img, img * uCastColor, fade * uTerminatorCoolShift);') &&
+    src.includes('img *= term;') && src.includes('img = edgeFade(img, u, theta + uRoll);'),
+    'COMPOSITE_FS desaturate -> cast -> terminator ordering changed -- ' +
     'modelBand above must be updated to match');
   assert.ok(src.includes('if (u < 1.0) {'),
     'COMPOSITE_FS\'s hard u < 1.0 gate on the image term changed -- modelBand\'s ' +
@@ -410,4 +413,198 @@ test('the unfitted shadow band stays within its observed range (regression guard
       `circle "${c.id}" shadow RMS ${c.rms.toFixed(4)} exceeds the regression guard ${SHADOW_THRESHOLD}; ` +
       `per-circle: ${detail}`);
   }
+});
+
+// -- Sun glare (edge.js sunGlare; spec 2026-10-02-sun-glare-design) --
+const D = Math.PI / 180;
+const sunAt = (o) => Object.assign({ theta: 60 * D, alpha: 0, strength: 1, tint: [1, 1, 1], thetaMaxDeg: 105 }, o);
+
+test('sunGlare is strongest on the rim facing the sun and never below the floor', () => {
+  const s = sunAt({ theta: 90 * D, alpha: 1 });
+  const toward = Edge.sunGlare(1, s)[0], away = Edge.sunGlare(1 + Math.PI, s)[0];
+  assert.ok(Math.abs(toward - Edge.SUN.K) < 1e-9, String(toward));
+  assert.ok(away < toward);
+  assert.ok(Math.abs(away - Edge.SUN.K * (Edge.SUN.F + (1 - Edge.SUN.F) * Math.exp(-((Math.PI / (Edge.SUN.W * D)) ** 2)))) < 1e-9);
+});
+
+test('sunGlare: a sun on the lens axis lights the whole rim evenly', () => {
+  const s = sunAt({ theta: 0 });
+  const a = Edge.sunGlare(0, s)[0], b = Edge.sunGlare(2, s)[0];
+  assert.ok(Math.abs(a - b) < 1e-12);
+});
+
+test('sunGlare: a lens facing away from the sun keeps only B of it', () => {
+  const front = Edge.sunGlare(0, sunAt({ theta: 60 * D }))[0];
+  const back = Edge.sunGlare(0, sunAt({ theta: 170 * D }))[0];
+  const lobeBack = Edge.SUN.F + (1 - Edge.SUN.F) * Math.exp(-(((80 * D) / (Edge.SUN.W * D)) ** 2));
+  const lobeFront = Edge.SUN.F + (1 - Edge.SUN.F) * Math.exp(-(((30 * D) / (Edge.SUN.W * D)) ** 2));
+  assert.ok(Math.abs(back / lobeBack - Edge.SUN.B * front / lobeFront) < 1e-9);
+});
+
+test('sunGlare: strength and tint scale it; strength 0 is off', () => {
+  const g = Edge.sunGlare(0, sunAt({ strength: 2, tint: [1, 0.5, 0.25] }));
+  const g1 = Edge.sunGlare(0, sunAt())[0];
+  assert.ok(Math.abs(g[0] - 2 * g1) < 1e-12 && Math.abs(g[1] - g1) < 1e-12 && Math.abs(g[2] - g1 / 2) < 1e-12);
+  assert.deepStrictEqual(Edge.sunGlare(0, sunAt({ strength: 0 })), [0, 0, 0]);
+});
+
+test('sunGlare: a low sun lights its side of the rim over twice as much as the far side', () => {
+  const s = sunAt({ theta: 95 * D, alpha: 0 });
+  assert.ok(Edge.sunGlare(0, s)[0] > 2 * Edge.sunGlare(Math.PI, s)[0]);
+});
+
+// The GPU half of the sun glare parity check (App.checkSunParity) renders
+// Shaders.SUN_PARITY_FS; it proves something about the shipped shaders only
+// if they share its SUN_GLSL, and rimLight adds it.
+test('both composites and the sun parity shader share one SUN_GLSL, added in rimLight', () => {
+  const Shaders = require('../shaders.js');
+  for (const name of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS', 'COMPOSITE_DNG_FS', 'SUN_PARITY_FS']) {
+    assert.ok(Shaders[name].includes(Shaders.SUN_GLSL), name);
+  }
+});
+
+test('sunRadial: the haze bell inside the rim, a much tighter fall outside it', () => {
+  const hw = 0.04685;
+  assert.strictEqual(Edge.sunRadial(1, hw), 1);
+  assert.ok(Math.abs(Edge.sunRadial(0.97, hw) - Edge.rimBell(0.97, 1, hw)) < 1e-12);
+  assert.ok(Math.abs(Edge.sunRadial(1.01, hw) - Edge.rimBell(1.01, 1, Edge.SUN.OUT)) < 1e-12);
+  assert.ok(Edge.sunRadial(1.03, hw) < 0.01, 'gone a little past the rim');
+});
+
+test('the shaders lay the sun glare on sunRadial, with uSunOut = Edge.SUN.OUT', () => {
+  const Shaders = require('../shaders.js');
+  assert.ok(/sunGlare\(theta \+ uRoll\) \* sunRadial\(u\)/.test(Shaders.EDGE_GLSL));
+  assert.ok(/float sunRadial\(float u\)/.test(Shaders.EDGE_GLSL));
+});
+
+// -- Rim looks (spec 2026-10-02-rim-looks-design) --
+const X1 = Edge.PRESETS.x1classic;
+
+test('edgeFade, X1 classic: desaturate, the old fixed cool cast, then fade -- as before', () => {
+  const img = [0.8, 0.6, 0.4], u = 0.97;
+  const term = Edge.terminator(u, X1.falloffStart, X1.falloffSoftness), fade = 1 - term;
+  const l = 0.2126 * 0.8 + 0.7152 * 0.6 + 0.0722 * 0.4;
+  const COOL = [0.82, 0.92, 1.12];
+  const want = img.map((c, i) => {
+    let v = c + (l - c) * fade * X1.terminatorDesaturate;
+    v = v + (v * COOL[i] - v) * fade * X1.terminatorCoolShift;
+    return v * term;
+  });
+  const got = Edge.edgeFade(img, u, X1);
+  for (let i = 0; i < 3; i++) assert.ok(Math.abs(got[i] - want[i]) < 1e-12, String(got));
+});
+
+test('edgeFade fringe: none inside the falloff, peak where the image is half faded, follows its brightness', () => {
+  const e = Object.assign({}, X1, { fringeColor: [0.3, 0.3, 1], fringeStrength: 0.7 });
+  assert.deepStrictEqual(Edge.edgeFade([0.5, 0.5, 0.5], 0.5, e), [0.5, 0.5, 0.5]);
+  assert.strictEqual(Edge.fringeBand(1, e), 0);
+  assert.ok(Math.abs(Edge.fringeBand(Edge.halfFade(e), e) - 1) < 1e-9);
+  // Find the half-fade radius; there the colour is mostly the fringe's.
+  let u = e.falloffStart;
+  while (Edge.terminator(u, e.falloffStart, e.falloffSoftness) > 0.5) u += 1e-5;
+  const bright = Edge.edgeFade([0.8, 0.8, 0.8], u, e), dark = Edge.edgeFade([0.1, 0.1, 0.1], u, e);
+  assert.ok(bright[2] > bright[0] * 2, String(bright));
+  assert.ok(Math.abs(dark[2] / bright[2] - 0.125) < 0.02);
+});
+
+test('LOOKS: X1 classic first and equal to the preset, unique ids, every value in range', () => {
+  const Settings = require('../settings.js');
+  assert.strictEqual(Edge.LOOKS[0].id, 'x1classic');
+  assert.deepStrictEqual(Edge.LOOKS[0].edge, X1);
+  assert.strictEqual(new Set(Edge.LOOKS.map((l) => l.id)).size, Edge.LOOKS.length);
+  for (const look of Edge.LOOKS) {
+    assert.deepStrictEqual(Object.keys(look.edge).sort(), Object.keys(X1).sort(), look.id);
+    for (const [k, v] of Object.entries(look.edge)) {
+      const [lo, hi] = Settings.RANGES.edge[k];
+      for (const x of [].concat(v)) assert.ok(x >= lo && x <= hi, look.id + '.' + k + '=' + x);
+    }
+    const [slo, shi] = Settings.RANGES.sun.strength;
+    assert.ok(look.sunStrength >= slo && look.sunStrength <= shi, look.id);
+  }
+});
+
+test('lookOf: the look whose values these are, else null', () => {
+  const prism = Edge.LOOKS.find((l) => l.id === 'prism');
+  assert.strictEqual(Edge.lookOf(JSON.parse(JSON.stringify(prism.edge)), prism.sunStrength).id, 'prism');
+  assert.strictEqual(Edge.lookOf(Object.assign({}, prism.edge, { dispersion: prism.edge.dispersion + 0.001 }), prism.sunStrength), null);
+  assert.strictEqual(Edge.lookOf(prism.edge, prism.sunStrength + 0.1), null);
+});
+
+test('the composites fade the image through EDGE_GLSL edgeFade; the fixed COOL is gone', () => {
+  const Shaders = require('../shaders.js');
+  assert.ok(!/const vec3 COOL/.test(Shaders.EDGE_GLSL));
+  assert.ok(/vec3 edgeFade\(vec3 img, float u, float a\)/.test(Shaders.EDGE_GLSL));
+  for (const name of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS', 'EDGE_FADE_PARITY_FS']) {
+    assert.ok(Shaders[name].includes(Shaders.EDGE_GLSL), name);
+  }
+  assert.ok(/img = edgeFade\(img, u, theta \+ uRoll\);/.test(Shaders.COMPOSITE_FS));
+  assert.ok(/uCastColor/.test(Shaders.COMPOSITE_DNG_FS) && /uFringeColor/.test(Shaders.COMPOSITE_DNG_FS));
+});
+
+test('fringeSide: the line is on the rim away from the sun; all round without one', () => {
+  const view = { theta: 90 * D, alpha: 0.5, known: true };
+  assert.strictEqual(Edge.fringeSide(0.5, view), 0);
+  assert.strictEqual(Edge.fringeSide(0.5 + Math.PI, view), 1);
+  assert.ok(Edge.fringeSide(0.5 + Math.PI / 2, view) < 0.5);
+  assert.strictEqual(Edge.fringeSide(1, { theta: 0, alpha: 0, known: false }), 1);
+});
+
+test('edgeFade takes the fringe side as a weight', () => {
+  const e = Object.assign({}, X1, { fringeColor: [0.2, 0.1, 1], fringeStrength: 1 });
+  let u = e.falloffStart;
+  while (Edge.terminator(u, e.falloffStart, e.falloffSoftness) > 0.5) u += 1e-5;
+  const none = Edge.edgeFade([0.6, 0.7, 0.9], u, Object.assign({}, e, { fringeStrength: 0 }));
+  assert.deepStrictEqual(Edge.edgeFade([0.6, 0.7, 0.9], u, e, 0), none);
+  const full = Edge.edgeFade([0.6, 0.7, 0.9], u, e, 1);
+  assert.ok(full[2] > 3 * full[0], 'deep blue: ' + full);
+});
+
+test('halfFade: the radius where the image is half faded', () => {
+  for (const soft of [0.5, 1, 2, 4]) {
+    const e = Object.assign({}, X1, { falloffSoftness: soft });
+    assert.ok(Math.abs(Edge.terminator(Edge.halfFade(e), e.falloffStart, soft) - 0.5) < 1e-9, String(soft));
+  }
+});
+
+test('fringeBand reaches fringeWidth into the image, and only fades past the half-fade point as before', () => {
+  const e = Object.assign({}, X1, { fringeWidth: 0.04 });
+  const h = Edge.halfFade(e);
+  assert.ok(Math.abs(Edge.fringeBand(h - 0.04, e) - Math.exp(-1)) < 1e-9);
+  assert.ok(Edge.fringeBand(h - 0.03, Object.assign({}, e, { fringeWidth: 0.01 })) < 1e-3);
+  const out = Edge.fringeBand(h + 0.01, e), term = Edge.terminator(h + 0.01, e.falloffStart, e.falloffSoftness);
+  assert.ok(Math.abs(out - Math.exp(-(((term - 0.5) / 0.18) ** 2))) < 1e-9);
+});
+
+test('ringSunWeight: the ring follows the sun by ringSun; even all round without one', () => {
+  const view = { theta: 90 * D, alpha: 0.4, known: true };
+  const e = Object.assign({}, X1, { ringSun: 0.9 });
+  assert.ok(Math.abs(Edge.ringSunWeight(0.4, view, e) - 1) < 1e-12);
+  assert.ok(Math.abs(Edge.ringSunWeight(0.4 + Math.PI, view, e) - 0.1) < 1e-3);
+  assert.strictEqual(Edge.ringSunWeight(1, view, Object.assign({}, e, { ringSun: 0 })), 1);
+  assert.strictEqual(Edge.ringSunWeight(1, { theta: 0, alpha: 0, known: false }, e), 1);
+  // A lens facing away from the sun: weak all round.
+  assert.ok(Edge.ringSunWeight(0.4, { theta: 170 * D, alpha: 0.4, known: true }, e) < 0.25);
+});
+
+test('Prism follows the sun; the other looks do not', () => {
+  for (const l of Edge.LOOKS) assert.strictEqual(l.edge.ringSun > 0, l.id === 'prism', l.id);
+});
+
+test('rimLight weights the glow ring by ringSunWeight', () => {
+  const Shaders = require('../shaders.js');
+  assert.ok(/\* intensity \* tint \* ringSunWeight\(theta \+ uRoll\)/.test(Shaders.EDGE_GLSL));
+  assert.ok(Shaders.SUN_PARITY_FS.includes('ringSunWeight(a)'));
+});
+
+// The rim look gallery's tiles: a stylized lower-left rim per look.
+test('lookSwatch: an n x n RGBA tile per look, distinct, the blue rim bluer at the rim', () => {
+  const n = 48;
+  const tiles = Edge.LOOKS.map((l) => Edge.lookSwatch(l, n));
+  for (const t of tiles) assert.strictEqual(t.length, n * n * 4);
+  const key = (t) => Array.from(t).join(',');
+  assert.strictEqual(new Set(tiles.map(key)).size, Edge.LOOKS.length, 'every look looks different');
+  assert.deepStrictEqual(Edge.lookSwatch(Edge.LOOKS[0], n), tiles[0], 'deterministic');
+  const blueness = (t) => { let s = 0; for (let i = 0; i < t.length; i += 4) s += t[i + 2] - (t[i] + t[i + 1]) / 2; return s; };
+  const at = (id) => tiles[Edge.LOOKS.findIndex((l) => l.id === id)];
+  assert.ok(blueness(at('x1blue')) > blueness(at('x1classic')));
 });

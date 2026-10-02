@@ -152,10 +152,10 @@ test('stacked is exactly 1:2 whenever gap equals twice the margin', () => {
   }
 });
 
-test('the shipped defaults (gapFrac 0.16, marginFrac 0.08) land on exactly 2:1 / 1:2', () => {
+test('the shipped defaults (gapFrac 0, marginFrac 0) land on exactly 2:1 / 1:2', () => {
   const diameter = 5100; // an arbitrary but representative circle size
-  const marginPx = Math.round(0.08 * diameter);
-  const gapPx = Math.round(0.16 * diameter);
+  const marginPx = 0;
+  const gapPx = 0;
   const side = Lens.exportLayout({
     circleDiameter: diameter, sensors: 'both', orientation: 'side', gapPx, marginPx,
   });

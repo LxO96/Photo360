@@ -200,3 +200,8 @@ test('visibleLenses lists the physical lenses on screen, honouring swap', () => 
   assert.deepStrictEqual(Settings.visibleLenses({ sensors: 'A', swap: true }, phys), ['B']);
   assert.deepStrictEqual(Settings.visibleLenses({ sensors: 'B', swap: false }, phys), ['B']);
 });
+
+test('the Edge panel\'s Adjust section is a remembered panel, closed by default', () => {
+  assert.ok(Settings.PANEL_SECTIONS.includes('edgeAdjust'));
+  assert.strictEqual(Settings.DEFAULT_PANELS.edgeAdjust, false);
+});

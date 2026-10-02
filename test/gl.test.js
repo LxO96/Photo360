@@ -86,3 +86,40 @@ test('cellViewport with clipping reports an off-target cell as empty', () => {
   const v = GL.cellViewport({ cx: -5000, cy: 500, radius: 100 }, 1800, 1000, true);
   assert.strictEqual(v.viewport, null);
 });
+
+// Sun glare (spec 2026-10-02-sun-glare-design): the per-lens uniform.
+test('sunUniform: off, not found, or not detected yet -> strength 0', () => {
+  global.SunDetect = require('../sundetect.js');
+  global.Edge = require('../edge.js');
+  const base = { thetaMaxDeg: 105, sensorRotationDeg: 0 };
+  assert.strictEqual(GL.sunUniform(base, 'A')[2], 0);
+  const sun = { on: false, status: 'auto', dir: [0, 0, 1], strength: 1, tint: [1, 1, 1] };
+  assert.strictEqual(GL.sunUniform(Object.assign({ sun }, base), 'A')[2], 0);
+  for (const status of ['pending', 'none']) {
+    assert.strictEqual(GL.sunUniform(Object.assign({ sun: Object.assign({}, sun, { on: true, status }) }, base), 'A')[2], 0);
+  }
+});
+
+test('sunView: the sun from a lens whatever the glare switch; unknown when not found', () => {
+  const SunDetect = require('../sundetect.js');
+  const state = { thetaMaxDeg: 105, sensorRotationDeg: 0 };
+  const dir = SunDetect.dirOf('A', 0.7, 0.4, 105, 0);
+  state.sun = { on: false, status: 'manual', dir, strength: 0, tint: [1, 1, 1] };
+  const v = GL.sunView(state, 'A'), w = SunDetect.viewOf(dir, 'A', 0);
+  assert.deepStrictEqual(v, [w.theta, w.alpha, 1]);
+  state.sun.status = 'none';
+  assert.deepStrictEqual(GL.sunView(state, 'A'), [0, 0, 0]);
+});
+
+test('sunUniform: where the sun is from each physical lens, in luv azimuth', () => {
+  const SunDetect = require('../sundetect.js');
+  const state = { thetaMaxDeg: 105, sensorRotationDeg: 90 };
+  const dir = SunDetect.dirOf('A', 0.7, 0.4, 105, SunDetect.upTermDeg(state, 'A'));
+  state.sun = { on: true, status: 'auto', dir, strength: 1.5, tint: [1, 1, 1] };
+  const a = GL.sunUniform(state, 'A');
+  const back = SunDetect.viewOf(dir, 'A', -90);
+  assert.ok(Math.abs(a[0] - back.theta) < 1e-12 && Math.abs(a[1] - back.alpha) < 1e-12);
+  assert.strictEqual(a[2], 1.5);
+  assert.strictEqual(a[3], 105);
+  assert.ok(GL.sunUniform(state, 'B')[0] > Math.PI / 2);
+});

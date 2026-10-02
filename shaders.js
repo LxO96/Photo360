@@ -499,13 +499,43 @@
     fragColor = vec4(rgb, 1.0);
   }`;
 
+  // Sun glare (edge.js sunGlare, which this mirrors; App.checkSunParity
+  // compares the two): at luv-space rim azimuth a. uSun = (theta from this
+  // lens's axis, luv azimuth alpha, strength -- 0 is off --, thetaMax in
+  // degrees); uSunShape = Edge.SUN's (W in degrees, F, B, K).
+  const SUN_GLSL = `
+  uniform vec4 uSun;
+  uniform vec4 uSunShape;
+  uniform vec3 uSunTint;
+  uniform vec3 uSunView;   // the sun from this lens: theta, alpha, known (gl.js sunView)
+  uniform float uRingSun;  // how much the glow ring follows it (edge.js ringSunWeight)
+  float ringSunWeight(float a) {
+    if (uSunView.z < 0.5 || uRingSun <= 0.0) return 1.0;
+    float g = degrees(acos(clamp(sin(uSunView.x) * cos(a - uSunView.y), -1.0, 1.0)));
+    float facing = 1.0 - smoothstep(90.0, uSun.w + 15.0, degrees(uSunView.x)) * (1.0 - uSunShape.z);
+    float w = exp(-(g / 50.0) * (g / 50.0)) * facing;
+    return 1.0 - uRingSun + uRingSun * w;
+  }
+  vec3 sunGlare(float a) {
+    if (uSun.z <= 0.0) return vec3(0.0);
+    float g = acos(clamp(sin(uSun.x) * cos(a - uSun.y), -1.0, 1.0));
+    float w = g / radians(uSunShape.x);
+    float lobe = uSunShape.y + (1.0 - uSunShape.y) * exp(-w * w);
+    float facing = 1.0 - smoothstep(90.0, uSun.w + 15.0, degrees(uSun.x)) * (1.0 - uSunShape.z);
+    return uSun.z * uSunShape.w * lobe * facing * uSunTint;
+  }`;
+
   // The lens edge: the terminator that runs the image out at the rim, and
   // the rim light (glow + haze, display units) derived from the per-azimuth
-  // profile. Shared by COMPOSITE_FS and COMPOSITE_DNG_FS; expects their
-  // uProfile/uBins/edge uniforms.
-  const EDGE_GLSL = `
+  // profile, plus the sun glare (SUN_GLSL), shaped by sunRadial. Shared by
+  // COMPOSITE_FS and COMPOSITE_DNG_FS; expects their uProfile/uBins/edge
+  // uniforms. The cast and fringe (a rim look's, edge.js LOOKS) are its own.
+  const EDGE_GLSL = SUN_GLSL + `
   const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
-  const vec3 COOL = vec3(0.82, 0.92, 1.12);   // cast the last of the image picks up
+  uniform vec3  uCastColor;      // the colour the fading image takes on
+  uniform vec3  uFringeColor;    // the line where it is half faded
+  uniform float uFringeStrength;
+  uniform float uFringeWidth;    // its reach into the image, in circle radii
 
   float terminator(float u) {
     if (u <= uFalloffStart) return 1.0;
@@ -523,6 +553,39 @@
     return exp(-t * t);
   }
 
+  // edge.js fringeBand and edgeFade, which these mirror (App.checkFadeParity).
+  float halfFade() {
+    float eased = 1.0 - pow(0.5, 1.0 / uFalloffSoftness);
+    float t = 0.5 - sin(asin(1.0 - 2.0 * eased) / 3.0);
+    return uFalloffStart + t * (1.0 - uFalloffStart);
+  }
+  float fringeBand(float u) {
+    if (u >= 1.0) return 0.0;
+    float h = halfFade();
+    float t = u <= h ? (h - u) / max(uFringeWidth, 1e-4) : (terminator(u) - 0.5) / 0.18;
+    return exp(-t * t);
+  }
+  float fringeSide(float a) {
+    if (uSunView.z < 0.5) return 1.0;
+    float g = degrees(acos(clamp(sin(uSunView.x) * cos(a - uSunView.y), -1.0, 1.0)));
+    return smoothstep(70.0, 140.0, g);
+  }
+  vec3 edgeFade(vec3 img, float u, float a) {
+    float term = terminator(u);
+    float fade = 1.0 - term;
+    float l = dot(img, LUMA);
+    img = mix(img, vec3(l), fade * uTerminatorDesaturate);
+    img = mix(img, img * uCastColor, fade * uTerminatorCoolShift);
+    img *= term;
+    return mix(img, uFringeColor * l * 1.6, fringeBand(u) * uFringeStrength * fringeSide(a));
+  }
+
+  // edge.js sunRadial: the haze's bell inside the rim, uSunOut past it.
+  uniform float uSunOut;
+  float sunRadial(float u) {
+    return rimBell(u, 1.0, u <= 1.0 ? uHazeWidth : uSunOut);
+  }
+
   // Rim glow and haze at (u, theta), derived from the image next to it.
   vec3 rimLight(float u, float theta) {
     float bin = mod(theta / 6.283185307179586, 1.0) * uBins;
@@ -536,10 +599,10 @@
       rimBell(u, 1.0 - uDispersion, uRingWidth),
       rimBell(u, 1.0,               uRingWidth),
       rimBell(u, 1.0 + uDispersion, uRingWidth)
-    ) * intensity * tint;
+    ) * intensity * tint * ringSunWeight(theta + uRoll);
 
     float haze = rimBell(u, 1.0, uHazeWidth) * intensity * uHazeStrength;
-    return glow + vec3(haze) * tint;
+    return glow + vec3(haze) * tint + sunGlare(theta + uRoll) * sunRadial(u);
   }`;
 
   const COMPOSITE_FS = `#version 300 es
@@ -602,11 +665,7 @@
         fragColor = vec4(log2((ys * gn + 0.015625) / (ys + 0.015625)), 0.0, 0.0, 1.0);
         return;
       }
-      float term = terminator(u);
-      float fade = 1.0 - term;
-      img = mix(img, vec3(dot(img, LUMA)), fade * uTerminatorDesaturate);
-      img = mix(img, img * COOL, fade * uTerminatorCoolShift);
-      img *= term;
+      img = edgeFade(img, u, theta + uRoll);
     }
 
     if (uGainOut > 0.5) { fragColor = vec4(0.0, 0.0, 0.0, 1.0); return; }   // outside the photo
@@ -622,7 +681,7 @@
   // balance, edge, then exactly back), so away from the edge the output is
   // the demosaiced camera data itself, unclamped by white balance or gamut.
   // The preview applies the edge to display-encoded values; the linear
-  // equivalents here are pow(term, 2.2) for the fade, COOL^2.2 for the cast,
+  // equivalents here are pow(term, 2.2) for the fade, uCastColor^2.2 for the cast,
   // and the display-space rim light decoded before it is added.
   const COMPOSITE_DNG_FS = `#version 300 es
   precision highp float;
@@ -671,9 +730,12 @@
       lin = uCamToSrgb * (cam / uWhiteBalance);
       float term = terminator(u);
       float fade = 1.0 - term;
-      lin = mix(lin, vec3(dot(lin, LUMA)), fade * uTerminatorDesaturate);
-      lin = mix(lin, lin * pow(COOL, vec3(2.2)), fade * uTerminatorCoolShift);
+      float l0 = dot(lin, LUMA);
+      lin = mix(lin, vec3(l0), fade * uTerminatorDesaturate);
+      lin = mix(lin, lin * pow(uCastColor, vec3(2.2)), fade * uTerminatorCoolShift);
       lin *= pow(term, 2.2);
+      // The fringe, in linear light (its display-space line decoded).
+      lin = mix(lin, pow(uFringeColor * 1.6, vec3(2.2)) * l0, fringeBand(u) * uFringeStrength * fringeSide(theta + uRoll));
     }
     lin += srgbDecode(rimLight(u, theta));
     // Back to camera RGB for the file's single AsShotNeutral. For the lens
@@ -837,6 +899,45 @@
   vec3 tbPixel(ivec2 q) { return demosaicAt(q); }
   ` + TB_DOWN_BODY;
 
+  // Finding the sun (sundetect.js, gl.js sunFrames): the lens at
+  // uOut x uOut, each texel the brightest pixel (by luma) of its block of
+  // lens texels, in display values -- above 1 where a merged HDR photo
+  // recovered the light. Rows run up in luv space (row 0 = v 0) for both
+  // sources: a raw plane is stored top row first, so it is flipped here.
+  const SUN_DOWN_BODY = `
+  uniform int uOut;
+  out vec4 fragColor;
+  void main() {
+    ivec2 size = sunSize();
+    ivec2 o = ivec2(gl_FragCoord.xy);
+    ivec2 lo = o * size / uOut, hi = (o + 1) * size / uOut;
+    ivec2 stp = max(ivec2(1), (hi - lo) / 16);
+    vec3 best = vec3(0.0);
+    float bestL = -1.0;
+    for (int j = 0; j < 16; j++) {
+      for (int i = 0; i < 16; i++) {
+        ivec2 q = lo + ivec2(i, j) * stp;
+        if (q.x >= hi.x || q.y >= hi.y) continue;
+        vec3 c = sunPixel(q);
+        float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        if (l > bestL) { bestL = l; best = c; }
+      }
+    }
+    fragColor = vec4(best, 1.0);
+  }`;
+  const SUN_DOWN_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uLens;
+  ivec2 sunSize() { return textureSize(uLens, 0); }
+  vec3 sunPixel(ivec2 q) { return texelFetch(uLens, q, 0).rgb; }
+  ` + SUN_DOWN_BODY;
+  const SUN_DOWN_RAW_FS = `#version 300 es
+  precision highp float;
+  ` + RAW_SAMPLE_GLSL + `
+  ivec2 sunSize() { return uLensSize; }
+  vec3 sunPixel(ivec2 q) { return demosaicAt(ivec2(q.x, uLensSize.y - 1 - q.y)); }
+  ` + SUN_DOWN_BODY;
+
   // Mean over (2 uR + 1) taps along uDir, clamped at the edges.
   const TB_BOX_FS = `#version 300 es
   precision highp float;
@@ -891,6 +992,34 @@
       ? vec4(toneGain(rgb, uTone, uToneCurve, coef, uRawMax, uGainD), 0.0, 0.0, 1.0)
       : vec4(applyTone(rgb, uTone, uToneCurve, coef, uRawMax), 1.0);
   }`;
+  // edgeFade over 256 radii (u from 0.8 to 1) x 8 colours and azimuths, one per
+  // fragment (App.checkFadeParity); the inputs are computed identically
+  // there.
+  const EDGE_FADE_PARITY_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uProfile;
+  uniform float uBins, uRoll;
+  uniform float uFalloffStart, uFalloffSoftness;
+  uniform float uEdgeIntensity, uRingWidth, uDispersion;
+  uniform float uHazeWidth, uHazeStrength;
+  uniform float uTerminatorDesaturate, uTerminatorCoolShift;
+  out vec4 fragColor;
+  ` + EDGE_GLSL + `
+  void main() {
+    float x = floor(gl_FragCoord.x), y = floor(gl_FragCoord.y);
+    float u = 0.8 + 0.2 * x / 255.0;
+    vec3 img = vec3(mod(y * 37.0, 8.0) / 7.0, mod(y * 5.0 + 3.0, 8.0) / 7.0, (7.0 - y) / 7.0);
+    fragColor = vec4(edgeFade(img, u, y * 0.8 - 3.0), 1.0);
+  }`;
+  // sunGlare over 256 azimuths, one per fragment along x (App.checkSunParity).
+  const SUN_PARITY_FS = `#version 300 es
+  precision highp float;
+  out vec4 fragColor;
+  ` + SUN_GLSL + `
+  void main() {
+    float a = (floor(gl_FragCoord.x) + 0.5) / 256.0 * 6.283185307179586 - 3.141592653589793;
+    fragColor = vec4(sunGlare(a), ringSunWeight(a));
+  }`;
   const PROFILE_BUILD_RAW_FS = toRawVariant(PROFILE_BUILD_FS, true);
 
   // Float raw planes (a merged HDR photo, hdrmerge.js: black 0, white 1,
@@ -901,6 +1030,7 @@
   const COMPOSITE_RAW_DEV_F_FS = toFloatRaw(COMPOSITE_RAW_DEV_FS);
   const DEV_INPUT_RAW_F_FS = toFloatRaw(DEV_INPUT_RAW_FS);
   const TB_DOWN_RAW_F_FS = toFloatRaw(TB_DOWN_RAW_FS);
+  const SUN_DOWN_RAW_F_FS = toFloatRaw(SUN_DOWN_RAW_FS);
   const PROFILE_BUILD_RAW_F_FS = toFloatRaw(PROFILE_BUILD_RAW_FS);
 
   // Browser-side detail parity (app.js checkDetailParity): writes a 64 x 64
@@ -919,7 +1049,7 @@
   }`;
 
   return {
-    FULLSCREEN_VS, COMPOSITE_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
+    FULLSCREEN_VS, COMPOSITE_FS, EDGE_GLSL, EDGE_FADE_PARITY_FS, SUN_GLSL, SUN_PARITY_FS, SUN_DOWN_FS, SUN_DOWN_RAW_FS, SUN_DOWN_RAW_F_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
     COMPOSITE_RAW_FS, COMPOSITE_RAW_DEV_FS, COMPOSITE_DNG_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS,
     DEV_INPUT_RAW_FS, DEV_INPUT_RGB_FS, DEV_BLUR_FS, DEV_DETAIL_FS, DEV_FINAL_FS, DEV_PARITY_INPUT_FS,
     TB_DOWN_FS, TB_DOWN_RAW_FS, TB_BOX_FS, TB_COEF_FS,

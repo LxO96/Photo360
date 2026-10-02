@@ -202,18 +202,23 @@ marks what you are touching.
   180° you get less than a hemisphere. The note under the slider tells
   you which, and by how much, and names the camera's lens (see Calibration
   below).
-- **Sensors** — export lens A only, lens B only, or both together.
+- **Sensors** — export lens A only, lens B only, or both together. A photo
+  opens with both, unless one lens is blacked out (a lens cap, a covered
+  lens: nearly black while the other is not), when it opens on the other
+  alone. A photo you have edited keeps its own choice.
 - **Layout** — when exporting both sensors, whether to arrange the two
   circles side by side (2:1 output) or stacked (1:2). This is independent
   of how the *source* file happens to be arranged — a side-by-side `.insp`
-  can still be exported stacked, and vice versa.
+  can still be exported stacked, and vice versa. Side by side unless you
+  pick Stacked, which then stays for the next files.
 - **Swap A and B** — exchanges which physical lens is labelled A and which
   is B (and which filename suffix each gets). Disabled for a single-lens
   (1:1) file, which has no lens B to swap in.
 - **Gap** — space between the two circles when exporting both, as a
   fraction of one circle's diameter.
 - **Margin** — black border kept around each circle, as a fraction of its
-  diameter. See "Export sizing" for why the default isn't 0.
+  diameter. Both default to 0 (exactly 2:1); see "Export sizing" for the
+  rim glow this cuts off and how to keep it.
 
 ### Level
 
@@ -244,13 +249,35 @@ physical lens actually on screen.
 ### Edge
 
 Controls the synthesized rim glow — the part standing in for what the
-sensor crops away. These seven sliders are seven of the *twelve* parameters
-that make up the `x1classic` preset (see "The edge preset" below for where
-its numbers came from) — the other five (`highlightExponent`, `hazeWidth`,
-`hazeStrength`, `terminatorDesaturate`, `terminatorCoolShift`) have no
-slider and sit fixed at the preset's own values in `edge.js`'s `PRESETS`
-table. **Reset to X1 classic** restores the shipped values of the seven
-sliders shown here if you've been experimenting.
+sensor crops away. A gallery of rim looks comes first; the sliders are under
+**Adjust**. They are seven of the parameters that make up a rim look; the rest (`highlightExponent`, `hazeWidth`, `hazeStrength`,
+`terminatorDesaturate`, `terminatorCoolShift`, and the look-only cast and
+fringe colours) have no slider and come from the look.
+
+Clicking a look's tile sets all of them, and the sun glare Strength, at once
+(one undo step; clicking it again resets to it). Each tile is a stylized
+lower-left rim of a sky drawn with that look's own settings (not your photo).
+The current look's tile is
+outlined; fine-tune under Adjust and the tile says "edited". Looks are pasted
+with the other edits. Built in (`Edge.LOOKS`):
+
+- **X1 classic** — fitted to real ONE X photos (see "The edge preset" below).
+- **X1 blue rim** — the same, plus the thin deep-blue line the ONE X shows
+  where a bright sky runs out at the rim, away from the sun.
+- **Clean** — a crisp edge, faint glow, no fringe.
+- **Soft** — a wide, gentle fade with a broad haze and stronger sun glare.
+- **Prism** — a rainbow ring, bright on the side of the rim facing the sun
+  and faint away from it (even all round when no sun was found).
+- **Muted** — a desaturated, neutral fade with a weak glow.
+- **Warm** — an amber cast and fringe, a sunset edge.
+- **Dark edge** — no glow, haze or sun glare: the image fades to black.
+
+The fringe line (X1 blue rim, Warm) takes its brightness from the image
+where it fades out, so it shows over a bright sky and not over a dark edge;
+it bleeds a little way into the photo,
+and it sits on the side of the rim facing away from the sun (all round when
+no sun was found). Only X1 classic is
+measured; the others are chosen by eye.
 
 - **Intensity** — overall strength of the rim effect.
 - **Ring width** — how narrow or broad the colored fringe ring is.
@@ -264,6 +291,31 @@ sliders shown here if you've been experimenting.
   brightness falloff itself: where in the source image a highlight starts
   counting toward the glow, and where and how abruptly the image fades to
   black at the true edge of the lens's field of view.
+
+**Sun glare.** Outdoors, a real fisheye's rim is lit by the sun: veiling
+glare, brightest on the side of the rim facing the sun, weak on a lens facing
+away from it, whichever lens the sun is in. The glow above only reacts to
+what is next to the edge, so this adds it:
+
+- When a photo is first opened the sun is looked for in both lenses: the
+  largest compact patch within 2% of the brightest pixel (clipped white in a
+  JPEG or a single raw frame; in a merged HDR photo, what clipped even in its
+  darkest exposure). Glints, white railings and a blown-out sky (more than 2%
+  of the circle) are not taken for it. Nothing that bright: no sun, no glare.
+- With the Edge panel open, a sun marker shows where it is (dashed at the rim
+  when it is just outside the crop). Drag it onto either lens to move the
+  sun; **Re-detect sun** looks again.
+- **Sun glare** turns it off; **Strength** scales it (0–200%). The glare takes
+  its colour from the sky around the sun, so a low sun gives a warm rim.
+- The sun is each photo's own: kept with its edits and undo history, and not
+  pasted onto other photos.
+
+How wide the glare spreads around the rim and what a lens facing away keeps
+(`Edge.SUN`) were chosen by eye against the ONE X references; their stored
+measurements have no sun position, so they cannot be fitted. Each lens's
+direction comes from the equidistant lens model, which near the rim is a few
+degrees off (on the X5 a sun in the overlap reads about 10° apart from the two
+lenses) — far less than the glare's own 60° spread.
 
 ### White balance
 
@@ -538,8 +590,8 @@ upscaled to some invented target resolution:
 - A single-lens export is `circleDiameter + 2 × margin` pixels square,
   where `circleDiameter` is derived from the field of view and the
   uploaded lens's native pixel size — e.g. a full-size Insta360 X5 frame
-  (5952 px per lens) at the shipped 180° FOV and 8% margin exports at
-  5918 × 5918.
+  (5952 px per lens) at the shipped 180° FOV and 0% margin exports at
+  5102 × 5102.
 - **Pad to sensor square** additionally pads (and, if needed, upscales)
   the circle out to the full uploaded lens size, rather than cropping
   tightly to the FOV — useful if you want every export from a session to
@@ -551,10 +603,12 @@ upscaled to some invented target resolution:
 - Exporting **both** sensors lays the two circles out with
   `width = margin + diameter + gap + diameter + margin` along the long
   axis and `height = margin + diameter + margin` across it (or transposed,
-  for the stacked layout). The default **Gap is exactly twice the default
-  Margin** (16% vs 8%) specifically so that relationship holds:
-  `along / across` comes out to precisely 2.0, keeping a two-up export at
-  exactly 2:1 (or 1:2 stacked) out of the box. Move Gap or Margin
+  for the stacked layout). Gap and Margin both default to 0: the circles
+  touch each other and the frame, `along / across` is precisely 2.0, and a
+  two-up export is exactly 2:1 (or 1:2 stacked) out of the box. The rim glow
+  past the circles' outer edges is then cut off by the frame, as the
+  camera's own sensor cuts it; Gap 16% with Margin 8% (any gap twice the
+  margin) keeps 2:1 and shows it. Move Gap or Margin
   independently and you get a different aspect ratio on purpose — the
   on-screen size readout always shows the ratio you'll actually get, e.g.
   "1.86:1", so a departure from 2:1 is visible rather than silent.

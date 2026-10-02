@@ -218,8 +218,211 @@
       hazeStrength: 1.0,
       terminatorDesaturate: 0.46,
       terminatorCoolShift: 0.70,
+      // Rim looks (below): the colour the fading image takes on (the
+      // shader's old fixed COOL), and a thin line of colour where it is
+      // half faded -- off here.
+      castColor: [0.82, 0.92, 1.12],
+      fringeColor: [0.35, 0.3, 1.0],
+      fringeStrength: 0,
+      fringeWidth: 0.01,   // how far the line reaches into the image, in circle radii
+      ringSun: 0,          // how much the glow ring follows the sun (ringSunWeight)
     },
   };
+
+  // -- Rim looks (spec docs/superpowers/specs/2026-10-02-rim-looks-design.md)
+  // Named sets of every edge value plus the sun glare strength: pick one,
+  // then fine-tune. Built in only. X1 classic is the fitted preset above;
+  // the rest are chosen by eye on Sunscreen.insp and a sun-in-frame DNG.
+  const look = (id, name, sunStrength, over) =>
+    ({ id, name, sunStrength, edge: Object.assign({}, PRESETS.x1classic, over) });
+  const LOOKS = [
+    look('x1classic', 'X1 classic', 1, {}),
+    // The thin blue-violet line the ONE X shows where the sky runs out
+    // (Testfiles/Outputs/IMG_20210605_193319_00_019.jpg, lower circle).
+    look('x1blue', 'X1 blue rim', 1, { fringeColor: [0.2, 0.12, 1.0], fringeStrength: 0.5, fringeWidth: 0.04 }),
+    look('clean', 'Clean', 0.6, {
+      edgeIntensity: 0.05, ringWidth: 0.002, dispersion: 0, highlightKnee: 0.7,
+      falloffStart: 0.985, falloffSoftness: 1, hazeWidth: 0.012, hazeStrength: 0.3,
+      terminatorDesaturate: 0, terminatorCoolShift: 0, castColor: [1, 1, 1],
+    }),
+    look('soft', 'Soft', 1.5, {
+      edgeIntensity: 0.5, ringWidth: 0.012, dispersion: 0.004, glowSpreadDeg: 20, highlightKnee: 0.35,
+      highlightExponent: 1.5, falloffStart: 0.85, falloffSoftness: 1.2, hazeWidth: 0.09, hazeStrength: 1.5,
+      terminatorDesaturate: 0.5, terminatorCoolShift: 0.6,
+    }),
+    look('prism', 'Prism', 1, {
+      // Any edge brightness lights the ring (knee 0, linear), not just
+      // highlights, so the rainbow shows on every photo.
+      edgeIntensity: 2, ringWidth: 0.012, dispersion: 0.012, highlightKnee: 0, highlightExponent: 1,
+      hazeStrength: 0.2,
+      // A prism flare: bright on the rim facing the sun, a tenth of it away.
+      ringSun: 0.9,
+    }),
+    look('muted', 'Muted', 0.6, {
+      edgeIntensity: 0.06, hazeStrength: 0.4, falloffStart: 0.9, falloffSoftness: 2.5,
+      terminatorDesaturate: 1, terminatorCoolShift: 0.5, castColor: [0.85, 0.85, 0.85],
+    }),
+    look('warm', 'Warm', 1.2, {
+      castColor: [1.15, 0.95, 0.7], terminatorCoolShift: 0.8,
+      fringeColor: [1.0, 0.45, 0.08], fringeStrength: 0.4, fringeWidth: 0.04,
+    }),
+    look('dark', 'Dark edge', 0, {
+      edgeIntensity: 0, hazeStrength: 0, falloffStart: 0.9, falloffSoftness: 2,
+    }),
+  ];
+
+  // The look whose values these are (to 1e-6), or null.
+  function lookOf(edge, sunStrength) {
+    const same = (a, b) => (Array.isArray(a)
+      ? Array.isArray(b) && a.length === b.length && a.every((v, i) => same(v, b[i]))
+      : typeof a === 'number' && typeof b === 'number' && Math.abs(a - b) < 1e-6);
+    return LOOKS.find((l) => same(l.sunStrength, sunStrength) &&
+      Object.keys(l.edge).every((k) => same(l.edge[k], edge[k]))) || null;
+  }
+
+  // The radius where the image is half faded (terminator = 0.5): the
+  // inverse of its smoothstep, t = 1/2 - sin(asin(1 - 2 eased) / 3).
+  function halfFade(e) {
+    const eased = 1 - Math.pow(0.5, 1 / e.falloffSoftness);
+    const t = 0.5 - Math.sin(Math.asin(1 - 2 * eased) / 3);
+    return e.falloffStart + t * (1 - e.falloffStart);
+  }
+
+  // The fringe's line: 1 where the image is half faded, reaching
+  // fringeWidth into the image (a bell in radius), and running out with
+  // the fade outside it (in fade space, so it follows Falloff start and
+  // softness). 0 past the edge.
+  function fringeBand(u, e) {
+    if (u >= 1) return 0;
+    const h = halfFade(e);
+    if (u <= h) {
+      const t = (h - u) / Math.max(e.fringeWidth, 1e-4);
+      return Math.exp(-t * t);
+    }
+    const t = (terminator(u, e.falloffStart, e.falloffSoftness) - 0.5) / 0.18;
+    return Math.exp(-t * t);
+  }
+
+  // Where around the rim the fringe shows: on the side away from the sun
+  // (0 within 70 deg of it, 1 from 140 deg), all round when no sun is known.
+  // view = { theta, alpha, known }: the sun from this lens (sundetect.js
+  // viewOf); a: the luv-space rim azimuth, as sunGlare.
+  function fringeSide(a, view) {
+    if (!view || !view.known) return 1;
+    const cosG = Math.sin(view.theta) * Math.cos(a - view.alpha);
+    const g = Math.acos(Math.max(-1, Math.min(1, cosG))) * 180 / Math.PI;
+    return smoothstep(70, 140, g);
+  }
+
+  // How much of the glow ring shows at rim azimuth a: 1 facing the sun,
+  // falling to 1 - ringSun away from it (a 50 deg bell, weakened on a lens
+  // facing away from the sun as the glare is); 1 all round without a sun.
+  const RING_SUN_W = 50;
+  function ringSunWeight(a, view, e) {
+    if (!view || !view.known || !e.ringSun) return 1;
+    const cosG = Math.sin(view.theta) * Math.cos(a - view.alpha);
+    const g = Math.acos(Math.max(-1, Math.min(1, cosG))) * 180 / Math.PI;
+    const facing = 1 - smoothstep(90, (view.thetaMaxDeg || 105) + 15, view.theta * 180 / Math.PI) * (1 - SUN.B);
+    const w = Math.exp(-((g / RING_SUN_W) ** 2)) * facing;
+    return 1 - e.ringSun + e.ringSun * w;
+  }
+
+  // A gallery tile for a look (app.js): a stylized lower-left rim of a sky,
+  // magnified, n x n RGBA bytes. Not the photo: the same edge maths as the
+  // shaders (edgeFade, the glow ring and haze, sunGlare) on a plain sky,
+  // with the sun placed where the look shows -- toward the lower left, or
+  // for a look with a fringe line (which sits away from the sun) opposite.
+  const SWATCH_SKY = [0.55, 0.72, 0.93];
+  function lookSwatch(look, n) {
+    const e = look.edge, out = new Uint8ClampedArray(n * n * 4);
+    const cx = n * 1.05, cy = -n * 0.05, R = n * 1.1;   // the circle's centre up and right of the tile
+    const toward = -3 * Math.PI / 4;                     // luv azimuth of the lower left (y up)
+    const view = { theta: 80 * Math.PI / 180, alpha: e.fringeStrength > 0 ? toward + Math.PI : toward,
+      known: true, thetaMaxDeg: 105 };
+    const sun = { theta: view.theta, alpha: view.alpha, strength: look.sunStrength, tint: [1, 0.97, 0.9],
+      thetaMaxDeg: 105 };
+    const sky = SWATCH_SKY;
+    const l = LUMA.r * sky[0] + LUMA.g * sky[1] + LUMA.b * sky[2];
+    const intensity = highlightWeight(l, e.highlightKnee, e.highlightExponent) * e.edgeIntensity;
+    const m = Math.max(sky[0], sky[1], sky[2]), tint = sky.map((v) => v / m);
+    const peaks = dispersionPeaks(e.dispersion);
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const dx = x + 0.5 - cx, dy = cy - (y + 0.5);
+        const u = 1 + (Math.hypot(dx, dy) - R) / (n * 3.5);   // magnified: the tile spans about 0.4 in u
+        const a = Math.atan2(dy, dx);
+        let c = u < 1 ? edgeFade(sky, u, e, fringeSide(a, view)) : [0, 0, 0];
+        const ring = intensity * ringSunWeight(a, view, e);
+        const glow = [rimBell(u, peaks.r, e.ringWidth), rimBell(u, peaks.g, e.ringWidth), rimBell(u, peaks.b, e.ringWidth)];
+        const haze = rimBell(u, 1, e.hazeWidth) * intensity * e.hazeStrength;
+        const g = sunGlare(a, sun), sr = sunRadial(u, e.hazeWidth);
+        c = c.map((v, i) => v + glow[i] * ring * tint[i] + haze * tint[i] + g[i] * sr);
+        const o = (y * n + x) * 4;
+        out[o] = Math.round(Math.min(1, Math.max(0, c[0])) * 255);
+        out[o + 1] = Math.round(Math.min(1, Math.max(0, c[1])) * 255);
+        out[o + 2] = Math.round(Math.min(1, Math.max(0, c[2])) * 255);
+        out[o + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+  // The image running out at the lens edge (shaders.js EDGE_GLSL edgeFade,
+  // which mirrors this): desaturate and cast toward castColor as it fades,
+  // fade, then the fringe -- a line of fringeColor as bright as the image
+  // there was, weighted by `side` (fringeSide; 1 if omitted).
+  function edgeFade(img, u, e, side) {
+    const term = terminator(u, e.falloffStart, e.falloffSoftness), fade = 1 - term;
+    const l = LUMA.r * img[0] + LUMA.g * img[1] + LUMA.b * img[2];
+    const band = fringeBand(u, e) * e.fringeStrength * (side === undefined ? 1 : side);
+    return img.map((c, i) => {
+      let v = c + (l - c) * fade * e.terminatorDesaturate;
+      v = v + (v * e.castColor[i] - v) * fade * e.terminatorCoolShift;
+      v *= term;
+      return v + (e.fringeColor[i] * l * 1.6 - v) * band;
+    });
+  }
+
+  // Sun glare (spec docs/superpowers/specs/2026-10-02-sun-glare-design.md):
+  // veiling glare on the rim from the sun, wherever it is -- strongest on
+  // the side of the rim facing it, weak on a lens facing away. The azimuth
+  // part here; the shader (shaders.js EDGE_GLSL rimLight) lays it on the
+  // rim with the haze's radial bell. No sliders but Strength:
+  //   W  lobe width (deg) around the sun's direction
+  //   F  the part spread evenly over the whole rim of a lens facing the sun
+  //   B  what a lens facing away keeps
+  //   K  scale, display units at the rim (the X1 haze from a white edge is
+  //      ~0.08)
+  //   OUT  how far it reaches past the rim (sunRadial), in circle radii
+  // Chosen by eye against the ONE X references: the stored reference
+  // measurements (test/fixtures/x1-rim-profile.json) hold two bands per
+  // circle and no sun position, too little to fit them.
+  const SUN = { W: 60, F: 0.25, B: 0.1, K: 0.12, OUT: 0.01 };
+
+  // The glare's radial shape: the haze's bell inside the rim, and past it
+  // a much tighter one, so the light stays on the rim instead of spreading
+  // into the black around it.
+  function sunRadial(u, hazeWidth) {
+    return rimBell(u, 1, u <= 1 ? hazeWidth : SUN.OUT);
+  }
+
+  function smoothstep(e0, e1, x) {
+    const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+    return t * t * (3 - 2 * t);
+  }
+
+  // Glare at luv-space rim azimuth `a` (radians; theta + roll in the
+  // composite) from sun = { theta (from this lens's axis), alpha (its luv
+  // azimuth), strength, tint, thetaMaxDeg }. -> [r, g, b].
+  function sunGlare(a, sun) {
+    const cosG = Math.sin(sun.theta) * Math.cos(a - sun.alpha);
+    const g = Math.acos(Math.max(-1, Math.min(1, cosG)));
+    const lobe = SUN.F + (1 - SUN.F) * Math.exp(-((g / (SUN.W * Math.PI / 180)) ** 2));
+    const deg = sun.theta * 180 / Math.PI;
+    const facing = 1 - smoothstep(90, sun.thetaMaxDeg + 15, deg) * (1 - SUN.B);
+    const v = sun.strength * SUN.K * lobe * facing;
+    return [v * sun.tint[0], v * sun.tint[1], v * sun.tint[2]];
+  }
 
   // Task 19: Highlights / Shadows / Whites / Blacks -- a global luminance
   // tone curve, each slider -100..100 (0 = no change). Pure, and mirrored
@@ -490,7 +693,7 @@
 
   return {
     DISPERSION_RATIO, terminator, dispersionPeaks, rimBell, highlightWeight,
-    PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS,
+    PROFILE_BINS, MAX_BLUR_RADIUS_BINS, buildRimProfile, blurProfileAngular, PRESETS, SUN, sunGlare, sunRadial, LOOKS, lookOf, halfFade, fringeBand, fringeSide, ringSunWeight, edgeFade, lookSwatch,
     applyTone, toneGain, shoulder, SHOULDER_KNEE, toneCurve, toneBump, hsCurve, hsSlope, levels, contrastCurve, lightness, srgbDecode, srgbEncode,
     toOklab, fromOklab, maxChroma, saturate, gamutMap, mono,
   };

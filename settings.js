@@ -25,7 +25,7 @@
     'fovDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone', 'detail',
     'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels', 'scopeScale',
-    'keyLayout', 'jpegWb', 'stripShown',
+    'keyLayout', 'jpegWb', 'stripShown', 'sun',
   ];
 
   // Task 18: the side panel's collapsible sections, in display order, and
@@ -37,15 +37,18 @@
   // hide a section for good or invent a new one. Edge starts closed: its
   // seven fitted parameters are the most specialised controls on the page
   // and the X1-classic preset is the intended starting point.
-  const PANEL_SECTIONS = ['framing', 'level', 'whiteBalance', 'edge', 'tone', 'detail', 'output'];
+  // edgeAdjust: the Edge panel's sliders, under the look gallery.
+  const PANEL_SECTIONS = ['framing', 'level', 'whiteBalance', 'edge', 'edgeAdjust', 'tone', 'detail', 'output'];
   const DEFAULT_PANELS = {
-    framing: true, level: true, whiteBalance: true, edge: false, tone: true, detail: true, output: true,
+    framing: true, level: true, whiteBalance: true, edge: false, edgeAdjust: false, tone: true, detail: true, output: true,
   };
 
   const ENUMS = {
     sensors: ['A', 'B', 'both'], orientation: ['side', 'stacked'],
     scopeMode: ['histogram', 'waveform', 'vectorscope'], scopeChannels: ['luma', 'rgb'],
     keyLayout: ['standard', 'swedish'],
+    // sun.status: not looked for yet, found, placed by hand, looked for and none.
+    status: ['pending', 'auto', 'manual', 'none'],
   };
 
   // Single source of truth for the valid domain of every numeric field.
@@ -94,12 +97,20 @@
       hazeStrength: [0, 4],
       terminatorDesaturate: [0, 1],
       terminatorCoolShift: [0, 1],
+      // Rim looks (edge.js LOOKS): no slider.
+      castColor: [0, 2],
+      fringeColor: [0, 1],
+      fringeStrength: [0, 1],
+      fringeWidth: [0.002, 0.15],
+      ringSun: [0, 1],
     },
     tone: {
       exposureEv: [-3, 3], contrast: [-1, 1], saturation: [-1, 1],
       // Task 19: the luminance-curve sliders (Edge.toneCurve).
       highlights: [-100, 100], shadows: [-100, 100], whites: [-100, 100], blacks: [-100, 100],
     },
+    // Sun glare (edge.js sunGlare): Strength 0-200%, a unit direction, a tint.
+    sun: { strength: [0, 2], dir: [-1, 1], tint: [0, 1] },
     // Sharpening and noise reduction (detail.js).
     detail: {
       sharpenAmount: [0, 150], sharpenRadius: [0.5, 2], lumaNoise: [0, 100], colorNoise: [0, 100],

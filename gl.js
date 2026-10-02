@@ -289,6 +289,7 @@
   const FLOAT_RAW_SOURCES = {
     compositeRaw: 'COMPOSITE_RAW_F_FS', compositeRawDev: 'COMPOSITE_RAW_DEV_F_FS',
     devInputRaw: 'DEV_INPUT_RAW_F_FS', tbDownRaw: 'TB_DOWN_RAW_F_FS', profileBuildRaw: 'PROFILE_BUILD_RAW_F_FS',
+    sunDownRaw: 'SUN_DOWN_RAW_F_FS',
   };
   function rawProgram(ctx, state, name) {
     if (!(state.rawMeta && state.rawMeta.floatPlanes)) return ctx[name];
@@ -617,6 +618,52 @@
     const out = new Uint8Array(r.w * r.h * 4);
     gl.readPixels(r.x, r.y, r.w, r.h, gl.RGBA, gl.UNSIGNED_BYTE, out);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return out;
+  }
+
+  // Both lenses at SUN_SIZE x SUN_SIZE for finding the sun (sundetect.js
+  // detect): [{ lens (physical), w, h, rgb }], rows up in luv space.
+  // Programs are made on first use: most photos look once.
+  const SUN_SIZE = 256;
+  function sunFrames(ctx, state) {
+    const gl = ctx.gl, n = SUN_SIZE;
+    const prog = state.isRaw
+      ? (state.rawMeta && state.rawMeta.floatPlanes
+        ? (ctx.sunDownRawFloat || (ctx.sunDownRawFloat = program(gl, Shaders.FULLSCREEN_VS, Shaders.SUN_DOWN_RAW_F_FS)))
+        : (ctx.sunDownRaw || (ctx.sunDownRaw = program(gl, Shaders.FULLSCREEN_VS, Shaders.SUN_DOWN_RAW_FS))))
+      : (ctx.sunDown || (ctx.sunDown = program(gl, Shaders.FULLSCREEN_VS, Shaders.SUN_DOWN_FS)));
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, n, n, 0, gl.RGBA, gl.FLOAT, null);
+    const fbo = gl.createFramebuffer();
+    const target = { fbo };
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    const out = [];
+    const px = new Float32Array(n * n * 4);
+    for (let ti = 0; ti < 2; ti++) {
+      if (!ctx.textures[ti]) continue;
+      const physical = ti === 0 ? 'A' : 'B';
+      devPass(ctx, prog, target, { w: n, h: n }, (u) => {
+        bindTex(gl, 0, ctx.textures[ti]);
+        gl.uniform1i(u('uLens'), 0);
+        gl.uniform1i(u('uOut'), n);
+        if (state.isRaw) setRawUniforms(gl, prog, ctx, ti, state, physical);
+      });
+      gl.readPixels(0, 0, n, n, gl.RGBA, gl.FLOAT, px);
+      const rgb = new Float32Array(n * n * 3);
+      for (let k = 0; k < n * n; k++) {
+        rgb[k * 3] = px[k * 4]; rgb[k * 3 + 1] = px[k * 4 + 1]; rgb[k * 3 + 2] = px[k * 4 + 2];
+      }
+      out.push({ lens: physical, w: n, h: n, rgb });
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo);
+    gl.deleteTexture(tex);
     return out;
   }
 
@@ -1035,6 +1082,16 @@
       gl.uniform1f(u('uHazeStrength'), state.edge.hazeStrength);
       gl.uniform1f(u('uTerminatorDesaturate'), state.edge.terminatorDesaturate);
       gl.uniform1f(u('uTerminatorCoolShift'), state.edge.terminatorCoolShift);
+      gl.uniform3fv(u('uCastColor'), state.edge.castColor || Edge.PRESETS.x1classic.castColor);
+      gl.uniform3fv(u('uFringeColor'), state.edge.fringeColor || Edge.PRESETS.x1classic.fringeColor);
+      gl.uniform1f(u('uFringeStrength'), state.edge.fringeStrength || 0);
+      gl.uniform1f(u('uFringeWidth'), state.edge.fringeWidth || Edge.PRESETS.x1classic.fringeWidth);
+      gl.uniform3fv(u('uSunView'), sunView(state, physical));
+      gl.uniform1f(u('uRingSun'), state.edge.ringSun || 0);
+      gl.uniform4fv(u('uSun'), sunUniform(state, physical));
+      gl.uniform4f(u('uSunShape'), Edge.SUN.W, Edge.SUN.F, Edge.SUN.B, Edge.SUN.K);
+      gl.uniform1f(u('uSunOut'), Edge.SUN.OUT);
+      gl.uniform3fv(u('uSunTint'), (state.sun && state.sun.tint) || [1, 1, 1]);
       gl.uniform3f(u('uTone'), state.tone.exposureEv, state.tone.contrast, state.tone.saturation);
       gl.uniform1f(u('uRawMax'), rawMaxOf(state));
       gl.uniform1f(u('uGainOut'), state.gainOut ? 1 : 0);   // Ultra HDR gain map pass
@@ -1046,6 +1103,26 @@
     }
     gl.disable(gl.BLEND);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  // The sun glare uniform for physical lens `physical` (shaders.js
+  // SUN_GLSL uSun): theta from its axis, luv azimuth, strength (0 when off,
+  // not found or not looked for yet), thetaMax in degrees.
+  // Where the sun is from physical lens `physical`, whatever the glare's
+  // switch (the look's fringe uses it): [theta, alpha, known 0/1].
+  function sunView(state, physical) {
+    const sun = state.sun;
+    if (!sun || (sun.status !== 'auto' && sun.status !== 'manual')) return [0, 0, 0];
+    const v = SunDetect.viewOf(sun.dir, physical, SunDetect.upTermDeg(state, physical));
+    return [v.theta, v.alpha, 1];
+  }
+
+  function sunUniform(state, physical) {
+    const sun = state.sun;
+    const tm = state.thetaMaxDeg || 105;
+    if (!sun || !sun.on || (sun.status !== 'auto' && sun.status !== 'manual')) return [0, 0, 0, tm];
+    const v = SunDetect.viewOf(sun.dir, physical, SunDetect.upTermDeg(state, physical));
+    return [v.theta, v.alpha, sun.strength, tm];
   }
 
   // Which uploaded texture backs a given output slot, honouring the swap.
@@ -1308,7 +1385,7 @@
   return {
     create, uploadLens, uploadBayer, makeLensTexture, makeBayerTexture, releaseLens,
     commitLenses, renderComposition, compositionLayout, placedLayout, cellViewport, GLOW_HEADROOM,
-    lensTextureIndex,
+    lensTextureIndex, sunUniform, sunView, sunFrames,
     physicalLens, circleDraw, exportLabel, program, buildProfile, readProfile, makeProfileTarget,
     exportGeometry, makeExportTarget, deleteExportTarget, readCompositionStrips,
     makeFloatExportTarget, readCompositionStripsFloat,

@@ -67,25 +67,25 @@ test('margin and gap scale off the export diameter, not a fixed reference', () =
   assert.strictEqual(g.width, diameter + 2 * margin);
 });
 
-// The shipped app.js defaults are gapFrac 0.16 / marginFrac 0.08 -- twice
-// the margin -- specifically so the two-up export stays on the stated
-// 2:1/1:2 requirement while still leaving room for the rim glow (see
+// The shipped app.js defaults are gapFrac 0 / marginFrac 0 -- the gap
+// twice the margin, trivially -- so the two-up export stays on the stated
+// 2:1/1:2 requirement (see
 // app.js's state comment and test/lens.test.js's pure-geometry version of
 // this same assertion, against Lens.exportLayout directly). This is the
 // same relationship exercised end-to-end through GL.exportGeometry, i.e.
 // through the actual sizing path exportImage and #exportSize both use.
 test('the shipped defaults land on exactly 2:1 side by side through GL.exportGeometry', () => {
-  const g = GL.exportGeometry(baseState({ sensors: 'both', orientation: 'side', gapFrac: 0.16, marginFrac: 0.08 }));
+  const g = GL.exportGeometry(baseState({ sensors: 'both', orientation: 'side', gapFrac: 0, marginFrac: 0 }));
   assert.strictEqual(g.width, g.height * 2);
 });
 
 test('the shipped defaults land on exactly 1:2 stacked through GL.exportGeometry', () => {
-  const g = GL.exportGeometry(baseState({ sensors: 'both', orientation: 'stacked', gapFrac: 0.16, marginFrac: 0.08 }));
+  const g = GL.exportGeometry(baseState({ sensors: 'both', orientation: 'stacked', gapFrac: 0, marginFrac: 0 }));
   assert.strictEqual(g.height, g.width * 2);
 });
 
 test('single lens stays exactly 1:1 through GL.exportGeometry at the shipped margin/gap defaults', () => {
-  const g = GL.exportGeometry(baseState({ sensors: 'A', gapFrac: 0.16, marginFrac: 0.08 }));
+  const g = GL.exportGeometry(baseState({ sensors: 'A', gapFrac: 0, marginFrac: 0 }));
   assert.strictEqual(g.width, g.height);
 });
 

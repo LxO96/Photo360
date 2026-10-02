@@ -16,10 +16,11 @@
   const RECORD_PREFIX = 'photo360.photo.v1.';
   const CAP = 500;
   const SUPPORTED = /\.(insp|jpe?g|dng)$/i;
-  // Keys pasting edits onto another photo leaves out. None: photos from
-  // one shoot share their levelling too (Camera roll, lens nudge), and a
-  // photo that needs its own is levelled after pasting.
-  const PASTE_SKIP = [];
+  // Keys pasting edits onto another photo leaves out: only where the sun
+  // is (sun glare), each shot's own. Photos from one shoot share their
+  // levelling (Camera roll, lens nudge); one that needs its own is levelled
+  // after pasting.
+  const PASTE_SKIP = ['sun'];
 
   const keyOf = (file) => file.name + '|' + file.size + '|' + file.lastModified;
   // A photo's name: its file's, or its own (a merged HDR photo has no file).

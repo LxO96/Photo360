@@ -141,3 +141,4 @@ test('wheelScale zooms in for wheel-up and out for wheel-down, clamped', () => {
   assert.strictEqual(View.wheelScale(0.15, 1e4, 0.15), 0.15);
   assert.strictEqual(View.wheelScale(View.MAX_SCALE, -1e4, 0.15), View.MAX_SCALE);
 });
+

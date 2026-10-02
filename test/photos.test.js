@@ -26,6 +26,11 @@ test('pasteable copies every edit, levelling included', () => {
   assert.strictEqual(e.tone.exposureEv, 1, 'a deep copy');
 });
 
+test('pasteable leaves out the sun: each shot has its own', () => {
+  const p = Photos.pasteable({ tone: { exposureEv: 1 }, sun: { on: true, status: 'auto' } });
+  assert.deepStrictEqual(p, { tone: { exposureEv: 1 } });
+});
+
 test('store saves and loads per key', () => {
   const s = Photos.createStore(memStorage());
   assert.strictEqual(s.load('k'), null);

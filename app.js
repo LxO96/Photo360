@@ -55,32 +55,19 @@
     calibrationGuessedFromShape: false,
     rollDeg: 0,
     nudgeDeg: { A: 0, B: 0 },
-    sensors: 'A', swap: false,
+    sensors: 'both', swap: false,
     orientation: 'side',
-    // Task 12: at marginFrac 0 the synthesized rim glow is cropped at the
-    // canvas boundary -- compositionLayout gives the circle the full
-    // canvas half-width, so the glow's headroom (GL.GLOW_HEADROOM, 8% of
-    // the circle radius each side) falls outside the framebuffer. That is
-    // real, faithful-to-the-hardware behaviour (the X1 reference photo is
-    // clipped the same way by its own sensor frame), but it should not be
-    // what a first-time export silently does. Default the margin to 8% --
-    // exactly GL's own glow headroom -- so the fitted edge this tool works
-    // hard to produce is visible out of the box. Anyone who wants the
-    // flush-to-frame look still has the Margin slider, down to 0%.
-    //
-    // The stated output requirement is a circle on a black square, either
-    // 1:1 (one lens) or exactly 2:1/1:2 (both). A single lens stays square
-    // under any margin, but the two-up layout is
-    // width = 2*diameter + gap + 2*margin, height = diameter + 2*margin --
-    // exactly 2:1 only when gap == 2*margin (see Lens.exportLayout and
-    // test/lens.test.js). Defaulting gapFrac to twice marginFrac keeps the
-    // shipped defaults on the required 2:1/1:2 while still showing the
-    // fitted rim; the two sliders stay fully independent otherwise -- a
-    // user who moves one away from this relationship gets a different
-    // aspect ratio on purpose, which #exportSize's ratio suffix makes
-    // visible rather than silent.
-    gapFrac: 0.16,
-    marginFrac: 0.08,
+    // Gap and margin default to 0 (the user's choice, 2026-10-03): the two
+    // circles touch each other and the frame, and a two-up export is
+    // exactly 2:1 / 1:2 (width = 2*diameter + gap + 2*margin, height =
+    // diameter + 2*margin -- exactly 2:1 whenever gap == 2*margin; see
+    // Lens.exportLayout and test/lens.test.js). At margin 0 the rim glow
+    // past the circles' outer edges (GL.GLOW_HEADROOM, 8% of the radius) is
+    // cut off by the frame, as the camera's own sensor frame cuts it; the
+    // Gap and Margin sliders bring it back (gap 16% / margin 8% also keeps
+    // 2:1), and #exportSize's ratio suffix shows any other aspect.
+    gapFrac: 0,
+    marginFrac: 0,
     background: [0, 0, 0],
     sourceName: '', sourceLensSize: 0,
     // The size actually uploaded to the GPU for this file's lenses -- may
@@ -183,6 +170,12 @@
     keyLayout: 'standard',
     // The photo strip (several photos open) shown or collapsed.
     stripShown: true,
+    // Sun glare on the rim (edge.js sunGlare): an edit of each photo, but
+    // never pasted (photos.js PASTE_SKIP). status: 'pending' (not looked
+    // for yet: a photo opened for the first time looks, detectSun), 'auto'
+    // (found), 'manual' (dragged), 'none' (looked, no sun). dir: a unit
+    // direction (sundetect.js), tint: the light around the sun.
+    sun: { on: true, status: 'pending', dir: [0, 0, 1], strength: 1, tint: [1, 1, 1] },
   };
   // The built-in defaults, snapshotted before stored settings are merged in:
   // what double-clicking a slider resets it to (see the NUM `path`s).
@@ -378,7 +371,9 @@
     // see Settings.resolveSwapForLoad's own comment for the bug this
     // closes.
     patch.swap = Settings.resolveSwapForLoad(state.swap, descriptor.lensCount);
-    if (descriptor.orientationDefault) patch.orientation = descriptor.orientationDefault;
+    // Layout is the user's (side by side unless they chose otherwise); the
+    // file's own arrangement (descriptor.orientationDefault) no longer
+    // overrides it.
     Object.assign(state, patch);
     // This photo's own edits, sanitized like stored settings, win over what
     // the file itself says (its as-shot white balance); the lens-count
@@ -390,6 +385,25 @@
       state.swap = Settings.resolveSwapForLoad(state.swap, descriptor.lensCount);
       syncControlsFromState();
     }
+    // The sun is this photo's own: one without a stored sun (never opened,
+    // or saved before sun glare) looks for it, keeping only the on switch
+    // and strength last used.
+    if (!(restore && restore.edits && restore.edits.sun)) {
+      state.sun = Object.assign({}, DEFAULTS.sun, { on: state.sun.on, strength: state.sun.strength });
+    }
+    // Both lenses, unless one is blacked out (a cap, a covered lens): then
+    // the other alone. A photo's own stored choice stands. One small
+    // readback of both lenses serves this and the sun.
+    let frames = null;
+    const lensFrames = () => frames || (frames = GL.sunFrames(ctx, state));
+    if (descriptor.lensCount === 2 && !(restore && restore.edits && 'sensors' in restore.edits)) {
+      const black = SunDetect.blackLens(lensFrames());
+      const other = black === 'A' ? 'B' : 'A';
+      // Sensors names the output slot; with Swap on, slot A shows lens B.
+      state.sensors = !black ? 'both' : state.swap ? (other === 'A' ? 'B' : 'A') : other;
+    }
+    if (state.sun.status === 'pending') detectSun(lensFrames());
+    syncSunControls();
     zoom = null;   // zoom is per view, not per file: every load starts at Fit
 
     dropEl.classList.add('hidden');
@@ -610,6 +624,8 @@
         : `${(-c.overlapDeg).toFixed(1)}° short of the hemisphere — a gap between the two lenses.`;
     drawGuides();
     drawMatch();
+    drawSun();
+    syncLook();
     updateLensControls();
     updateExportSize();
   }
@@ -1612,6 +1628,9 @@
     defNum(k, { path: 'detail.' + k, get: () => state.detail[k], set: (v) => { state.detail[k] = v; },
       range: Settings.RANGES.detail[k], fmt: (v) => String(Math.round(v)) });
   }
+  defNum('sunStrength', { path: 'sun.strength', get: () => state.sun.strength,
+    set: (v) => { state.sun.strength = v; },
+    range: Settings.RANGES.sun.strength, scale: 100, fmt: (v) => String(Math.round(v * 100)) });
   defNum('sharpenRadius', { path: 'detail.sharpenRadius', get: () => state.detail.sharpenRadius,
     set: (v) => { state.detail.sharpenRadius = v; },
     range: Settings.RANGES.detail.sharpenRadius, fmt: (v) => v.toFixed(1) });
@@ -1750,6 +1769,7 @@
       if (state.panels[el.dataset.panel] === el.open) return;
       state.panels[el.dataset.panel] = el.open;
       scheduleSave();
+      drawSun();
     });
   }
 
@@ -1801,6 +1821,8 @@
 
   function syncControlsFromState() {
     toneMonoEl.checked = !!state.tone.mono;
+    syncSunControls();
+    syncLook();
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
     swapEl.checked = state.swap;
@@ -2334,13 +2356,208 @@
     return v.toFixed(Settings.decimalsForStep(document.getElementById(k).step));
   }
 
-  function applyEdgePreset() {
-    state.edge = Object.assign({}, Edge.PRESETS.x1classic);
+  const LOOK_TILE_PX = 144;   // tile canvas pixels (shown about 70 CSS px wide)
+  // Rim looks (edge.js LOOKS), as a gallery: clicking a tile sets every
+  // edge value and the sun glare strength, one undo step (clicking it again
+  // resets to it). The tile of the look the values are is marked; once a
+  // slider moves, the last one picked says "edited". Each tile is a
+  // stylized rim with that look (drawLookSwatch).
+  const lookGalleryEl = document.getElementById('lookGallery');
+  const lookTiles = new Map();
+  for (const l of Edge.LOOKS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'look';
+    b.setAttribute('role', 'option');
+    b.title = l.name;
+    const c = document.createElement('canvas');
+    c.width = c.height = LOOK_TILE_PX;
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = l.name;
+    const ed = document.createElement('span');
+    ed.className = 'ed';
+    b.append(c, nm, ed);
+    b.addEventListener('click', () => applyLook(l.id));
+    lookGalleryEl.appendChild(b);
+    lookTiles.set(l.id, { button: b, canvas: c, edited: ed });
+    drawLookSwatch(l, c);
+  }
+  let lastLookId = null;
+  function syncLook() {
+    const m = Edge.lookOf(state.edge, state.sun.strength);
+    if (m) lastLookId = m.id;
+    for (const [id, t] of lookTiles) {
+      const cur = m ? m.id === id : id === lastLookId;
+      t.button.classList.toggle('current', cur);
+      t.button.setAttribute('aria-selected', String(!!(m && m.id === id)));
+      t.edited.textContent = !m && id === lastLookId ? 'edited' : '\u00a0';
+    }
+  }
+
+  // Each tile: a stylized lower-left rim with that look (Edge.lookSwatch),
+  // drawn once -- not the photo.
+  function drawLookSwatch(look, c) {
+    const img = new ImageData(Edge.lookSwatch(look, c.width), c.width, c.width);
+    c.getContext('2d').putImageData(img, 0, 0);
+  }
+
+  function applyLook(id) {
+    const look = Edge.LOOKS.find((l) => l.id === id);
+    if (!look) return;
+    state.edge = JSON.parse(JSON.stringify(look.edge));
+    state.sun = Object.assign({}, state.sun, { strength: look.sunStrength });
     for (const k of EDGE_KEYS) reflectNum(NUM[k], true);
+    reflectNum(NUM.sunStrength, true);
+    lastLookId = id;
     render();
     scheduleSave();
   }
-  document.getElementById('resetEdge').addEventListener('click', applyEdgePreset);
+
+  // -- Sun glare (spec docs/superpowers/specs/2026-10-02-sun-glare-design.md) --
+  // Found once per photo (detectSun, on its first open, or Re-detect),
+  // shown as a marker on the preview while the Edge panel is open, and
+  // moved by dragging it.
+  const sunOnEl = document.getElementById('sunOn');
+  const sunNoteEl = document.getElementById('sunNote');
+  const sunDetectEl = document.getElementById('sunDetect');
+  const sunLayerEl = document.getElementById('sunLayer');
+  const sunFound = () => state.sun.status === 'auto' || state.sun.status === 'manual';
+
+  // `frames`: GL.sunFrames already read for this photo, if any.
+  function detectSun(frames) {
+    if (!ctx || !state.sourceLensSize) return;
+    const r = SunDetect.detect(frames || GL.sunFrames(ctx, state));
+    if (r) {
+      state.sun = Object.assign({}, state.sun, {
+        status: 'auto', tint: r.tint,
+        dir: SunDetect.dirOf(r.lens, r.x, r.y, state.thetaMaxDeg, SunDetect.upTermDeg(state, r.lens)),
+      });
+    } else {
+      state.sun = Object.assign({}, state.sun, { status: 'none' });
+    }
+  }
+
+  function syncSunControls() {
+    sunOnEl.checked = !!state.sun.on;
+    reflectNum(NUM.sunStrength, true);
+    const s = state.sun;
+    let note = '';
+    if (s.status === 'none') note = 'No sun found. Drag the marker onto it, or Re-detect.';
+    else if (s.status === 'manual') note = 'Placed by hand.';
+    else if (s.status === 'auto') {
+      const v = SunDetect.viewOf(s.dir, 'A', 0);
+      note = 'Sun found in Lens ' + (v.theta <= Math.PI / 2 ? 'A' : 'B') + '. Drag the marker to move it.';
+    }
+    sunNoteEl.textContent = state.sourceLensSize ? note : '';
+    drawSun();
+  }
+
+  sunOnEl.addEventListener('input', () => {
+    state.sun = Object.assign({}, state.sun, { on: sunOnEl.checked });
+    syncSunControls();
+    render();
+    scheduleSave();
+  });
+  sunDetectEl.addEventListener('click', () => {
+    if (!loaded()) return;
+    detectSun();
+    syncSunControls();
+    render();
+    scheduleSave();
+  });
+
+  // Where the marker sits: on each circle showing the sun, or, when none
+  // does (it is beyond the crop), dashed at the rim of the nearest one.
+  const SUN_MARKER_PX = 11;   // CSS pixels
+  function sunOnScreen() {
+    const discs = matchDiscs();
+    const out = [];
+    let nearest = null;
+    for (const lens of Object.keys(discs)) {
+      const d = discs[lens];
+      const v = SunDetect.viewOf(state.sun.dir, lens, SunDetect.upTermDeg(state, lens));
+      const rho = v.theta / (state.thetaMaxDeg * Math.PI / 180) / 2;   // luv radius
+      const uv = [0.5 + rho * Math.cos(v.alpha), 0.5 + rho * Math.sin(v.alpha)];
+      const u = rho * 2 / d.crop;
+      if (u <= 1) out.push(Object.assign(WbMatch.lensToScreen(uv, d), { out: false }));
+      else if (!nearest || u < nearest.u) {
+        const k = 0.5 * d.crop / rho;   // pulled in to the rim
+        const rim = [0.5 + (uv[0] - 0.5) * k, 0.5 + (uv[1] - 0.5) * k];
+        nearest = { u, at: Object.assign(WbMatch.lensToScreen(rim, d), { out: true }) };
+      }
+    }
+    if (!out.length && nearest) out.push(nearest.at);
+    return out;
+  }
+
+  function drawSun() {
+    const base = !!(ctx && state.sourceLensSize && state.panels.edge && state.sun.on && !match);
+    const show = base && sunFound();
+    // No sun found: a dashed marker at the top of the first circle to
+    // drag onto it.
+    const placeable = base && state.sun.status === 'none';
+    sunLayerEl.classList.toggle('hidden', !show && !placeable);
+    if (!show && !placeable) return;
+    const vr = canvas.getBoundingClientRect(), sr = stageEl.getBoundingClientRect();
+    sunLayerEl.style.left = (vr.left - sr.left) + 'px';
+    sunLayerEl.style.top = (vr.top - sr.top) + 'px';
+    sunLayerEl.style.width = vr.width + 'px';
+    sunLayerEl.style.height = vr.height + 'px';
+    sunLayerEl.setAttribute('viewBox', `0 0 ${canvas.width} ${canvas.height}`);
+    const px = canvas.width / Math.max(1, vr.width);
+    sunLayerEl.style.setProperty('--px', px);
+    let spots;
+    if (show) spots = sunOnScreen();
+    else {
+      const c = previewLayout().circles[0];
+      spots = c ? [{ x: c.cx, y: c.cy - c.radius * 0.9, out: true }] : [];
+    }
+    sunLayerEl.replaceChildren();
+    const r = SUN_MARKER_PX * px;
+    for (const p of spots) {
+      const g = svgEl('g', { class: 's-pip' + (p.out ? ' out' : '') }, sunLayerEl);
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4;
+        svgEl('line', { class: 's-ray', x1: p.x + Math.cos(a) * r * 1.35, y1: p.y + Math.sin(a) * r * 1.35,
+          x2: p.x + Math.cos(a) * r * 1.75, y2: p.y + Math.sin(a) * r * 1.75 }, g);
+      }
+      svgEl('circle', { class: 's-halo', cx: p.x, cy: p.y, r }, g);
+      const ring = svgEl('circle', { class: 's-ring', cx: p.x, cy: p.y, r }, g);
+      ring.addEventListener('pointerdown', dragSun);
+    }
+  }
+
+  // Dragging moves the sun to wherever the pointer is on either lens.
+  // drawSun rebuilds the marker as it goes, so the drag listens on the
+  // stage, not on the marker it started on.
+  function dragSun(ev) {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    const move = (m) => {
+      const q = pointerToCanvas(m), c = circleAt(q);
+      if (!c) return;
+      const lens = GL.physicalLens(state, c.lens);
+      const uv = WbMatch.screenToLens(q, matchDiscs()[lens]);
+      state.sun = Object.assign({}, state.sun, {
+        status: 'manual',
+        dir: SunDetect.dirOf(lens, uv[0], uv[1], state.thetaMaxDeg, SunDetect.upTermDeg(state, lens)),
+      });
+      requestRender();
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move, true);
+      window.removeEventListener('pointerup', up, true);
+      window.removeEventListener('pointercancel', up, true);
+      syncSunControls();
+      render();
+      scheduleSave();
+    };
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', up, true);
+    window.addEventListener('pointercancel', up, true);
+  }
 
   // DNG is only offered for raw sources; loading a JPEG/.insp while it is
   // selected falls back to JPEG.
@@ -3472,6 +3689,110 @@
     return { maxDiff, cases: TONE_PARITY_CASES.length, worst };
   }
 
+  // Sun glare: Shaders.SUN_PARITY_FS against Edge.sunGlare over 256
+  // azimuths, for suns in front of, at the side of and behind the lens.
+  function checkSunParity() {
+    ensureCtx();
+    const gl = ctx.gl;
+    const prog = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.SUN_PARITY_FS);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 256, 1, 0, gl.RGBA, gl.FLOAT, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    gl.viewport(0, 0, 256, 1);
+    gl.useProgram(prog);
+    const u = (n) => gl.getUniformLocation(prog, n);
+    gl.uniform4f(u('uSunShape'), Edge.SUN.W, Edge.SUN.F, Edge.SUN.B, Edge.SUN.K);
+    const out = new Float32Array(256 * 4);
+    const D = Math.PI / 180;
+    let maxDiff = 0, worst = null;
+    const cases = [];
+    for (const th of [0, 30, 80, 95, 110, 150, 180]) {
+      for (const al of [-2.5, 0, 1.2]) cases.push({ theta: th * D, alpha: al, strength: 1.3, tint: [1, 0.8, 0.6], thetaMaxDeg: 105 });
+    }
+    gl.uniform1f(u('uRingSun'), 0.9);
+    for (const c of cases) {
+      gl.uniform4f(u('uSun'), c.theta, c.alpha, c.strength, c.thetaMaxDeg);
+      gl.uniform3fv(u('uSunTint'), c.tint);
+      gl.uniform3f(u('uSunView'), c.theta, c.alpha, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.readPixels(0, 0, 256, 1, gl.RGBA, gl.FLOAT, out);
+      for (let x = 0; x < 256; x++) {
+        const a = (x + 0.5) / 256 * 2 * Math.PI - Math.PI;
+        const want = Edge.sunGlare(a, c).concat(Edge.ringSunWeight(a,
+          { theta: c.theta, alpha: c.alpha, known: true, thetaMaxDeg: c.thetaMaxDeg }, { ringSun: 0.9 }));
+        for (let k = 0; k < 4; k++) {
+          const d = Math.abs(out[x * 4 + k] - want[k]);
+          if (d > maxDiff) { maxDiff = d; worst = { c, x, k, gpu: out[x * 4 + k], js: want[k] }; }
+        }
+      }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo); gl.deleteTexture(tex); gl.deleteProgram(prog);
+    console.log('sun glare parity: ' + cases.length + ' suns x 256 azimuths, max abs diff =', maxDiff,
+      maxDiff < 1e-4 ? '(OK, below 1e-4)' : '(FAIL, exceeds 1e-4)');
+    return { maxDiff, cases: cases.length, worst };
+  }
+
+  // Rim looks: Shaders.EDGE_FADE_PARITY_FS against Edge.edgeFade, every
+  // look, 256 radii x 8 colours.
+  function checkFadeParity() {
+    ensureCtx();
+    const gl = ctx.gl;
+    const prog = GL.program(gl, Shaders.FULLSCREEN_VS, Shaders.EDGE_FADE_PARITY_FS);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 256, 8, 0, gl.RGBA, gl.FLOAT, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    gl.bindVertexArray(ctx.vao);
+    gl.disable(gl.BLEND);
+    gl.viewport(0, 0, 256, 8);
+    gl.useProgram(prog);
+    const u = (n) => gl.getUniformLocation(prog, n);
+    const out = new Float32Array(256 * 8 * 4);
+    let maxDiff = 0, worst = null;
+    for (const look of Edge.LOOKS) {
+      const e = look.edge;
+      gl.uniform1f(u('uFalloffStart'), e.falloffStart);
+      gl.uniform1f(u('uFalloffSoftness'), e.falloffSoftness);
+      gl.uniform1f(u('uTerminatorDesaturate'), e.terminatorDesaturate);
+      gl.uniform1f(u('uTerminatorCoolShift'), e.terminatorCoolShift);
+      gl.uniform3fv(u('uCastColor'), e.castColor);
+      gl.uniform3fv(u('uFringeColor'), e.fringeColor);
+      gl.uniform1f(u('uFringeStrength'), e.fringeStrength);
+      gl.uniform1f(u('uFringeWidth'), e.fringeWidth);
+      gl.uniform3f(u('uSunView'), 1.2, 0.3, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.readPixels(0, 0, 256, 8, gl.RGBA, gl.FLOAT, out);
+      for (let y = 0; y < 8; y++) {
+        const img = [((y * 37) % 8) / 7, ((y * 5 + 3) % 8) / 7, (7 - y) / 7];
+        for (let x = 0; x < 256; x++) {
+          const want = Edge.edgeFade(img, 0.8 + 0.2 * x / 255, e,
+            Edge.fringeSide(y * 0.8 - 3, { theta: 1.2, alpha: 0.3, known: true }));
+          for (let k = 0; k < 3; k++) {
+            const d = Math.abs(out[(y * 256 + x) * 4 + k] - want[k]);
+            if (d > maxDiff) { maxDiff = d; worst = { look: look.id, x, y, k, gpu: out[(y * 256 + x) * 4 + k], js: want[k] }; }
+          }
+        }
+      }
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.deleteFramebuffer(fbo); gl.deleteTexture(tex); gl.deleteProgram(prog);
+    console.log('edge fade parity: ' + Edge.LOOKS.length + ' looks x 256 radii x 8 colours, max abs diff =', maxDiff,
+      maxDiff < 1e-4 ? '(OK, below 1e-4)' : '(FAIL, exceeds 1e-4)');
+    return { maxDiff, worst };
+  }
+
   // Shaders.DEV_PARITY_INPUT_FS's synthetic opponent pixel, computed
   // identically (every value is exact in float16).
   function detailParityInput(x, y) {
@@ -3656,5 +3977,7 @@
     selectPhoto: (i, mode) => { photos.select(photos.entries[i].id, mode); drawStrip(); },
     removePhotoAt: (i) => removePhoto(photos.entries[i].id),
     copyEdits, pasteEdits, exportSelected, checkFloatRawParity, mergeSelected, checkGainParity,
+    checkSunParity, checkFadeParity, applyLook, detectSun: () => { detectSun(); syncSunControls(); render(); return state.sun; },
+    sunFrames: () => GL.sunFrames(ctx, state),
   };
 })();
