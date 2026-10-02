@@ -312,3 +312,16 @@ test('the composite has a gain mode writing the offset log-gain', () => {
     assert.match(S[n], /toneGain\(img0, uTone, uToneCurve, toneCoef, uRawMax, uGainD\)/, n);
   }
 });
+
+// A raw lens is sampled between pixels (bilinear over the demosaiced
+// camera values), as a JPEG lens is by the texture unit: nearest-pixel
+// sampling made jagged, stepping edges wherever the remap scales.
+test('the raw composite interpolates the lens between pixels', () => {
+  const S = require('../shaders.js');
+  const raw = S.COMPOSITE_RAW_FS;
+  const lt = raw.match(/vec3 lensTexel\(vec2 uv\) \{[\s\S]*?\n  \}/);
+  assert.ok(lt, 'lensTexel');
+  assert.match(lt[0], /rawCameraBilinear\(/);
+  assert.match(raw, /vec3 rawCameraBilinear\(vec2 pos\)/);
+  assert.match(S.COMPOSITE_DNG_FS, /rawCameraBilinear\(/, 'the DNG export too');
+});

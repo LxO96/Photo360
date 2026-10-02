@@ -134,8 +134,22 @@
   }
 #endif
 
-  vec3 demosaicAt(ivec2 p) {
-    vec3 lin = rawCameraAt(p);
+  // Camera values between pixels: bilinear over the four nearest, at pos
+  // in pixels (top-left origin, pixel centres at i + 0.5: lensTexelPos).
+  // The composites sample the lens through this, as a JPEG lens is
+  // sampled by the texture unit -- nearest-pixel sampling stepped every
+  // edge wherever the fisheye remap enlarges or shrinks the lens.
+  vec3 rawCameraBilinear(vec2 pos) {
+    vec2 q = pos - 0.5;
+    ivec2 p = ivec2(floor(q));
+    vec2 f = q - floor(q);
+    vec3 a = rawCameraAt(p), b = rawCameraAt(p + ivec2(1, 0));
+    vec3 c = rawCameraAt(p + ivec2(0, 1)), d = rawCameraAt(p + ivec2(1, 1));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+
+  // Camera values -> display sRGB (white balance, colour matrix).
+  vec3 rawToDisplay(vec3 lin) {
     // Clamp *before* the colour matrix, not just after: a channel that hit
     // the sensor's white level is genuinely unknown past 1.0, and the white
     // balance gain (up to ~2x on this camera's blue channel) pushes clipped
@@ -151,6 +165,8 @@
     vec3 srgbLinear = clamp(uCamToSrgb * lin, 0.0, uRawMax);
     return srgbEncode(srgbLinear);
   }
+
+  vec3 demosaicAt(ivec2 p) { return rawToDisplay(rawCameraAt(p)); }
 
   // Raw planes are uploaded to the GPU exactly as they sit in the DNG file
   // (row 0 = the top of the image, matching CFAPattern's own row order --
@@ -185,7 +201,7 @@
                  int(floor((1.0 - uv.y) * float(uLensSize.y))));
   }
   vec3 lensTexel(vec2 uv) {
-    return demosaicAt(lensPixel(uv));
+    return rawToDisplay(rawCameraBilinear(vec2(uv.x, 1.0 - uv.y) * vec2(uLensSize)));
   }
   vec2 lensTexelPos(vec2 uv) { return vec2(uv.x, 1.0 - uv.y) * vec2(uLensSize); }`;
 
@@ -641,7 +657,8 @@
 
     vec3 lin = vec3(0.0);   // linear sRGB, unclamped
     if (u < 1.0) {
-      vec3 cam = rawCameraAt(lensPixel(lensUv(u, theta, uCropFrac, uRoll)));
+      vec2 luv = lensUv(u, theta, uCropFrac, uRoll);
+      vec3 cam = rawCameraBilinear(vec2(luv.x, 1.0 - luv.y) * vec2(uLensSize));
       // Where the sensor clipped, the pixel's colour is unknown and raw
       // converters render it magenta after white balance (blown sky goes
       // pink). Near saturation, blend to what the preview shows there --
