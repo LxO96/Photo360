@@ -450,7 +450,8 @@ fallbacks, and `App.developInfo()` shows the path in use.
 ### Output
 
 - **Format** — JPEG or PNG (PNG is lossless; JPEG carries a **quality**
-  slider, 60–100). Only the JPEG export carries the source file's EXIF
+  slider, 60–100, default 98 — at 95 the browser's encoder leaves visible 8×8
+  blocks on fine high-contrast detail). Only the JPEG export carries the source file's EXIF
   (capture time, camera model) forward into the output — a PNG export has
   none, since `Exif.reattach` only knows how to splice APP1 metadata into a
   JPEG container.

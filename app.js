@@ -108,7 +108,7 @@
     // resurrecting across a reload the way fovDeg/edge/tone are.
     padToSensorSquare: false,
     format: 'jpeg',
-    quality: 95,
+    quality: 98,   // 95 left visible 8x8 blocks on fine high-contrast detail (Chrome's encoder, 4:2:0)
     // Ultra HDR JPEG: how many stops brighter than white HDR screens may
     // show the highlights (1..3). Like format and quality, not persisted.
     hdrHeadroom: 2,
