@@ -116,3 +116,18 @@ test('reattach with no segment is a no-op', () => {
   const encoded = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
   assert.strictEqual(Exif.reattach(encoded, null), encoded);
 });
+
+test('it reads shutter time and ISO out of a real .insp file', () => {
+  const tags = Exif.readTags(new Uint8Array(fs.readFileSync(SOURCE).subarray(0, 1 << 18)));
+  assert.ok(Math.abs(tags.exposureTime - 225 / 1000000) < 1e-12, String(tags.exposureTime));
+  assert.strictEqual(tags.iso, 102);
+});
+
+test('no exposure tags gives nulls', () => {
+  const app1 = Exif.buildApp1({ make: 'M', model: 'X', dateTimeOriginal: '2026:01:01 00:00:00' });
+  const jpeg = new Uint8Array(2 + app1.length + 2);
+  jpeg.set([0xff, 0xd8], 0); jpeg.set(app1, 2); jpeg.set([0xff, 0xd9], 2 + app1.length);
+  const back = Exif.readTags(jpeg);
+  assert.strictEqual(back.exposureTime, null);
+  assert.strictEqual(back.iso, null);
+});

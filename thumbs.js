@@ -163,5 +163,11 @@
     try { return await dngMeta(file); } catch (e) { return null; }
   }
 
-  return { SIZE, exifThumbnail, dngDecimate, quick, dngHeader };
+  // A JPEG / .insp's EXIF (Exif.readTags: camera, date, shutter, ISO),
+  // from its head only, or null.
+  async function jpegHeader(file) {
+    try { return globalThis.Exif.readTags(await bytesOf(file, 0, HEAD)); } catch (e) { return null; }
+  }
+
+  return { SIZE, exifThumbnail, dngDecimate, quick, dngHeader, jpegHeader };
 });

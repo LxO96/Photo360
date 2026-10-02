@@ -65,6 +65,15 @@ The strip first shows the camera's own thumbnail (a coarse read of the raw
 data for a DNG), then a picture of the photo as edited once you have opened
 it. A dot marks an edited photo; × removes one from the strip.
 
+The strip is in capture-time order (the time in the camera's file name,
+`IMG_YYYYMMDD_HHMMSS…`, or else the EXIF date) and grouped into shooting
+moments: photos from one camera, each taken within 5 s of the one before,
+with exposures within 3 stops of each other, sit together with a line
+under them and a gap before the next group. Every tile shows its shutter
+and ISO; inside a group, what differs between its shots is shown in the
+accent colour, with each shot's offset from the group's darkest (`+2.0
+EV`).
+
 - **Copy edits / Paste** (Ctrl+Shift+C / Ctrl+Shift+V) copy every edit,
   levelling included, onto every selected photo.
   Ctrl-click or Shift-click photos to select them; the open photo is always

@@ -109,3 +109,53 @@ test('insertAfter places a virtual entry after another, deduped by key', () => {
   assert.strictEqual(Photos.nameOf(m), 'a_HDR');
   assert.strictEqual(Photos.nameOf(a), 'a.dng');
 });
+
+// -- Capture time, sorting and shooting groups ------------------------------
+const shot = (name, o) => Object.assign({ id: name, file: f(name), shot: null }, o);
+
+test('captureTime reads the camera file name first, else the EXIF date', () => {
+  assert.strictEqual(Photos.captureTime('IMG_20240825_173735_00_003.dng', '2024:08:25 15:37:36'),
+    Date.UTC(2024, 7, 25, 17, 37, 35) / 1000);
+  assert.strictEqual(Photos.captureTime('holiday.jpg', '2024:08:25 15:37:36'), Date.UTC(2024, 7, 25, 15, 37, 36) / 1000);
+  assert.strictEqual(Photos.captureTime('holiday.jpg', ''), null);
+});
+
+test('sortByShot orders by capture time, then name; unknown times last', () => {
+  const es = [
+    shot('c.dng', { shot: { time: 20 } }), shot('b.dng', { shot: null }),
+    shot('a.dng', { shot: { time: 20 } }), shot('d.dng', { shot: { time: 5 } }),
+  ];
+  assert.deepStrictEqual(Photos.sortByShot(es).map((e) => e.id), ['d.dng', 'a.dng', 'c.dng', 'b.dng']);
+});
+
+test('groupsOf: same camera, within 5 s of the previous, exposures within 3 EV', () => {
+  const s = (t, ev, model = 'X') => ({ time: t, model, ev });
+  const es = [
+    shot('1', { shot: s(100, 0) }), shot('2', { shot: s(103, 2) }), shot('3', { shot: s(107, -1) }),   // a group
+    shot('4', { shot: s(113, 0) }),                                                                // 6 s later: alone
+    shot('5', { shot: s(200, 0) }), shot('6', { shot: s(201, 4) }),                                // 4 EV apart: split
+    shot('7', { shot: s(300, 0) }), shot('8', { shot: s(301, 0, 'Y') }),                           // other camera: split
+    shot('9', { shot: null }),
+  ];
+  assert.deepStrictEqual(Photos.groupsOf(es).map((g) => g.map((e) => e.id)),
+    [['1', '2', '3'], ['4'], ['5'], ['6'], ['7'], ['8'], ['9']]);
+});
+
+test('exposureLabel shows shutter and ISO', () => {
+  assert.strictEqual(Photos.exposureLabel({ exposureTime: 1 / 146, iso: 100 }), '1/146 · ISO 100');
+  assert.strictEqual(Photos.exposureLabel({ exposureTime: 2.5, iso: 800 }), '2.5 s · ISO 800');
+  assert.strictEqual(Photos.exposureLabel({ exposureTime: 1 / 60 }), '1/60');
+  assert.strictEqual(Photos.exposureLabel({}), '');
+});
+
+test('groupInfo marks what varies as shown, and the darkest exposure', () => {
+  const s = (t, iso) => ({ shot: { time: 1, model: 'X', exposureTime: t, iso, ev: Math.log2(t * iso / 100) } });
+  const same = Photos.groupInfo([s(1 / 150.8, 100), s(1 / 151, 100)]);   // both show 1/151
+  assert.strictEqual(same.shutter, false);
+  assert.strictEqual(same.iso, false);
+  assert.strictEqual(same.darkest, null);
+  const br = Photos.groupInfo([s(1 / 146, 100), s(1 / 60, 164)]);
+  assert.strictEqual(br.shutter, true);
+  assert.strictEqual(br.iso, true);
+  assert.ok(Math.abs(br.darkest - Math.log2(1 / 146)) < 1e-12);
+});

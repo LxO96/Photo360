@@ -2999,17 +2999,29 @@
     resetHistory();
   }
 
-  // Quick thumbnails (thumbs.js), one file at a time in the background.
+  // In the background, one file at a time: first every new photo's header
+  // (capture time, camera, shutter, ISO -- cheap, so the strip can sort and
+  // group them at once), then the quick thumbnails (thumbs.js).
   let thumbQueue = Promise.resolve();
   function queueThumbs(entries) {
     for (const e of entries) {
       thumbQueue = thumbQueue.then(async () => {
-        if (!e.file || !photos.byId(e.id)) return;
-        // A DNG's header: exposure and capture time, for bracket sets.
-        if (/\.dng$/i.test(e.file.name) && e.dng === undefined) {
-          e.dng = await Thumbs.dngHeader(e.file);
-          updateSets();
+        if (!e.file || !photos.byId(e.id) || e.shot !== undefined) return;
+        let m = null;
+        if (/\.dng$/i.test(e.file.name)) {
+          e.dng = await Thumbs.dngHeader(e.file);   // also for bracket sets
+          m = e.dng && { model: e.dng.model, date: e.dng.dateTimeOriginal, exposureTime: e.dng.exposureTime, iso: e.dng.iso };
+        } else {
+          const x = await Thumbs.jpegHeader(e.file);
+          m = x && { model: x.model, date: x.dateTimeOriginal, exposureTime: x.exposureTime, iso: x.iso };
         }
+        e.shot = shotOf(e.file.name, m);
+        orderStrip();
+      });
+    }
+    for (const e of entries) {
+      thumbQueue = thumbQueue.then(async () => {
+        if (!e.file || !photos.byId(e.id)) return;
         if (e.thumb || !photos.byId(e.id)) return;
         try {
           const blob = await Thumbs.quick(e.file);
@@ -3019,6 +3031,28 @@
         } catch (err) { /* the tile keeps its name on black */ }
       });
     }
+  }
+
+  // A photo's place among the shots (photos.js groupsOf): capture time,
+  // camera and exposure (log2 of shutter x ISO/100).
+  function shotOf(name, m) {
+    const time = Photos.captureTime(name, m && m.date);
+    if (time === null && !m) return null;
+    const ev = m && m.exposureTime > 0 ? Math.log2(m.exposureTime * ((m.iso > 0 ? m.iso : 100) / 100)) : null;
+    return { time, model: (m && m.model) || '', ev, exposureTime: m ? m.exposureTime : null, iso: m ? m.iso : null };
+  }
+  // The strip in capture-time order (a merged photo right after its
+  // members), its bracket sets and groups redrawn.
+  function orderStrip() {
+    for (const e of photos.entries) {
+      if (!e.members) continue;
+      const last = e.members.map((x) => x.shot).filter((s) => s && Number.isFinite(s.time))
+        .sort((a, b) => b.time - a.time)[0];
+      e.shot = last ? Object.assign({}, last, { time: last.time + 0.5, ev: null, exposureTime: null, iso: null }) : null;
+    }
+    const sorted = Photos.sortByShot(photos.entries);
+    photos.entries.splice(0, photos.entries.length, ...sorted);
+    updateSets();
   }
 
   // -- HDR: bracket sets and merging (hdrmerge.js) --
@@ -3048,6 +3082,7 @@
     const stem = Photos.nameOf(sel[0]).replace(/\.[^.]+$/, '');
     const entry = photos.insertAfter(sel[sel.length - 1].id, { key, name: stem + '_HDR', members: sel });
     entry.edited = photoStore.has(key);
+    orderStrip();
     drawStrip();
     return openPhoto(entry);
   }

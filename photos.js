@@ -32,6 +32,70 @@
     return out;
   }
 
+  // -- Capture time, order and shooting groups (the strip) --
+  // A photo's `shot`, set by app.js from its header: { time (seconds,
+  // camera-local), model, ev (log2 of shutter x ISO/100), exposureTime,
+  // iso } or null. The time comes from the camera's file name
+  // (IMG_YYYYMMDD_HHMMSS...) when it has one -- the camera's local clock --
+  // else from EXIF / DNG DateTime (which on these cameras is a fixed offset
+  // from it, so mixing the two would misorder a folder).
+  const NAME_TIME = /(?:^|[^0-9])(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:[^0-9]|$)/;
+  const EXIF_TIME = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/;
+  function captureTime(name, exifDate) {
+    const m = NAME_TIME.exec(name || '') || EXIF_TIME.exec(exifDate || '');
+    if (!m) return null;
+    return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000;
+  }
+
+  // Capture time order, names breaking ties; photos without a time last.
+  function sortByShot(entries) {
+    const t = (e) => (e.shot && Number.isFinite(e.shot.time) ? e.shot.time : Infinity);
+    const byName = (a, b) => (nameOf(a) < nameOf(b) ? -1 : nameOf(a) > nameOf(b) ? 1 : 0);
+    return entries.slice().sort((a, b) => (t(a) === t(b) ? byName(a, b) : t(a) - t(b)));
+  }
+
+  // Shooting moments: runs of photos (in strip order) from one camera, each
+  // within GROUP_GAP seconds of the one before, their exposures within
+  // GROUP_EV stops of each other. A photo without a time is a group alone.
+  const GROUP_GAP = 5, GROUP_EV = 3;
+  function groupsOf(entries) {
+    const groups = [];
+    let cur = null, lo = Infinity, hi = -Infinity;   // the group's exposure range
+    const evOf = (s) => (s && Number.isFinite(s.ev) ? s.ev : null);
+    for (const e of entries) {
+      const s = e.shot, prev = cur && cur[cur.length - 1].shot;
+      let joins = !!(s && prev && Number.isFinite(s.time) && Number.isFinite(prev.time) &&
+        s.time >= prev.time && s.time - prev.time <= GROUP_GAP && s.model === prev.model);
+      const ev = evOf(s);
+      if (joins && ev !== null && Math.max(hi, ev) - Math.min(lo, ev) > GROUP_EV + 1e-9) joins = false;
+      if (!joins) { cur = []; groups.push(cur); lo = Infinity; hi = -Infinity; }
+      cur.push(e);
+      if (ev !== null) { lo = Math.min(lo, ev); hi = Math.max(hi, ev); }
+    }
+    return groups;
+  }
+
+  // "1/146 · ISO 100", "2.5 s · ISO 800": what a tile shows.
+  function exposureLabel(m) {
+    if (!m || !(m.exposureTime > 0)) return '';
+    const t = m.exposureTime;
+    const shutter = t >= 0.3 ? String(+t.toFixed(1)) + ' s' : '1/' + Math.round(1 / t);
+    return m.iso > 0 ? shutter + ' · ISO ' + m.iso : shutter;
+  }
+
+  // What a group's tiles highlight: whether the shutter / ISO *as shown*
+  // varies inside it (a DNG's 1/150.8 and its .insp's 1/151 are the same
+  // to the eye), and its darkest exposure (ev) when the exposures differ
+  // (> 0.05 stops), for each tile's offset from it.
+  function groupInfo(group) {
+    const shots = group.map((e) => e.shot).filter((s) => s && s.exposureTime > 0);
+    const parts = shots.map((s) => exposureLabel(s).split(' · '));
+    const varies = (i) => new Set(parts.map((p) => p[i] || '')).size > 1;
+    const evs = shots.map((s) => s.ev).filter(Number.isFinite);
+    const spread = evs.length > 1 ? Math.max(...evs) - Math.min(...evs) : 0;
+    return { shutter: varies(0), iso: varies(1), darkest: spread > 0.05 ? Math.min(...evs) : null };
+  }
+
   function createStore(storage, cap) {
     const max = cap || CAP;
     const memory = new Map();
@@ -129,5 +193,6 @@
     return list;
   }
 
-  return { INDEX_KEY, RECORD_PREFIX, CAP, SUPPORTED, PASTE_SKIP, keyOf, nameOf, pasteable, createStore, createList };
+  return { INDEX_KEY, RECORD_PREFIX, CAP, SUPPORTED, PASTE_SKIP, GROUP_GAP, GROUP_EV, keyOf, nameOf, pasteable,
+    captureTime, sortByShot, groupsOf, groupInfo, exposureLabel, createStore, createList };
 });

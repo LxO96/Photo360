@@ -43,6 +43,9 @@
   const TAG_DATETIME = 0x0132;
   const TAG_EXIF_IFD = 0x8769;
   const TAG_DATETIME_ORIGINAL = 0x9003;
+  // Shutter time (RATIONAL, seconds) and ISO (SHORT), for the photo strip.
+  const TAG_EXPOSURE_TIME = 0x829a;
+  const TAG_ISO = 0x8827;
   const TYPE_ASCII = 2;
 
   // Strip a trailing run of NUL bytes (and any stray whitespace) off a
@@ -145,7 +148,7 @@
   // Returns empty strings for anything absent, never throws on malformed
   // input.
   function readTags(bytes) {
-    const empty = { make: '', model: '', dateTimeOriginal: '' };
+    const empty = { make: '', model: '', dateTimeOriginal: '', exposureTime: null, iso: null };
     try {
       const loc = findExifApp1(bytes);
       if (!loc) return empty;
@@ -165,13 +168,26 @@
       const wanted0 = new Set([TAG_MAKE, TAG_MODEL, TAG_DATETIME, TAG_EXIF_IFD]);
       const { found: found0 } = scanIfd(bytes, r, ifd0Offset, tiffStart, wanted0);
 
-      const result = { make: '', model: '', dateTimeOriginal: '' };
+      const result = { make: '', model: '', dateTimeOriginal: '', exposureTime: null, iso: null };
       if (found0[TAG_MAKE] !== undefined) result.make = readAsciiValue(bytes, r, found0[TAG_MAKE], tiffStart);
       if (found0[TAG_MODEL] !== undefined) result.model = readAsciiValue(bytes, r, found0[TAG_MODEL], tiffStart);
       if (found0[TAG_EXIF_IFD] !== undefined) {
         const exifIfdOffset = tiffStart + r.u32(found0[TAG_EXIF_IFD] + 8);
         const { found: foundExif } = scanIfd(
-          bytes, r, exifIfdOffset, tiffStart, new Set([TAG_DATETIME_ORIGINAL]));
+          bytes, r, exifIfdOffset, tiffStart, new Set([TAG_DATETIME_ORIGINAL, TAG_EXPOSURE_TIME, TAG_ISO]));
+        const et = foundExif[TAG_EXPOSURE_TIME];
+        if (et !== undefined && r.u16(et + 2) === 5) {
+          const at = tiffStart + r.u32(et + 8);
+          if (at + 8 <= bytes.length) {
+            const num = r.u32(at), den = r.u32(at + 4);
+            if (num > 0 && den > 0) result.exposureTime = num / den;
+          }
+        }
+        const iso = foundExif[TAG_ISO];
+        if (iso !== undefined && r.u16(iso + 2) === 3) {
+          const v = r.u16(iso + 8);
+          if (v > 0) result.iso = v;
+        }
         if (foundExif[TAG_DATETIME_ORIGINAL] !== undefined) {
           result.dateTimeOriginal = readAsciiValue(bytes, r, foundExif[TAG_DATETIME_ORIGINAL], tiffStart);
         }
