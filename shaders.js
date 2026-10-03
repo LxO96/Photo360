@@ -1153,7 +1153,9 @@
   uniform sampler2D uHalo;      // halation field (LINEAR), uHaloSize texels, factor uHaloF
   uniform vec2 uHaloSize;
   uniform float uHaloF;
-  uniform float uHalation;      // 0: no halation (uHalo unused)
+  uniform float uHalation;      // the slider; 0: no halation (uHalo unused)
+  uniform float uHaloGain;      // the stock's halation strength
+  uniform vec3 uHaloTint;       // the stock's halation colour
   uniform mat3 uSens;
   uniform mat3 uCross;
   uniform vec3 uLogE0;
@@ -1172,7 +1174,7 @@
     vec3 lin = filmDecode(texelFetch(uSrc, ivec2(x, uSrcSize.y - 1 - r), 0).rgb);
     if (uHalation > 0.0) {
       vec2 hc = vec2(float(x) + 0.5, float(uSrcSize.y - r) - 0.5) / uHaloF;
-      lin += uHalation * 0.6 * texture(uHalo, hc / uHaloSize).r * vec3(1.0, 0.28, 0.05);
+      lin += uHalation * uHaloGain * texture(uHalo, hc / uHaloSize).r * uHaloTint;
     }
     vec3 e = uSens * lin;
     vec3 logE = log(max(e, vec3(1e-5))) / log(10.0) + uFit.x;

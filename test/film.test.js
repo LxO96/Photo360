@@ -6,9 +6,8 @@ const Film = require('../film.js');
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} ${a} vs ${b}`);
 
 test('the five Wigglecam stocks, transcribed exactly', () => {
-  assert.deepStrictEqual(Film.STOCKS.map((s) => s.id),
-    ['golden200', 'verdant400', 'portrait160', 'classic400bw', 'smooth400bw']);
-  const g = Film.STOCKS[0];
+  const by = (id) => Film.STOCKS.find((s) => s.id === id);
+  const g = by('golden200');
   assert.deepStrictEqual(g, {
     id: 'golden200', name: 'Golden 200', bw: false,
     sensitivity: [1.06, -0.02, -0.04, -0.01, 1.00, 0.01, -0.03, -0.05, 0.92],
@@ -19,21 +18,22 @@ test('the five Wigglecam stocks, transcribed exactly', () => {
     ],
     grain: { radiusMedianPx: 0.12, radiusLogSigma: 0.35, filterSigmaPx: 0.8 },
     crosstalk: [1.12, -0.08, -0.04, -0.06, 1.10, -0.04, -0.03, -0.09, 1.12],
+    halation: { gain: 0.6, tint: [1, 0.28, 0.05] },
   });
-  const v = Film.STOCKS[1];
+  const v = by('verdant400');
   assert.deepStrictEqual(v.sensitivity, [0.97, -0.01, -0.01, -0.01, 1.04, -0.01, -0.01, 0.00, 1.04]);
   assert.deepStrictEqual(v.layers[1], { gamma: 0.58, logE0: -0.85, uMin: 0.055, uMax: 0.960 });
   assert.deepStrictEqual(v.grain, { radiusMedianPx: 0.16, radiusLogSigma: 0.35, filterSigmaPx: 0.8 });
   assert.deepStrictEqual(v.crosstalk, [1.08, -0.05, -0.03, -0.04, 1.08, -0.04, -0.02, -0.06, 1.08]);
-  const p = Film.STOCKS[2];
+  const p = by('portrait160');
   assert.deepStrictEqual(p.layers[2], { gamma: 0.49, logE0: -0.80, uMin: 0.045, uMax: 0.955 });
   assert.deepStrictEqual(p.grain, { radiusMedianPx: 0.09, radiusLogSigma: 0.30, filterSigmaPx: 0.8 });
-  const c = Film.STOCKS[3];
+  const c = by('classic400bw');
   assert.strictEqual(c.bw, true);
   assert.deepStrictEqual(c.sensitivity, [0.30, 0.59, 0.11, 0.30, 0.59, 0.11, 0.30, 0.59, 0.11]);
   assert.deepStrictEqual(c.layers[0], { gamma: 0.78, logE0: -0.74, uMin: 0.020, uMax: 0.980 });
   assert.deepStrictEqual(c.grain, { radiusMedianPx: 0.22, radiusLogSigma: 0.40, filterSigmaPx: 0.8 });
-  const s = Film.STOCKS[4];
+  const s = by('smooth400bw');
   assert.deepStrictEqual(s.sensitivity.slice(0, 3), [0.25, 0.62, 0.13]);
   assert.deepStrictEqual(s.layers[0], { gamma: 0.56, logE0: -0.78, uMin: 0.040, uMax: 0.960 });
   assert.deepStrictEqual(s.crosstalk, [1, 0, 0, 0, 1, 0, 0, 0, 1]);
@@ -324,4 +324,47 @@ test('zoomed out, the preview grain is weaker, as the scaled model says', () => 
   assert.ok(q < a * 0.8, `${q} vs ${a}`);
   const u = Film.reference(flat(4, 4, [118, 118, 118]), 4, 4, Object.assign({}, pq, { amount: 0 }), fq)[0] / 255;
   near(q, pq.grain.std[Math.round(u * 200)], 0.1 * q, 'matches the model at 25 %');
+});
+
+// More looks (2026-10-03): slide, tungsten cinema, saturated and pastel
+// negatives; per-stock halation.
+test('stock order: Off is separate; negatives, tungsten, then B&W (no slide: the user, 2026-10-03)', () => {
+  assert.deepStrictEqual(Film.STOCKS.map((s) => s.id), ['portrait160', 'golden200', 'vivid100', 'pastel400',
+    'verdant400', 'tungsten800', 'classic400bw', 'smooth400bw']);
+});
+
+test('the Wigglecam stocks keep their halation; every stock has one', () => {
+  for (const s of Film.STOCKS) {
+    assert.ok(s.halation && s.halation.gain >= 0 && s.halation.tint.length === 3, s.id);
+    if (['golden200', 'verdant400', 'portrait160', 'classic400bw', 'smooth400bw'].includes(s.id)) {
+      assert.deepStrictEqual(s.halation, { gain: 0.6, tint: [1, 0.28, 0.05] }, s.id);
+    }
+  }
+  const t = Film.stockOf('tungsten800').halation, g = Film.stockOf('golden200').halation;
+  assert.ok(t.gain >= 2.5 * g.gain, 'tungsten: strong halation');
+  assert.ok(t.tint[1] < g.tint[1], 'and redder');
+});
+
+test('the negatives lift black to their film base', () => {
+  for (const s of Film.STOCKS) {
+    const u = Film.curvePixel([0, 0, 0], s, Film.fitCurve(s)), m = s.crosstalk;
+    for (let c = 0; c < 3; c++) {
+      assert.ok(Math.round((m[c * 3] * u[0] + m[c * 3 + 1] * u[1] + m[c * 3 + 2] * u[2]) * 255) >= 5, s.id);
+    }
+  }
+});
+
+test('reference halation follows the stock: Tungsten 800 glows far more, and redder', () => {
+  const W = 64, H = 64, src = flat(W, H, [60, 60, 60]);
+  for (let y = 28; y < 36; y++) for (let x = 28; x < 36; x++) src.set([255, 255, 255, 255], (y * W + x) * 4);
+  const frame = { D: 600, z: 1, px: 0, py: 0 };
+  const glow = (stock) => {
+    const on = Film.reference(src, W, H, Film.params(st({ stock, grain: 0, halation: 1 }), frame), frame);
+    const off = Film.reference(src, W, H, Film.params(st({ stock, grain: 0, halation: 0 }), frame), frame);
+    const o = (39 + 32 * W) * 4;
+    return [on[o] - off[o], on[o + 1] - off[o + 1]];
+  };
+  const t = glow('tungsten800'), g = glow('golden200');
+  assert.ok(t[0] > 1.6 * g[0], `red ${t[0]} vs ${g[0]}`);
+  assert.ok(t[0] - t[1] > g[0] - g[1], 'redder');
 });

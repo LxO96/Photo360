@@ -367,6 +367,6 @@ test('film settings: persisted, enums and ranges validated', () => {
   assert.deepStrictEqual(ok.film, { stock: 'portrait160', gauge: 's16', grain: 1.5, halation: 0.2 });
   const bad = Settings.sanitize(defaults, { film: { stock: 'kodak', gauge: '70', grain: 9, halation: -1 } });
   assert.deepStrictEqual(bad.film, { stock: 'off', gauge: '35', grain: 2, halation: 0 });
-  assert.deepStrictEqual(Settings.ENUMS.stock, ['off', 'golden200', 'verdant400', 'portrait160', 'classic400bw', 'smooth400bw']);
+  assert.deepStrictEqual(Settings.ENUMS.stock, ['off', 'portrait160', 'golden200', 'vivid100', 'pastel400', 'verdant400', 'tungsten800', 'classic400bw', 'smooth400bw']);
   assert.deepStrictEqual(Settings.ENUMS.gauge, ['s8', 's16', '35', '120']);
 });

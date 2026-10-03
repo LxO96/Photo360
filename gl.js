@@ -1196,7 +1196,7 @@
 
   // The halation field for the whole composed image, or null.
   function buildHalo(ctx, p, src) {
-    if (!(p.haloR > 0 && p.halation > 0)) return null;
+    if (!(p.haloR > 0 && p.halation > 0 && p.stock.halation.gain > 0)) return null;
     const gl = ctx.gl, f = Film.haloFactor(p.haloR);
     const w = Math.ceil(src.w / f), h = Math.ceil(src.h / f);
     const a = filmTarget(ctx, 'haloA', w, h, 'linear'), b = filmTarget(ctx, 'haloB', w, h, 'linear');
@@ -1256,6 +1256,8 @@
       gl.uniform2f(u('uHaloSize'), halo ? halo.w : 1, halo ? halo.h : 1);
       gl.uniform1f(u('uHaloF'), halo ? halo.f : 1);
       gl.uniform1f(u('uHalation'), halo ? p.halation : 0);
+      gl.uniform1f(u('uHaloGain'), p.stock.halation.gain);
+      gl.uniform3fv(u('uHaloTint'), p.stock.halation.tint);
       gl.uniformMatrix3fv(u('uSens'), true, p.stock.sensitivity);
       gl.uniformMatrix3fv(u('uCross'), true, p.stock.crosstalk);
       gl.uniform3fv(u('uLogE0'), L.map((l) => l.logE0));

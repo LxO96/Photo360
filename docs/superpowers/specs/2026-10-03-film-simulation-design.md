@@ -175,3 +175,16 @@ mostly the red layer around bright areas:
 
 Saved custom stocks; grain in the DNG; lens character from Wigglecam;
 grain on the gain map.
+
+## More looks (2026-10-03, approved in chat)
+
+Three stocks of this app's own, in Wigglecam's form: **Vivid 100** (fine,
+saturated negative), **Pastel 400** (lower contrast, lifted shadows, mildly
+desaturating crosstalk, minty greens) and **Tungsten 800** (cool daylight
+cast via its sensitivity rows, coarse grain, strong red halation). Chip
+order: negatives, tungsten, B&W. A slide stock (Chrome 50) was tried and
+dropped at the user's request; a first Pastel was too washed out.
+
+Halation becomes per stock, `{gain, tint}`, scaled by the slider: the
+Wigglecam five keep `{0.6, [1, 0.28, 0.05]}` (exports byte-identical to
+before), Tungsten 800 `{1.8, [1, 0.15, 0.02]}`.

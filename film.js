@@ -13,27 +13,16 @@
   // passes are shaders.js FILM_*; this module holds the maths, the per-render
   // parameters and a JS reference renderer the GPU is checked against.
 
-  // Verbatim from Wigglecam film/src/main/resources/stocks/*.json.
-  // sensitivity and crosstalk are 3x3, row-major.
+  // Halation strength and colour, per stock (the Halation slider scales it):
+  // light through the emulsion, back off the film base, re-exposing mostly
+  // the red layer. Tungsten 800 has no anti-halation layer: far stronger.
+  const HALO_STD = { gain: 0.6, tint: [1, 0.28, 0.05] };
+
+  // Wigglecam's five (golden200 ... smooth400bw) verbatim from its
+  // film/src/main/resources/stocks/*.json, plus this app's own. Chip order:
+  // colour negatives, tungsten, B&W. sensitivity and crosstalk are
+  // 3x3, row-major.
   const STOCKS = [
-    { id: 'golden200', name: 'Golden 200', bw: false,
-      sensitivity: [1.06, -0.02, -0.04, -0.01, 1.00, 0.01, -0.03, -0.05, 0.92],
-      layers: [
-        { gamma: 0.62, logE0: -0.80, uMin: 0.035, uMax: 0.965 },
-        { gamma: 0.62, logE0: -0.79, uMin: 0.030, uMax: 0.965 },
-        { gamma: 0.60, logE0: -0.76, uMin: 0.045, uMax: 0.950 },
-      ],
-      grain: { radiusMedianPx: 0.12, radiusLogSigma: 0.35, filterSigmaPx: 0.8 },
-      crosstalk: [1.12, -0.08, -0.04, -0.06, 1.10, -0.04, -0.03, -0.09, 1.12] },
-    { id: 'verdant400', name: 'Verdant 400', bw: false,
-      sensitivity: [0.97, -0.01, -0.01, -0.01, 1.04, -0.01, -0.01, 0.00, 1.04],
-      layers: [
-        { gamma: 0.60, logE0: -0.76, uMin: 0.030, uMax: 0.960 },
-        { gamma: 0.58, logE0: -0.85, uMin: 0.055, uMax: 0.960 },
-        { gamma: 0.60, logE0: -0.80, uMin: 0.040, uMax: 0.955 },
-      ],
-      grain: { radiusMedianPx: 0.16, radiusLogSigma: 0.35, filterSigmaPx: 0.8 },
-      crosstalk: [1.08, -0.05, -0.03, -0.04, 1.08, -0.04, -0.02, -0.06, 1.08] },
     { id: 'portrait160', name: 'Portrait 160', bw: false,
       sensitivity: [1.02, -0.01, -0.01, 0.00, 1.00, 0.00, -0.01, -0.02, 0.96],
       layers: [
@@ -42,7 +31,65 @@
         { gamma: 0.49, logE0: -0.80, uMin: 0.045, uMax: 0.955 },
       ],
       grain: { radiusMedianPx: 0.09, radiusLogSigma: 0.30, filterSigmaPx: 0.8 },
-      crosstalk: [1.04, -0.03, -0.01, -0.02, 1.04, -0.02, -0.01, -0.03, 1.04] },
+      crosstalk: [1.04, -0.03, -0.01, -0.02, 1.04, -0.02, -0.01, -0.03, 1.04],
+      halation: HALO_STD },
+    { id: 'golden200', name: 'Golden 200', bw: false,
+      sensitivity: [1.06, -0.02, -0.04, -0.01, 1.00, 0.01, -0.03, -0.05, 0.92],
+      layers: [
+        { gamma: 0.62, logE0: -0.80, uMin: 0.035, uMax: 0.965 },
+        { gamma: 0.62, logE0: -0.79, uMin: 0.030, uMax: 0.965 },
+        { gamma: 0.60, logE0: -0.76, uMin: 0.045, uMax: 0.950 },
+      ],
+      grain: { radiusMedianPx: 0.12, radiusLogSigma: 0.35, filterSigmaPx: 0.8 },
+      crosstalk: [1.12, -0.08, -0.04, -0.06, 1.10, -0.04, -0.03, -0.09, 1.12],
+      halation: HALO_STD },
+    // The stocks below are this app's own (2026-10-03), in Wigglecam's form.
+    // Fine-grained, saturated colour negative (an Ektar-like look).
+    { id: 'vivid100', name: 'Vivid 100', bw: false,
+      sensitivity: [1.08, -0.05, -0.03, -0.04, 1.08, -0.04, -0.03, -0.06, 1.09],
+      layers: [
+        { gamma: 0.70, logE0: -0.80, uMin: 0.030, uMax: 0.970 },
+        { gamma: 0.70, logE0: -0.79, uMin: 0.028, uMax: 0.970 },
+        { gamma: 0.68, logE0: -0.78, uMin: 0.035, uMax: 0.960 },
+      ],
+      grain: { radiusMedianPx: 0.07, radiusLogSigma: 0.30, filterSigmaPx: 0.8 },
+      crosstalk: [1.16, -0.10, -0.06, -0.07, 1.15, -0.08, -0.04, -0.11, 1.15],
+      halation: HALO_STD },
+    // Soft, low-contrast negative with lifted shadows and minty greens
+    // (a 400H-like look, as often shot overexposed).
+    { id: 'pastel400', name: 'Pastel 400', bw: false,
+      sensitivity: [0.96, 0.02, 0.02, 0.00, 0.99, 0.05, 0.02, 0.04, 0.98],
+      layers: [
+        { gamma: 0.41, logE0: -0.90, uMin: 0.085, uMax: 0.952 },
+        { gamma: 0.41, logE0: -0.92, uMin: 0.090, uMax: 0.952 },
+        { gamma: 0.40, logE0: -0.88, uMin: 0.095, uMax: 0.948 },
+      ],
+      grain: { radiusMedianPx: 0.15, radiusLogSigma: 0.35, filterSigmaPx: 0.8 },
+      crosstalk: [0.95, 0.03, 0.02, 0.03, 0.95, 0.02, 0.02, 0.03, 0.95],
+      halation: HALO_STD },
+    { id: 'verdant400', name: 'Verdant 400', bw: false,
+      sensitivity: [0.97, -0.01, -0.01, -0.01, 1.04, -0.01, -0.01, 0.00, 1.04],
+      layers: [
+        { gamma: 0.60, logE0: -0.76, uMin: 0.030, uMax: 0.960 },
+        { gamma: 0.58, logE0: -0.85, uMin: 0.055, uMax: 0.960 },
+        { gamma: 0.60, logE0: -0.80, uMin: 0.040, uMax: 0.955 },
+      ],
+      grain: { radiusMedianPx: 0.16, radiusLogSigma: 0.35, filterSigmaPx: 0.8 },
+      crosstalk: [1.08, -0.05, -0.03, -0.04, 1.08, -0.04, -0.02, -0.06, 1.08],
+      halation: HALO_STD },
+    // Tungsten-balanced cinema film without its anti-halation layer (a
+    // CineStill 800T-like look): cool in daylight, coarse grain, and a strong
+    // red glow around bright light.
+    { id: 'tungsten800', name: 'Tungsten 800', bw: false,
+      sensitivity: [0.80, -0.01, -0.01, -0.02, 1.00, 0.02, 0.00, 0.05, 1.22],
+      layers: [
+        { gamma: 0.58, logE0: -0.82, uMin: 0.045, uMax: 0.955 },
+        { gamma: 0.58, logE0: -0.80, uMin: 0.040, uMax: 0.955 },
+        { gamma: 0.56, logE0: -0.78, uMin: 0.050, uMax: 0.950 },
+      ],
+      grain: { radiusMedianPx: 0.20, radiusLogSigma: 0.40, filterSigmaPx: 0.8 },
+      crosstalk: [1.10, -0.06, -0.04, -0.05, 1.09, -0.04, -0.03, -0.08, 1.11],
+      halation: { gain: 1.8, tint: [1, 0.15, 0.02] } },
     { id: 'classic400bw', name: 'Classic 400 B&W', bw: true,
       sensitivity: [0.30, 0.59, 0.11, 0.30, 0.59, 0.11, 0.30, 0.59, 0.11],
       layers: [
@@ -51,7 +98,8 @@
         { gamma: 0.78, logE0: -0.74, uMin: 0.020, uMax: 0.980 },
       ],
       grain: { radiusMedianPx: 0.22, radiusLogSigma: 0.40, filterSigmaPx: 0.8 },
-      crosstalk: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      crosstalk: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      halation: HALO_STD },
     { id: 'smooth400bw', name: 'Smooth 400 B&W', bw: true,
       sensitivity: [0.25, 0.62, 0.13, 0.25, 0.62, 0.13, 0.25, 0.62, 0.13],
       layers: [
@@ -60,7 +108,8 @@
         { gamma: 0.56, logE0: -0.78, uMin: 0.040, uMax: 0.960 },
       ],
       grain: { radiusMedianPx: 0.13, radiusLogSigma: 0.30, filterSigmaPx: 0.8 },
-      crosstalk: [1, 0, 0, 0, 1, 0, 0, 0, 1] },
+      crosstalk: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+      halation: HALO_STD },
   ];
 
   // Film gauges: the gate's short side (mm). Each lens circle stands for one
@@ -86,7 +135,7 @@
   const MID = 0.18;
   const MID_OUT = srgbEncode(MID);   // 0.46135612950044164
   const WHITE_OUT = 0.96;
-  const HALATION = { LO: 0.75, HI: 1.0, GAIN: 0.6, TINT: [1, 0.28, 0.05], RADIUS: 0.008 };
+  const HALATION = { LO: 0.75, HI: 1.0, RADIUS: 0.008 };   // gain and tint: each stock's
 
   // Wigglecam ToneCurve.develop: developed fraction (display lightness) for
   // log10 exposure, a logistic with slope gamma at logE0.
@@ -416,8 +465,8 @@
         const o = (r * W + x) * 4;
         const lin = [srgbDecode(src[o] / 255), srgbDecode(src[o + 1] / 255), srgbDecode(src[o + 2] / 255)];
         if (hf) {
-          const h = sampleHalo(hf, (x + 0.5) / hf.f, (H - r - 0.5) / hf.f) * p.halation * HALATION.GAIN;
-          for (let c = 0; c < 3; c++) lin[c] += h * HALATION.TINT[c];
+          const h = sampleHalo(hf, (x + 0.5) / hf.f, (H - r - 0.5) / hf.f) * p.halation * p.stock.halation.gain;
+          for (let c = 0; c < 3; c++) lin[c] += h * p.stock.halation.tint[c];
         }
         const u = curvePixel(lin, p.stock, p.fit);
         for (let c = 0; c < 3; c++) {
@@ -432,7 +481,7 @@
     }
   }
 
-  const haloOf = (src, W, H, p) => (p.haloR > 0 && p.halation > 0 ? haloField(src, W, H, p.haloR) : null);
+  const haloOf = (src, W, H, p) => (p.haloR > 0 && p.halation > 0 && p.stock.halation.gain > 0 ? haloField(src, W, H, p.haloR) : null);
 
   function reference(src, W, H, p, frame) {
     const dst = new Uint8ClampedArray(W * H * 4);

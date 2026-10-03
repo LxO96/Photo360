@@ -503,19 +503,28 @@ fallbacks, and `App.developInfo()` shows the path in use.
 
 A film look on top of your edit (spec
 `docs/superpowers/specs/2026-10-03-film-simulation-design.md`). Pick a
-**stock**: Golden 200, Verdant 400, Portrait 160, Classic 400 B&W or Smooth
-400 B&W (Off by default). Each has its own colour, toe and shoulder,
-re-centred so mid-grey and white stay about where your edit put them, and
-its own grain, modelled on silver-halide crystals (ported from Wigglecam).
-Film has no true black, so the stock lifts pure black, including the
-background around the circles, to its base density.
+**stock** (Off by default):
+
+- colour negative: **Portrait 160** (soft, natural), **Golden 200** (warm),
+  **Vivid 100** (saturated, very fine grain), **Pastel 400** (soft, lifted
+  shadows, minty greens), **Verdant 400** (cooler, green);
+- **Tungsten 800**: cinema film shot in daylight, cool, coarse, with a strong
+  red glow around bright light;
+- black & white: **Classic 400 B&W** (contrasty) and **Smooth 400 B&W**.
+
+Each has its own colour, toe and shoulder, re-centred so mid-grey and white
+stay about where your edit put them, and its own grain, modelled on
+silver-halide crystals (ported from Wigglecam, which the first five come
+from). Negative film has no true black, so those stocks lift pure black,
+including the background around the circles, to their base density.
 
 - **Format** sets how much each lens circle is "enlarged", taking the circle
   as the gate's short side: Super 8 and Super 16 give coarse grain and wide
   halation, 35 mm medium, 120 (6×6) fine.
 - **Grain** scales the grain, 0–200 %.
 - **Halation**, 0–100: the red-orange glow film gets around bright highlights
-  (the sun, white skin and sky near clipping).
+  (the sun, white skin and sky near clipping), scaling each stock's own
+  (strongest on Tungsten 800).
 
 The preview shows the same grain as the export at 100 % (weaker when zoomed
 out, as in a downscaled export), anchored to the image so it does not crawl

@@ -50,7 +50,8 @@
     // sun.status: not looked for yet, found, placed by hand, looked for and none.
     status: ['pending', 'auto', 'manual', 'none'],
     // Film simulation (film.js): the stock ('off' first) and the gauge.
-    stock: ['off', 'golden200', 'verdant400', 'portrait160', 'classic400bw', 'smooth400bw'],
+    stock: ['off', 'portrait160', 'golden200', 'vivid100', 'pastel400', 'verdant400', 'tungsten800',
+      'classic400bw', 'smooth400bw'],
     gauge: ['s8', 's16', '35', '120'],
   };
 

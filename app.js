@@ -3797,6 +3797,8 @@
       { film: { stock: 'classic400bw', gauge: '35', grain: 1, halation: 0.5 }, frame: { D: 1200, z: 0.37, px: -13, py: 7 } },
       { film: { stock: 'verdant400', gauge: 's8', grain: 2, halation: 0 }, frame: { D: 400, z: 1, px: 0, py: 0 } },
       { film: { stock: 'golden200', gauge: 's8', grain: 2, halation: 1 }, frame: { D: 1200, z: 2.6, px: -31, py: 12 } },
+      { film: { stock: 'tungsten800', gauge: 's16', grain: 1, halation: 1 }, frame: { D: 1200, z: 1, px: 0, py: 0 } },
+      { film: { stock: 'pastel400', gauge: '35', grain: 1, halation: 0.5 }, frame: { D: 1200, z: 0.6, px: 3, py: -2 } },
     ];
     let maxDiff = 0, over2 = 0;
     try {

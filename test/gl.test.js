@@ -138,7 +138,9 @@ test('film shaders: the PCG constants and the shared GLSL are in every film pass
   // the blur loop bound is Film.MAX_KERNEL_RADIUS
   assert.ok(Shaders.FILM_BLUR_FS.includes('k <= ' + Film.MAX_KERNEL_RADIUS));
   // halation constants match film.js
-  assert.ok(Shaders.FILM_APPLY_FS.includes('vec3(1.0, 0.28, 0.05)'));
+  // halation strength and colour are the stock's (uniforms), not constants
+  assert.match(Shaders.FILM_APPLY_FS, /uniform vec3 uHaloTint;/);
+  assert.ok(!Shaders.FILM_APPLY_FS.includes('vec3(1.0, 0.28, 0.05)'));
   assert.ok(Shaders.FILM_HALO_DOWN_FS.includes('smoothstep(0.75, 1.0'));
 });
 
