@@ -359,3 +359,14 @@ test('sun is persisted and sanitized: status enum, strength range, dir and tint 
   assert.deepStrictEqual(s, { on: false, status: 'pending', dir: [0.6, 0, 0.8], strength: 2, tint: [1, 1, 1] });
   assert.strictEqual(Settings.sanitize(defaults, { sun: { status: 'manual' } }).sun.status, 'manual');
 });
+
+test('film settings: persisted, enums and ranges validated', () => {
+  const defaults = { film: { stock: 'off', gauge: '35', grain: 1, halation: 0.5 } };
+  assert.ok(Settings.PERSISTED_KEYS.includes('film'));
+  const ok = Settings.sanitize(defaults, { film: { stock: 'portrait160', gauge: 's16', grain: 1.5, halation: 0.2 } });
+  assert.deepStrictEqual(ok.film, { stock: 'portrait160', gauge: 's16', grain: 1.5, halation: 0.2 });
+  const bad = Settings.sanitize(defaults, { film: { stock: 'kodak', gauge: '70', grain: 9, halation: -1 } });
+  assert.deepStrictEqual(bad.film, { stock: 'off', gauge: '35', grain: 2, halation: 0 });
+  assert.deepStrictEqual(Settings.ENUMS.stock, ['off', 'golden200', 'verdant400', 'portrait160', 'classic400bw', 'smooth400bw']);
+  assert.deepStrictEqual(Settings.ENUMS.gauge, ['s8', 's16', '35', '120']);
+});

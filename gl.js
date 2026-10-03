@@ -81,6 +81,13 @@
       profileBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.PROFILE_BLUR_FS),
       vao: gl.createVertexArray(),
       profileTargets: [null, null],  // lazily allocated ping-pong RGBA16F targets
+      // Film simulation (film.js): the post-pass programs, and its targets
+      // (allocated on first use, see ensureFilmTargets).
+      filmHaloDown: program(gl, Shaders.FULLSCREEN_VS, Shaders.FILM_HALO_DOWN_FS),
+      filmBlur: program(gl, Shaders.FULLSCREEN_VS, Shaders.FILM_BLUR_FS),
+      filmNoise: program(gl, Shaders.FULLSCREEN_VS, Shaders.FILM_NOISE_FS),
+      filmApply: program(gl, Shaders.FULLSCREEN_VS, Shaders.FILM_APPLY_FS),
+      film: null,
     };
     return ctx;
   }
@@ -1105,6 +1112,190 @@
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
+  // -- Film simulation (film.js; spec 2026-10-03-film-simulation-design.md) --
+  // A post-pass on the composed display image. The halation field is built
+  // once for the whole image at low resolution (Film.haloFactor); the grain
+  // runs per band of rows (noise, blur X, blur Y, apply), the band textures
+  // carrying the blur radius as margin, so an export of any size needs only
+  // band-sized temporaries. Noise depends only on the export pixel, so bands
+  // join without seams (Film.referenceBands).
+
+  // Where the film's export pixels sit in a target: D the circle diameter
+  // in export px, z target px per export px, (px, py) export pixel (0,0)'s
+  // corner in the target (top-left origin).
+  function filmFrame(state, targetW, targetH, place) {
+    const g = exportGeometry(state);
+    const c = compositionLayout(state, g.width, g.height).circles[0];
+    if (place) return { D: c.radius * 2, z: place.w / g.width, px: place.x, py: place.y };
+    // Fitted into the target, centred (compositionLayout's own rule).
+    const z = Math.min(targetW / g.width, targetH / g.height);
+    return { D: c.radius * 2, z, px: (targetW - g.width * z) / 2, py: (targetH - g.height * z) / 2 };
+  }
+
+  function filmTex(gl, w, h, internal, format, type, linear) {
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    const f = linear ? gl.LINEAR : gl.NEAREST;
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, f);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, f);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, internal, w, h, 0, format, type, null);
+    const fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    if (!ok) { gl.deleteTexture(tex); gl.deleteFramebuffer(fbo); throw new Error('FILM_TARGET_INCOMPLETE'); }
+    return { tex, fbo, w, h };
+  }
+  function freeT(gl, t) { if (t) { gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); } }
+
+  // A named film target of at least w x h, reused while it fits.
+  function filmTarget(ctx, name, w, h, kind) {
+    const gl = ctx.gl;
+    const F = ctx.film || (ctx.film = {});
+    const t = F[name];
+    if (t && t.w === w && t.h === h) return t;
+    freeT(gl, t);
+    F[name] = kind === 'rgba8' ? filmTex(gl, w, h, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, false)
+      : filmTex(gl, w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, kind === 'linear');
+    return F[name];
+  }
+
+  function releaseFilm(ctx) {
+    if (!ctx.film) return;
+    for (const k of Object.keys(ctx.film)) {
+      if (k === 'std') ctx.gl.deleteTexture(ctx.film.std.tex);
+      else if (k !== 'stdKey') freeT(ctx.gl, ctx.film[k]);
+    }
+    ctx.film = null;
+  }
+
+  function filmPass(ctx, prog, dst, w, h, set) {
+    const gl = ctx.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dst ? dst.fbo : null);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.BLEND);
+    gl.useProgram(prog);
+    gl.bindVertexArray(ctx.vao);
+    set((n) => gl.getUniformLocation(prog, n));
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+  function blurPass(ctx, src, dst, w, h, dir, sigma, radius) {
+    const gl = ctx.gl;
+    filmPass(ctx, ctx.filmBlur, dst, w, h, (u) => {
+      bindTex(gl, 0, src.tex);
+      gl.uniform1i(u('uSrc'), 0);
+      gl.uniform2i(u('uDir'), dir[0], dir[1]);
+      gl.uniform1i(u('uR'), radius);
+      gl.uniform1f(u('uSigma'), sigma);
+      gl.uniform2i(u('uSize'), w, h);
+    });
+  }
+
+  // The halation field for the whole composed image, or null.
+  function buildHalo(ctx, p, src) {
+    if (!(p.haloR > 0 && p.halation > 0)) return null;
+    const gl = ctx.gl, f = Film.haloFactor(p.haloR);
+    const w = Math.ceil(src.w / f), h = Math.ceil(src.h / f);
+    const a = filmTarget(ctx, 'haloA', w, h, 'linear'), b = filmTarget(ctx, 'haloB', w, h, 'linear');
+    filmPass(ctx, ctx.filmHaloDown, a, w, h, (u) => {
+      bindTex(gl, 0, src.tex);
+      gl.uniform1i(u('uSrc'), 0);
+      gl.uniform1i(u('uF'), f);
+      gl.uniform2i(u('uSrcSize'), src.w, src.h);
+    });
+    const sigma = p.haloR / f, radius = (Film.gaussianKernel(sigma).length - 1) / 2;
+    blurPass(ctx, a, b, w, h, [1, 0], sigma, radius);
+    blurPass(ctx, b, a, w, h, [0, 1], sigma, radius);
+    return { tex: a.tex, f, w, h };
+  }
+
+  function stdTexture(ctx, p) {
+    const gl = ctx.gl, F = ctx.film;
+    if (F.std && F.stdKey === p.grain) return F.std.tex;
+    if (F.std) gl.deleteTexture(F.std.tex);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, p.grain.std.length, 1, 0, gl.RED, gl.FLOAT, p.grain.std);
+    F.std = { tex };
+    F.stdKey = p.grain;
+    return tex;
+  }
+
+  // Film for target rows [y0, y0 + rows) of `src` into `dst` (null: the
+  // default framebuffer, whose height is rows).
+  function filmBand(ctx, p, src, frame, halo, y0, rows, dst) {
+    const gl = ctx.gl, r = p.grain.radius;
+    // The noise lattice: target pixels, or zoomed in the export's own
+    // pixels, magnified by the apply pass (Film.noiseLattice).
+    const N = Film.noiseLattice(src.w, src.h, y0, rows, p, frame);
+    const na = filmTarget(ctx, 'noiseA', N.w, N.h, 'f16'), nb = filmTarget(ctx, 'noiseB', N.w, N.h, 'f16');
+    filmPass(ctx, ctx.filmNoise, na, N.w, N.h, (u) => {
+      gl.uniform1i(u('uTop'), N.y0);
+      gl.uniform2f(u('uOrigin'), N.hashOrigin[0], N.hashOrigin[1]);
+      gl.uniform1f(u('uZ'), N.hashZ);
+      gl.uniform3ui(u('uSeeds'), p.seeds[0] >>> 0, p.seeds[1] >>> 0, p.seeds[2] >>> 0);
+      gl.uniform1f(u('uBw'), p.bw ? 1 : 0);
+    });
+    blurPass(ctx, na, nb, N.w, N.h, [1, 0], p.grain.sigma, r);
+    blurPass(ctx, nb, na, N.w, N.h, [0, 1], p.grain.sigma, r);
+    const L = p.stock.layers, fit = p.fit;
+    const std = stdTexture(ctx, p);
+    filmPass(ctx, ctx.filmApply, dst, src.w, rows, (u) => {
+      bindTex(gl, 0, src.tex); gl.uniform1i(u('uSrc'), 0);
+      gl.uniform2i(u('uSrcSize'), src.w, src.h);
+      bindTex(gl, 1, na.tex); gl.uniform1i(u('uNoise'), 1);
+      gl.uniform3f(u('uNoiseMap'), N.ox, N.oy, N.z);
+      gl.uniform1i(u('uBandY0'), y0);
+      gl.uniform1i(u('uBandRows'), rows);
+      bindTex(gl, 2, halo ? halo.tex : null); gl.uniform1i(u('uHalo'), 2);
+      gl.uniform2f(u('uHaloSize'), halo ? halo.w : 1, halo ? halo.h : 1);
+      gl.uniform1f(u('uHaloF'), halo ? halo.f : 1);
+      gl.uniform1f(u('uHalation'), halo ? p.halation : 0);
+      gl.uniformMatrix3fv(u('uSens'), true, p.stock.sensitivity);
+      gl.uniformMatrix3fv(u('uCross'), true, p.stock.crosstalk);
+      gl.uniform3fv(u('uLogE0'), L.map((l) => l.logE0));
+      gl.uniform3fv(u('uK'), L.map((l) => 4 * l.gamma / (l.uMax - l.uMin)));
+      gl.uniform3fv(u('uUMin'), L.map((l) => l.uMin));
+      gl.uniform3fv(u('uRange'), L.map((l) => l.uMax - l.uMin));
+      gl.uniform3f(u('uFit'), fit.b, fit.s, fit.uMinA);
+      bindTex(gl, 3, std); gl.uniform1i(u('uStd'), 3);
+      gl.uniform1f(u('uGrainK'), p.amount * p.grain.norm);
+    });
+  }
+
+  function filmBandsWith(ctx, p, src, frame, stripRows, onStrip) {
+    const gl = ctx.gl;
+    const halo = buildHalo(ctx, p, src);
+    const out = filmTarget(ctx, 'band', src.w, stripRows, 'rgba8');
+    for (let y0 = 0; y0 < src.h; y0 += stripRows) {
+      const rows = Math.min(stripRows, src.h - y0);
+      filmBand(ctx, p, src, frame, halo, y0, rows, out);
+      // the band's rows sit at the bottom `rows` GL rows of `out`
+      readCompositionStrips(gl, out.fbo, src.w, rows, rows, (rgba, oy, n) => onStrip(rgba, y0 + oy, n));
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+
+  function filmStrips(ctx, state, src, frame, stripRows, onStrip) {
+    filmBandsWith(ctx, Film.params(state, frame), src, frame, stripRows, onStrip);
+  }
+
+  // The preview with film: the composition into an offscreen texture of
+  // the canvas's size, then the film onto the canvas in one band.
+  function renderFilmed(ctx, state, W, H, place) {
+    const src = filmTarget(ctx, 'src', W, H, 'rgba8');
+    renderComposition(ctx, state, W, H, src.fbo, place);
+    const frame = filmFrame(state, W, H, place);
+    const p = Film.params(state, frame);
+    filmBand(ctx, p, { tex: src.tex, w: W, h: H }, frame, buildHalo(ctx, p, { tex: src.tex, w: W, h: H }), 0, H, null);
+    ctx.gl.bindFramebuffer(ctx.gl.FRAMEBUFFER, null);
+  }
+
   // The sun glare uniform for physical lens `physical` (shaders.js
   // SUN_GLSL uSun): theta from its axis, luv azimuth, strength (0 when off,
   // not found or not looked for yet), thetaMax in degrees.
@@ -1391,5 +1582,6 @@
     makeFloatExportTarget, readCompositionStripsFloat,
     developLens, releaseDeveloped, runDevelop, makeDevTarget, freeDevTarget,
     developInfo, developSettled, setDevelopBudget, buildToneBase, readLensRgba,
+    filmFrame, renderFilmed, filmStrips, filmBandsWith, releaseFilm,
   };
 });

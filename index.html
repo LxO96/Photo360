@@ -273,6 +273,12 @@
   }
   details.sec > .body { padding: 6px 12px 10px; }
   /* The Edge panel: the rim look gallery, then its sliders under Adjust. */
+/* The Film panel's stock chips. */
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 8px; }
+  .chips .chip { padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; background: none;
+    color: var(--fg-2); font: inherit; font-size: 11px; cursor: pointer; }
+  .chips .chip:hover { color: var(--fg); border-color: var(--fg-2); }
+  .chips .chip.on { color: var(--fg); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
   .looks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 2px 0 8px; }
   .looks .look { display: flex; flex-direction: column; gap: 3px; padding: 0; border: 0; background: none;
     color: var(--fg-2); font: inherit; font-size: 10.5px; line-height: 1.2; cursor: pointer; text-align: center; min-width: 0; }
@@ -693,6 +699,21 @@
       </div>
     </details>
 
+    <details class="sec" data-panel="film" open>
+      <summary>Film</summary>
+      <div class="body">
+        <div id="filmStocks" class="chips" role="radiogroup" aria-label="Film stock"></div>
+        <div class="row sel"><label for="filmGauge">Format</label>
+          <select id="filmGauge" title="The film format: a smaller frame is enlarged more, so its grain is coarser and its halation wider"></select></div>
+        <div class="row"><label for="filmGrain">Grain</label>
+          <input id="filmGrain" type="range" min="0" max="200" step="1" value="100">
+          <span class="val"><input id="filmGrainOut" class="num" type="text" inputmode="decimal" aria-label="Grain amount, percent"><i>%</i></span></div>
+        <div class="row"><label for="filmHalation">Halation</label>
+          <input id="filmHalation" type="range" min="0" max="100" step="1" value="50">
+          <span class="val"><input id="filmHalationOut" class="num" type="text" inputmode="decimal" aria-label="Halation"><i></i></span></div>
+      </div>
+    </details>
+
     <details class="sec" data-panel="output" open>
       <summary>Output</summary>
       <div class="body">
@@ -749,6 +770,7 @@
   <script src="wbmatch.js"></script>
   <script src="jpegwb.js"></script>
   <script src="sundetect.js"></script>
+  <script src="film.js"></script>
   <script src="shaders.js"></script>
   <script src="gl.js"></script>
   <script src="settings.js"></script>

@@ -143,7 +143,7 @@ while you type in a number box, and Ctrl+Z there undoes the typing.
 | Esc | Leave the slider |
 | Z | Fit / 100% |
 | Ctrl+0, Ctrl+1, Ctrl+= / Ctrl+− | Fit, 100%, zoom in / out |
-| `\` (Swedish: < or §) | Before, while held: Tone and Detail off until you let go |
+| `\` (Swedish: < or §) | Before, while held: Tone, Detail and Film off until you let go |
 | Ctrl+O, Ctrl+Shift+E, Ctrl+P | Open, Export, Print |
 | Page Down / Page Up, or Ctrl+→ / Ctrl+← | Next / previous photo in the strip (Ctrl+arrows not on a slider, where they fine-adjust) |
 | Ctrl+Shift+C / Ctrl+Shift+V | Copy edits / paste them onto the selected photos |
@@ -498,6 +498,31 @@ and where it runs (`devplan.js`):
 Each falls back to the next when the GPU can't allocate what it needs;
 `App.developBudget(bytes)` pretends the GPU has only that much, to try the
 fallbacks, and `App.developInfo()` shows the path in use.
+
+### Film
+
+A film look on top of your edit (spec
+`docs/superpowers/specs/2026-10-03-film-simulation-design.md`). Pick a
+**stock**: Golden 200, Verdant 400, Portrait 160, Classic 400 B&W or Smooth
+400 B&W (Off by default). Each has its own colour, toe and shoulder,
+re-centred so mid-grey and white stay about where your edit put them, and
+its own grain, modelled on silver-halide crystals (ported from Wigglecam).
+Film has no true black, so the stock lifts pure black, including the
+background around the circles, to its base density.
+
+- **Format** sets how much each lens circle is "enlarged", taking the circle
+  as the gate's short side: Super 8 and Super 16 give coarse grain and wide
+  halation, 35 mm medium, 120 (6×6) fine.
+- **Grain** scales the grain, 0–200 %.
+- **Halation**, 0–100: the red-orange glow film gets around bright highlights
+  (the sun, white skin and sky near clipping).
+
+The preview shows the same grain as the export at 100 % (weaker when zoomed
+out, as in a downscaled export), anchored to the image so it does not crawl
+when you pan. Each photo has its own grain (seeded by its file name), and the
+two lenses are like separate negatives. JPEG, PNG, Print and the Ultra HDR
+base image get the film; the gain map and DNG do not. Before/after (`\`)
+shows the photo with Film off too.
 
 ### Output
 

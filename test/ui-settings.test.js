@@ -205,3 +205,9 @@ test('the Edge panel\'s Adjust section is a remembered panel, closed by default'
   assert.ok(Settings.PANEL_SECTIONS.includes('edgeAdjust'));
   assert.strictEqual(Settings.DEFAULT_PANELS.edgeAdjust, false);
 });
+
+test('the Film panel sits after Detail and starts open', () => {
+  const i = Settings.PANEL_SECTIONS.indexOf('film');
+  assert.strictEqual(Settings.PANEL_SECTIONS[i - 1], 'detail');
+  assert.strictEqual(Settings.DEFAULT_PANELS.film, true);
+});

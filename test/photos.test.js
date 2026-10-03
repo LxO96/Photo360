@@ -164,3 +164,9 @@ test('groupInfo marks what varies as shown, and the darkest exposure', () => {
   assert.strictEqual(br.iso, true);
   assert.ok(Math.abs(br.darkest - Math.log2(1 / 146)) < 1e-12);
 });
+
+test('pasting edits carries the film settings', () => {
+  const out = Photos.pasteable({ film: { stock: 'golden200', gauge: 's16', grain: 1, halation: 0.5 }, sun: { on: true } });
+  assert.deepStrictEqual(out.film, { stock: 'golden200', gauge: 's16', grain: 1, halation: 0.5 });
+  assert.ok(!('sun' in out));
+});

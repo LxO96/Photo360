@@ -1048,11 +1048,147 @@
       (mod(p.x * 71.0 + p.y * 43.0, 19.0) - 9.0) / 256.0, 1.0);
   }`;
 
+  // -- Film simulation (film.js; spec 2026-10-03-film-simulation-design.md) --
+  // The PCG hash and Box-Muller exactly as Film.pcg / Film.gaussian (32-bit
+  // uint ops wrap like Kotlin's Int; 24-bit uniforms keep fp32 below 1).
+  const FILM_GLSL = `
+  uint pcg(uint v) {
+    uint state = v * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+  }
+  uint hash4(uint a, uint b, uint c, uint d) { return pcg(a ^ pcg(b ^ pcg(c ^ pcg(d)))); }
+  float filmGauss(uint h) {
+    uint h1 = pcg(h), h2 = pcg(h1);
+    float u1 = max(float(h1 >> 8u) / 16777216.0, 1.0 / 16777216.0);
+    float u2 = float(h2 >> 8u) / 16777216.0;
+    return sqrt(-2.0 * log(u1)) * cos(6.283185307179586 * u2);
+  }
+  float filmDecode1(float v) { return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4); }
+  vec3 filmDecode(vec3 c) { return vec3(filmDecode1(c.r), filmDecode1(c.g), filmDecode1(c.b)); }
+  `;
+
+  // Halation source, box-averaged f x f (GL y-up, clamped at the edges).
+  const FILM_HALO_DOWN_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uSrc;
+  uniform int uF;
+  uniform ivec2 uSrcSize;
+  out vec4 fragColor;
+  float filmDecode1(float v) { return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4); }
+  void main() {
+    ivec2 o = ivec2(gl_FragCoord.xy) * uF;
+    float s = 0.0;
+    for (int b = 0; b < 64; b++) {
+      if (b >= uF) break;
+      for (int a = 0; a < 64; a++) {
+        if (a >= uF) break;
+        vec3 c = texelFetch(uSrc, min(o + ivec2(a, b), uSrcSize - 1), 0).rgb;
+        float y = 0.2126 * filmDecode1(c.r) + 0.7152 * filmDecode1(c.g) + 0.0722 * filmDecode1(c.b);
+        s += smoothstep(0.75, 1.0, y) * y;
+      }
+    }
+    fragColor = vec4(s / float(uF * uF), 0.0, 0.0, 1.0);
+  }`;
+
+  // Separable Gaussian, clamp-edge (halation field and grain noise).
+  // Weights computed here as in Film.gaussianKernel (same sigma, radius).
+  const FILM_BLUR_FS = `#version 300 es
+  precision highp float;
+  uniform sampler2D uSrc;
+  uniform ivec2 uDir;
+  uniform int uR;
+  uniform float uSigma;
+  uniform ivec2 uSize;
+  out vec4 fragColor;
+  void main() {
+    ivec2 p = ivec2(gl_FragCoord.xy);
+    vec4 acc = vec4(0.0);
+    float wsum = 0.0;
+    for (int k = -31; k <= 31; k++) {
+      if (k < -uR || k > uR) continue;
+      float w = exp(-float(k * k) / (2.0 * uSigma * uSigma));
+      acc += w * texelFetch(uSrc, clamp(p + uDir * k, ivec2(0), uSize - 1), 0);
+      wsum += w;
+    }
+    fragColor = acc / wsum;
+  }`;
+
+  // Unit white noise per layer on the export-pixel lattice. Band textures
+  // are top-origin: texel (i, j) hashes the export pixel
+  // floor(((i, uTop + j) + 0.5 - uOrigin) / uZ) (Film.noiseLattice).
+  const FILM_NOISE_FS = `#version 300 es
+  precision highp float;
+  precision highp int;
+  uniform int uTop;
+  uniform vec2 uOrigin;   // export pixel (0,0)'s corner in target px (top-left origin)
+  uniform float uZ;       // target px per export px
+  uniform uvec3 uSeeds;
+  uniform float uBw;
+  out vec4 fragColor;
+  ${FILM_GLSL}
+  void main() {
+    vec2 t = vec2(gl_FragCoord.x, float(uTop) + floor(gl_FragCoord.y) + 0.5);
+    ivec2 e = ivec2(floor((t - uOrigin) / uZ));
+    uint ex = uint(e.x), ey = uint(e.y);
+    float r = filmGauss(hash4(ex, ey, uSeeds.x, 0x3C6EF372u));
+    if (uBw > 0.5) { fragColor = vec4(r, r, r, 1.0); return; }
+    float g = filmGauss(hash4(ex, ey, uSeeds.y, 0x3C6EF372u));
+    float b = filmGauss(hash4(ex, ey, uSeeds.z, 0x3C6EF372u));
+    fragColor = vec4(r, g, b, 1.0);
+  }`;
+
+  // The film itself: halation, stock curve re-centred on the edit, grain
+  // per layer, crosstalk. Output rows: target rows uBandY0 .. +uBandRows,
+  // the band's top row at the top of the viewport.
+  const FILM_APPLY_FS = `#version 300 es
+  precision highp float;
+  precision highp int;
+  uniform sampler2D uSrc;       // the composed image (GL y-up), uSrcSize
+  uniform ivec2 uSrcSize;
+  uniform sampler2D uNoise;     // blurred noise lattice (Film.noiseLattice)
+  uniform vec3 uNoiseMap;       // target px -> texel: floor((t + 0.5 - xy) / z)
+  uniform int uBandY0;
+  uniform int uBandRows;
+  uniform sampler2D uHalo;      // halation field (LINEAR), uHaloSize texels, factor uHaloF
+  uniform vec2 uHaloSize;
+  uniform float uHaloF;
+  uniform float uHalation;      // 0: no halation (uHalo unused)
+  uniform mat3 uSens;
+  uniform mat3 uCross;
+  uniform vec3 uLogE0;
+  uniform vec3 uK;
+  uniform vec3 uUMin;
+  uniform vec3 uRange;
+  uniform vec3 uFit;            // b, s, uMinA
+  uniform sampler2D uStd;       // 201 x 1 R32F
+  uniform float uGrainK;        // amount * norm
+  out vec4 fragColor;
+  ${FILM_GLSL}
+  float stdOf(float u) { return texelFetch(uStd, ivec2(int(clamp(u, 0.0, 1.0) * 200.0 + 0.5), 0), 0).r; }
+  void main() {
+    int x = int(gl_FragCoord.x);
+    int r = uBandY0 + uBandRows - 1 - int(gl_FragCoord.y);
+    vec3 lin = filmDecode(texelFetch(uSrc, ivec2(x, uSrcSize.y - 1 - r), 0).rgb);
+    if (uHalation > 0.0) {
+      vec2 hc = vec2(float(x) + 0.5, float(uSrcSize.y - r) - 0.5) / uHaloF;
+      lin += uHalation * 0.6 * texture(uHalo, hc / uHaloSize).r * vec3(1.0, 0.28, 0.05);
+    }
+    vec3 e = uSens * lin;
+    vec3 logE = log(max(e, vec3(1e-5))) / log(10.0) + uFit.x;
+    vec3 u = uUMin + uRange / (1.0 + exp(-uK * (logE - uLogE0)));
+    u = uFit.z + uFit.y * (u - uFit.z);
+    vec3 n = texelFetch(uNoise, ivec2(floor((vec2(float(x), float(r)) + 0.5 - uNoiseMap.xy) / uNoiseMap.z)), 0).rgb;
+    u = clamp(u + uGrainK * vec3(stdOf(u.r), stdOf(u.g), stdOf(u.b)) * n, 0.0, 1.0);
+    fragColor = vec4(clamp(uCross * u, 0.0, 1.0), 1.0);
+  }`;
+
   return {
     FULLSCREEN_VS, COMPOSITE_FS, EDGE_GLSL, EDGE_FADE_PARITY_FS, SUN_GLSL, SUN_PARITY_FS, SUN_DOWN_FS, SUN_DOWN_RAW_FS, SUN_DOWN_RAW_F_FS, PROFILE_BUILD_FS, PROFILE_BLUR_FS, PROFILE_BUILD_PARITY_FS,
     COMPOSITE_RAW_FS, COMPOSITE_RAW_DEV_FS, COMPOSITE_DNG_FS, PROFILE_BUILD_RAW_FS, TONE_GLSL, TONE_PARITY_FS,
     DEV_INPUT_RAW_FS, DEV_INPUT_RGB_FS, DEV_BLUR_FS, DEV_DETAIL_FS, DEV_FINAL_FS, DEV_PARITY_INPUT_FS,
     TB_DOWN_FS, TB_DOWN_RAW_FS, TB_BOX_FS, TB_COEF_FS,
     COMPOSITE_RAW_F_FS, COMPOSITE_RAW_DEV_F_FS, DEV_INPUT_RAW_F_FS, TB_DOWN_RAW_F_FS, PROFILE_BUILD_RAW_F_FS,
+    FILM_GLSL, FILM_HALO_DOWN_FS, FILM_BLUR_FS, FILM_NOISE_FS, FILM_APPLY_FS,
   };
 });

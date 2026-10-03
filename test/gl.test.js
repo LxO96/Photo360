@@ -123,3 +123,38 @@ test('sunUniform: where the sun is from each physical lens, in luv azimuth', () 
   assert.strictEqual(a[3], 105);
   assert.ok(GL.sunUniform(state, 'B')[0] > Math.PI / 2);
 });
+
+test('film shaders: the PCG constants and the shared GLSL are in every film pass', () => {
+  const Shaders = require('../shaders.js');
+  const Film = require('../film.js');
+  assert.match(Shaders.FILM_GLSL, /747796405u/);
+  assert.match(Shaders.FILM_GLSL, /2891336453u/);
+  assert.match(Shaders.FILM_GLSL, /277803737u/);
+  assert.match(Shaders.FILM_GLSL, /16777216\.0/);
+  for (const k of ['FILM_NOISE_FS', 'FILM_APPLY_FS']) assert.ok(Shaders[k].includes(Shaders.FILM_GLSL), k);
+  for (const k of ['FILM_HALO_DOWN_FS', 'FILM_BLUR_FS', 'FILM_NOISE_FS', 'FILM_APPLY_FS']) {
+    assert.match(Shaders[k], /^#version 300 es/, k);
+  }
+  // the blur loop bound is Film.MAX_KERNEL_RADIUS
+  assert.ok(Shaders.FILM_BLUR_FS.includes('k <= ' + Film.MAX_KERNEL_RADIUS));
+  // halation constants match film.js
+  assert.ok(Shaders.FILM_APPLY_FS.includes('vec3(1.0, 0.28, 0.05)'));
+  assert.ok(Shaders.FILM_HALO_DOWN_FS.includes('smoothstep(0.75, 1.0'));
+});
+
+test('filmFrame: export is z 1 at the origin; the preview place gives z and offset', () => {
+  const s = { fovDeg: 180, thetaMaxDeg: 105, sensors: 'both', orientation: 'side', gapFrac: 0, marginFrac: 0,
+    sourceLensSize: 5952, uploadedLensSize: 5952, padToSensorSquare: false };
+  const g = GL.exportGeometry(s);
+  const f = GL.filmFrame(s, g.width, g.height, null);
+  assert.strictEqual(f.z, 1);
+  assert.deepStrictEqual([f.px, f.py], [0, 0]);
+  assert.ok(Math.abs(f.D - g.height) < 1, 'side by side at gap/margin 0: D = height');
+  const p = GL.filmFrame(s, 800, 600, { x: -100, y: 20, w: g.width / 4, h: g.height / 4 });
+  assert.strictEqual(p.z, 0.25);
+  assert.deepStrictEqual([p.px, p.py], [-100, 20]);
+  assert.strictEqual(p.D, f.D);
+  const fit = GL.filmFrame(s, g.width / 2, g.height, null);   // letterboxed: half width, centred vertically
+  assert.strictEqual(fit.z, 0.5);
+  assert.deepStrictEqual([fit.px, fit.py], [0, g.height / 4]);
+});

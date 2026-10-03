@@ -176,6 +176,10 @@
     // (found), 'manual' (dragged), 'none' (looked, no sun). dir: a unit
     // direction (sundetect.js), tint: the light around the sun.
     sun: { on: true, status: 'pending', dir: [0, 0, 1], strength: 1, tint: [1, 1, 1] },
+    // Film simulation (film.js, spec 2026-10-03-film-simulation-design.md):
+    // an edit of each photo, pasted with the rest. stock 'off' skips the
+    // film pass entirely.
+    film: { stock: 'off', gauge: '35', grain: 1, halation: 0.5 },
   };
   // The built-in defaults, snapshotted before stored settings are merged in:
   // what double-clicking a slider resets it to (see the NUM `path`s).
@@ -391,6 +395,12 @@
     if (!(restore && restore.edits && restore.edits.sun)) {
       state.sun = Object.assign({}, DEFAULTS.sun, { on: state.sun.on, strength: state.sun.strength });
     }
+    // Edits saved before the film simulation existed have no film: that
+    // photo is unfilmed, not filmed like the one open before it.
+    if (restore && restore.edits && !restore.edits.film) {
+      state.film = { ...DEFAULTS.film };
+      syncFilm();
+    }
     // Both lenses, unless one is blacked out (a cap, a covered lens): then
     // the other alone. A photo's own stored choice stands. One small
     // readback of both lenses serves this and the sun.
@@ -585,6 +595,8 @@
   let beforeView = false;
   const DEVELOP_FAILED = 'This GPU has too little memory left even to hold the result of noise ' +
     'reduction and sharpening at this image size. Set Detail to 0 to go on.';
+  const FILM_FAILED = 'This GPU has too little memory left for the film simulation at this size. ' +
+    'Set the film stock to Off to go on.';
 
   function render() {
     if (!ctx || !state.sourceLensSize) return;
@@ -603,14 +615,21 @@
     // Detail off: free the developed frames (GL.developLens) it held.
     if (!Detail.isActive(state.detail)) GL.releaseDeveloped(ctx);
     try {
-      // Before / after (the \ key): the preview with Tone and Detail off.
-      const shown = beforeView ? Object.assign({}, state, { tone: DEFAULTS.tone, detail: DEFAULTS.detail }) : state;
-      GL.renderComposition(ctx, shown, canvas.width, canvas.height, null, previewPlace);
-      if (errorEl.textContent === DEVELOP_FAILED) clearMessages();
+      // Before / after (the \ key): the preview with Tone, Detail and Film off.
+      const shown = beforeView
+        ? Object.assign({}, state, { tone: DEFAULTS.tone, detail: DEFAULTS.detail, film: DEFAULTS.film }) : state;
+      if (Film.active(shown)) GL.renderFilmed(ctx, shown, canvas.width, canvas.height, previewPlace);
+      else GL.renderComposition(ctx, shown, canvas.width, canvas.height, null, previewPlace);
+      if (errorEl.textContent === DEVELOP_FAILED || errorEl.textContent === FILM_FAILED) clearMessages();
     } catch (e) {
-      if (e.message !== 'DEVELOP_TARGET_INCOMPLETE') throw e;
-      GL.releaseDeveloped(ctx);
-      fail(DEVELOP_FAILED);
+      if (e.message === 'FILM_TARGET_INCOMPLETE') {
+        GL.releaseFilm(ctx);
+        fail(FILM_FAILED);
+      } else {
+        if (e.message !== 'DEVELOP_TARGET_INCOMPLETE') throw e;
+        GL.releaseDeveloped(ctx);
+        fail(DEVELOP_FAILED);
+      }
     }
     updateDetailNote();
     sampleScopes();
@@ -1631,6 +1650,10 @@
   defNum('sunStrength', { path: 'sun.strength', get: () => state.sun.strength,
     set: (v) => { state.sun.strength = v; },
     range: Settings.RANGES.sun.strength, scale: 100, fmt: (v) => String(Math.round(v * 100)) });
+  defNum('filmGrain', { path: 'film.grain', get: () => state.film.grain, set: (v) => { state.film.grain = v; },
+    range: Settings.RANGES.film.grain, scale: 100, fmt: (v) => String(Math.round(v * 100)) });
+  defNum('filmHalation', { path: 'film.halation', get: () => state.film.halation, set: (v) => { state.film.halation = v; },
+    range: Settings.RANGES.film.halation, scale: 100, fmt: (v) => String(Math.round(v * 100)) });
   defNum('sharpenRadius', { path: 'detail.sharpenRadius', get: () => state.detail.sharpenRadius,
     set: (v) => { state.detail.sharpenRadius = v; },
     range: Settings.RANGES.detail.sharpenRadius, fmt: (v) => v.toFixed(1) });
@@ -1823,6 +1846,7 @@
     toneMonoEl.checked = !!state.tone.mono;
     syncSunControls();
     syncLook();
+    syncFilm();
     sensorsEl.value = state.sensors;
     orientationEl.value = state.orientation;
     swapEl.checked = state.swap;
@@ -2467,6 +2491,49 @@
     scheduleSave();
   });
 
+  // -- Film simulation (film.js; spec 2026-10-03-film-simulation-design.md) --
+  // Stock chips (Off first), the gauge, Grain and Halation. Format, Grain
+  // and Halation do nothing while the stock is Off, so they are disabled.
+  const filmStocksEl = document.getElementById('filmStocks');
+  const filmGaugeEl = document.getElementById('filmGauge');
+  const filmChips = new Map();
+  for (const s of [{ id: 'off', name: 'Off' }].concat(Film.STOCKS)) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip';
+    b.setAttribute('role', 'radio');
+    b.textContent = s.name;
+    b.addEventListener('click', () => setFilm({ stock: s.id }));
+    filmStocksEl.appendChild(b);
+    filmChips.set(s.id, b);
+  }
+  for (const g of Film.GAUGES) {
+    const o = document.createElement('option');
+    o.value = g.id;
+    o.textContent = g.name;
+    filmGaugeEl.appendChild(o);
+  }
+  function syncFilm() {
+    const f = state.film;
+    for (const [id, b] of filmChips) {
+      b.classList.toggle('on', id === f.stock);
+      b.setAttribute('aria-checked', String(id === f.stock));
+    }
+    filmGaugeEl.value = f.gauge;
+    const off = f.stock === 'off';
+    filmGaugeEl.disabled = off;
+    for (const d of [NUM.filmGrain, NUM.filmHalation]) { d.slider.disabled = off; d.out.disabled = off; }
+    reflectNum(NUM.filmGrain, true);
+    reflectNum(NUM.filmHalation, true);
+  }
+  function setFilm(patch) {
+    state.film = Object.assign({}, state.film, patch);
+    syncFilm();
+    render();
+    scheduleSave();
+  }
+  filmGaugeEl.addEventListener('input', () => setFilm({ gauge: filmGaugeEl.value }));
+
   // Where the marker sits: on each circle showing the sun, or, when none
   // does (it is beyond the crop), dashed at the rim of the nearest one.
   const SUN_MARKER_PX = 11;   // CSS pixels
@@ -2657,11 +2724,22 @@
       GL.renderComposition(ctx, renderState, g.width, g.height, target.fbo);
 
       const c2d = outCanvas.getContext('2d');
-      GL.readCompositionStrips(gl, target.fbo, g.width, g.height, EXPORT_STRIP_ROWS,
-        (rowsRGBA, outY, rows) => {
-          const clamped = new Uint8ClampedArray(rowsRGBA.buffer, rowsRGBA.byteOffset, rowsRGBA.length);
-          c2d.putImageData(new ImageData(clamped, g.width, rows), 0, outY);
-        });
+      const toCanvas = (rowsRGBA, outY, rows) => {
+        const clamped = new Uint8ClampedArray(rowsRGBA.buffer, rowsRGBA.byteOffset, rowsRGBA.length);
+        c2d.putImageData(new ImageData(clamped, g.width, rows), 0, outY);
+      };
+      if (Film.active(renderState)) {
+        // The film post-pass in bands of rows (GL.filmStrips): band-sized
+        // temporaries, whatever the export's size.
+        try {
+          GL.filmStrips(ctx, renderState, { tex: target.tex, w: g.width, h: g.height },
+            GL.filmFrame(renderState, g.width, g.height, null), EXPORT_STRIP_ROWS, toCanvas);
+        } finally {
+          GL.releaseFilm(ctx);   // the preview reallocates its own on the next render
+        }
+      } else {
+        GL.readCompositionStrips(gl, target.fbo, g.width, g.height, EXPORT_STRIP_ROWS, toCanvas);
+      }
       return outCanvas;
     } finally {
       if (target) GL.deleteExportTarget(gl, target);
@@ -3689,6 +3767,62 @@
     return { maxDiff, cases: TONE_PARITY_CASES.length, worst };
   }
 
+  // Film: the GPU film pass (GL.filmBandsWith, bands of 24 rows) against
+  // Film.reference on a synthetic image -- a gradient, a colour ramp and a
+  // white patch for halation -- at export scale and at zoomed-out and
+  // zoomed-in preview scales with an offset. maxDiff in 1/255 steps; over2: pixels off by > 2.
+  function checkFilmParity() {
+    ensureCtx();
+    const gl = ctx.gl, W = 160, H = 120;
+    const img = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const o = (y * W + x) * 4;
+      const bright = x > 100 && x < 116 && y > 40 && y < 56;
+      img[o] = bright ? 255 : Math.round(255 * x / W);
+      img[o + 1] = bright ? 255 : Math.round(255 * y / H);
+      img[o + 2] = bright ? 255 : 128;
+      img[o + 3] = 255;
+    }
+    // GL y-up texture of the top-down image
+    const flipped = new Uint8Array(W * H * 4);
+    for (let y = 0; y < H; y++) flipped.set(img.subarray(y * W * 4, (y + 1) * W * 4), (H - 1 - y) * W * 4);
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, W, H, 0, gl.RGBA, gl.UNSIGNED_BYTE, flipped);
+    const cases = [];
+    const runs = [
+      { film: { stock: 'golden200', gauge: 's16', grain: 1.5, halation: 1 }, frame: { D: 1200, z: 1, px: 0, py: 0 } },
+      { film: { stock: 'classic400bw', gauge: '35', grain: 1, halation: 0.5 }, frame: { D: 1200, z: 0.37, px: -13, py: 7 } },
+      { film: { stock: 'verdant400', gauge: 's8', grain: 2, halation: 0 }, frame: { D: 400, z: 1, px: 0, py: 0 } },
+      { film: { stock: 'golden200', gauge: 's8', grain: 2, halation: 1 }, frame: { D: 1200, z: 2.6, px: -31, py: 12 } },
+    ];
+    let maxDiff = 0, over2 = 0;
+    try {
+      for (const r of runs) {
+        const p = Film.params({ film: r.film, sourceName: 'parity.insp' }, r.frame);
+        const want = Film.reference(img, W, H, p, r.frame);
+        const got = new Uint8ClampedArray(W * H * 4);
+        GL.filmBandsWith(ctx, p, { tex, w: W, h: H }, r.frame, 24, (rows, y0, n) => got.set(rows.subarray(0, W * n * 4), y0 * W * 4));
+        let m = 0, o2 = 0;
+        for (let i = 0; i < W * H * 4; i++) {
+          if ((i & 3) === 3) continue;
+          const d = Math.abs(got[i] - want[i]);
+          if (d > m) m = d;
+          if (d > 2) o2++;
+        }
+        cases.push({ stock: r.film.stock, gauge: r.film.gauge, z: r.frame.z, maxDiff: m, over2: o2 });
+        maxDiff = Math.max(maxDiff, m); over2 += o2;
+      }
+    } finally {
+      gl.deleteTexture(tex);
+      GL.releaseFilm(ctx);
+    }
+    render();
+    return { maxDiff, over2, cases };
+  }
+
   // Sun glare: Shaders.SUN_PARITY_FS against Edge.sunGlare over 256
   // azimuths, for suns in front of, at the side of and behind the lens.
   function checkSunParity() {
@@ -3977,7 +4111,7 @@
     selectPhoto: (i, mode) => { photos.select(photos.entries[i].id, mode); drawStrip(); },
     removePhotoAt: (i) => removePhoto(photos.entries[i].id),
     copyEdits, pasteEdits, exportSelected, checkFloatRawParity, mergeSelected, checkGainParity,
-    checkSunParity, checkFadeParity, applyLook, detectSun: () => { detectSun(); syncSunControls(); render(); return state.sun; },
+    checkSunParity, checkFadeParity, checkFilmParity, applyLook, detectSun: () => { detectSun(); syncSunControls(); render(); return state.sun; },
     sunFrames: () => GL.sunFrames(ctx, state),
   };
 })();

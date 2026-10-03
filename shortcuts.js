@@ -40,7 +40,7 @@
     { group: 'View', label: 'Fit', show: 'Ctrl+0', action: 'zoomFit', keys: [{ key: '0', ctrl: true }] },
     { group: 'View', label: '100%', show: 'Ctrl+1', action: 'zoom100', keys: [{ key: '1', ctrl: true }] },
     { group: 'View', label: 'Zoom in / out', show: 'Ctrl+= / Ctrl+−', action: null, keys: [] },
-    { group: 'View', label: 'Before, while held (Tone and Detail off)', show: { standard: '\\', swedish: '< or §' },
+    { group: 'View', label: 'Before, while held (Tone, Detail and Film off)', show: { standard: '\\', swedish: '< or §' },
       action: 'beforeAfter',
       keys: [{ key: '\\', layout: 'standard' }, { key: '<', layout: 'swedish' }, { key: '§', layout: 'swedish' }] },
     { group: 'File', label: 'Open', show: 'Ctrl+O', action: 'open', keys: [{ key: 'o', ctrl: true }] },

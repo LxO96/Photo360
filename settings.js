@@ -25,7 +25,7 @@
     'fovDeg', 'rollDeg', 'nudgeDeg', 'sensors', 'swap',
     'orientation', 'gapFrac', 'marginFrac', 'background', 'edge', 'tone', 'detail',
     'rawWb', 'rawWbLinked', 'panels', 'scopesShown', 'scopeMode', 'scopeChannels', 'scopeScale',
-    'keyLayout', 'jpegWb', 'stripShown', 'sun',
+    'keyLayout', 'jpegWb', 'stripShown', 'sun', 'film',
   ];
 
   // Task 18: the side panel's collapsible sections, in display order, and
@@ -38,9 +38,9 @@
   // seven fitted parameters are the most specialised controls on the page
   // and the X1-classic preset is the intended starting point.
   // edgeAdjust: the Edge panel's sliders, under the look gallery.
-  const PANEL_SECTIONS = ['framing', 'level', 'whiteBalance', 'edge', 'edgeAdjust', 'tone', 'detail', 'output'];
+  const PANEL_SECTIONS = ['framing', 'level', 'whiteBalance', 'edge', 'edgeAdjust', 'tone', 'detail', 'film', 'output'];
   const DEFAULT_PANELS = {
-    framing: true, level: true, whiteBalance: true, edge: false, edgeAdjust: false, tone: true, detail: true, output: true,
+    framing: true, level: true, whiteBalance: true, edge: false, edgeAdjust: false, tone: true, detail: true, film: true, output: true,
   };
 
   const ENUMS = {
@@ -49,6 +49,9 @@
     keyLayout: ['standard', 'swedish'],
     // sun.status: not looked for yet, found, placed by hand, looked for and none.
     status: ['pending', 'auto', 'manual', 'none'],
+    // Film simulation (film.js): the stock ('off' first) and the gauge.
+    stock: ['off', 'golden200', 'verdant400', 'portrait160', 'classic400bw', 'smooth400bw'],
+    gauge: ['s8', 's16', '35', '120'],
   };
 
   // Single source of truth for the valid domain of every numeric field.
@@ -111,6 +114,8 @@
     },
     // Sun glare (edge.js sunGlare): Strength 0-200%, a unit direction, a tint.
     sun: { strength: [0, 2], dir: [-1, 1], tint: [0, 1] },
+    // Film simulation: Grain 0-200 %, Halation 0-100.
+    film: { grain: [0, 2], halation: [0, 1] },
     // Sharpening and noise reduction (detail.js).
     detail: {
       sharpenAmount: [0, 150], sharpenRadius: [0.5, 2], lumaNoise: [0, 100], colorNoise: [0, 100],
@@ -368,7 +373,7 @@
   }
 
   return {
-    valueAt, visibleLenses, fitScopeScale, STORAGE_KEY, PERSISTED_KEYS, RANGES, PANEL_SECTIONS, DEFAULT_PANELS,
+    valueAt, visibleLenses, fitScopeScale, STORAGE_KEY, PERSISTED_KEYS, RANGES, ENUMS, PANEL_SECTIONS, DEFAULT_PANELS,
     sanitize, serialize, save, load,
     normalizeAngleDeltaDeg, rollForDrag, dragSign, resolveSwapForLoad,
     parseReadout, decimalsForStep, nudgeSliderValue,
