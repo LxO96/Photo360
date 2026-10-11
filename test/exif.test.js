@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const Exif = require('../exif.js');
+const Exif = require('../src/exif.js');
 
 const testfiles = path.join(__dirname, '..', 'Testfiles');
 

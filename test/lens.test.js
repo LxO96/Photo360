@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Lens = require('../lens.js');
+const Lens = require('../src/lens.js');
 
 test('theta max reflects the measured X5 calibration', () => {
   assert.strictEqual(Lens.THETA_MAX_DEG, 105);

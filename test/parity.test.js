@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const Edge = require('../edge.js');
+const Edge = require('../src/edge.js');
 
 const fixture = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'fixtures', 'parity-input.json'), 'utf8')

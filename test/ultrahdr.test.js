@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const U = require('../ultrahdr.js');
+const U = require('../src/ultrahdr.js');
 
 // A tiny "JPEG": SOI, APP0 JFIF, (optional APP1 Exif), DQT, SOF0, SOS + data, EOI.
 function jpeg(withExif, fill = 0x11) {

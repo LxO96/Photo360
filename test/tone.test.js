@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Edge = require('../edge.js');
+const Edge = require('../src/edge.js');
 
 const NEUTRAL = { exposureEv: 0, contrast: 0, saturation: 0 };
 
@@ -211,7 +211,7 @@ test('luminance above 1 (after exposure) passes through the curve and ends as wh
 // Shaders.TONE_PARITY_FS; it only proves anything about the shipped
 // shaders if that is the very same TONE_GLSL both composite shaders use.
 test('both composite shaders and the tone parity shader share one TONE_GLSL', () => {
-  const Shaders = require('../shaders.js');
+  const Shaders = require('../src/shaders.js');
   for (const name of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS', 'TONE_PARITY_FS']) {
     assert.ok(Shaders[name].includes(Shaders.TONE_GLSL), name);
   }
@@ -257,7 +257,7 @@ test('exposure moves more of the range into the shoulder', () => {
 });
 
 test('the float raw variants differ from the integer ones only in the sampler type', () => {
-  const S = require('../shaders.js');
+  const S = require('../src/shaders.js');
   for (const n of ['COMPOSITE_RAW', 'COMPOSITE_RAW_DEV', 'DEV_INPUT_RAW', 'TB_DOWN_RAW', 'PROFILE_BUILD_RAW']) {
     const a = S[n + '_FS'], b = S[n + '_F_FS'];
     assert.ok(b, n);
@@ -271,7 +271,7 @@ test('the float raw variants differ from the integer ones only in the sampler ty
 // sampleRawLensAt): a merged HDR photo's brighter-than-white values must
 // not make it stronger -- the profile samples are capped at white.
 test('the rim profile samples a raw lens capped at white', () => {
-  const S = require('../shaders.js');
+  const S = require('../src/shaders.js');
   const m = S.PROFILE_BUILD_RAW_FS.match(/vec3 sampleRawLensAt\([^)]*\) \{[\s\S]*?\n  \}/);
   assert.ok(m, 'sampleRawLensAt found');
   assert.match(m[0], /return min\(demosaicAt\(ivec2\(px, py\)\), vec3\(1\.0\)\);/);
@@ -306,7 +306,7 @@ test('toneGain: a merged photo highlight is capped at D', () => {
 });
 
 test('the composite has a gain mode writing the offset log-gain', () => {
-  const S = require('../shaders.js');
+  const S = require('../src/shaders.js');
   for (const n of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS', 'COMPOSITE_RAW_F_FS']) {
     assert.match(S[n], /uniform float uGainOut;/, n);
     assert.match(S[n], /toneGain\(img0, uTone, uToneCurve, toneCoef, uRawMax, uGainD\)/, n);
@@ -317,7 +317,7 @@ test('the composite has a gain mode writing the offset log-gain', () => {
 // camera values), as a JPEG lens is by the texture unit: nearest-pixel
 // sampling made jagged, stepping edges wherever the remap scales.
 test('the raw composite interpolates the lens between pixels', () => {
-  const S = require('../shaders.js');
+  const S = require('../src/shaders.js');
   const raw = S.COMPOSITE_RAW_FS;
   const lt = raw.match(/vec3 lensTexel\(vec2 uv\) \{[\s\S]*?\n  \}/);
   assert.ok(lt, 'lensTexel');

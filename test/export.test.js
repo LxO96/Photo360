@@ -1,11 +1,11 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Lens = require('../lens.js');
+const Lens = require('../src/lens.js');
 // gl.js expects a global `Lens` (as it has in the browser, via <script> load
 // order) since GL.exportGeometry calls Lens.radiusForFov/Lens.exportLayout.
 global.Lens = Lens;
-const GL = require('../gl.js');
+const GL = require('../src/gl.js');
 
 function baseState(overrides) {
   return Object.assign({

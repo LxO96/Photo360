@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const Dng = require('../dng.js');
+const Dng = require('../src/dng.js');
 
 // Testfiles/ is git-ignored (85MB of local-only test media -- see README);
 // these tests read the real files and will not find them in CI without that

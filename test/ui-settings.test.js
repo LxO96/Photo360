@@ -3,7 +3,7 @@
 // state, editable numeric readouts, and keyboard fine-adjust on sliders.
 const test = require('node:test');
 const assert = require('node:assert');
-const Settings = require('../settings.js');
+const Settings = require('../src/settings.js');
 
 const DEFAULTS = { panels: { ...Settings.DEFAULT_PANELS } };
 
@@ -56,7 +56,7 @@ test('parseReadout clamps through the given RANGES entry', () => {
   assert.strictEqual(Settings.parseReadout('999', Settings.RANGES.fovDeg, 1), 300);
   // The FOV readout itself clamps through the current calibration's range
   // (Task 19): 2 x theta-max, e.g. 190 for the ONE X.
-  assert.strictEqual(Settings.parseReadout('999', require('../lens.js').fovRangeFor(95), 1), 190);
+  assert.strictEqual(Settings.parseReadout('999', require('../src/lens.js').fovRangeFor(95), 1), 190);
   assert.strictEqual(Settings.parseReadout('-5', Settings.RANGES.fovDeg, 1), 120);
   assert.strictEqual(Settings.parseReadout('20000', Settings.RANGES.rawWb.A.kelvin, 1), 12000);
   assert.strictEqual(Settings.parseReadout('-400', Settings.RANGES.rawWb.A.tint, 1), -150);

@@ -1,11 +1,11 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Lens = require('../lens.js');
+const Lens = require('../src/lens.js');
 // gl.js expects a global `Lens` (as it has in the browser, via <script> load
 // order) since it calls Lens.rollFor from circleDraw.
 global.Lens = Lens;
-const GL = require('../gl.js');
+const GL = require('../src/gl.js');
 
 test('physicalLens returns the slot label unchanged when not swapped', () => {
   assert.strictEqual(GL.physicalLens({ swap: false }, 'A'), 'A');
@@ -89,8 +89,8 @@ test('cellViewport with clipping reports an off-target cell as empty', () => {
 
 // Sun glare (spec 2026-10-02-sun-glare-design): the per-lens uniform.
 test('sunUniform: off, not found, or not detected yet -> strength 0', () => {
-  global.SunDetect = require('../sundetect.js');
-  global.Edge = require('../edge.js');
+  global.SunDetect = require('../src/sundetect.js');
+  global.Edge = require('../src/edge.js');
   const base = { thetaMaxDeg: 105, sensorRotationDeg: 0 };
   assert.strictEqual(GL.sunUniform(base, 'A')[2], 0);
   const sun = { on: false, status: 'auto', dir: [0, 0, 1], strength: 1, tint: [1, 1, 1] };
@@ -101,7 +101,7 @@ test('sunUniform: off, not found, or not detected yet -> strength 0', () => {
 });
 
 test('sunView: the sun from a lens whatever the glare switch; unknown when not found', () => {
-  const SunDetect = require('../sundetect.js');
+  const SunDetect = require('../src/sundetect.js');
   const state = { thetaMaxDeg: 105, sensorRotationDeg: 0 };
   const dir = SunDetect.dirOf('A', 0.7, 0.4, 105, 0);
   state.sun = { on: false, status: 'manual', dir, strength: 0, tint: [1, 1, 1] };
@@ -112,7 +112,7 @@ test('sunView: the sun from a lens whatever the glare switch; unknown when not f
 });
 
 test('sunUniform: where the sun is from each physical lens, in luv azimuth', () => {
-  const SunDetect = require('../sundetect.js');
+  const SunDetect = require('../src/sundetect.js');
   const state = { thetaMaxDeg: 105, sensorRotationDeg: 90 };
   const dir = SunDetect.dirOf('A', 0.7, 0.4, 105, SunDetect.upTermDeg(state, 'A'));
   state.sun = { on: true, status: 'auto', dir, strength: 1.5, tint: [1, 1, 1] };
@@ -125,8 +125,8 @@ test('sunUniform: where the sun is from each physical lens, in luv azimuth', () 
 });
 
 test('film shaders: the PCG constants and the shared GLSL are in every film pass', () => {
-  const Shaders = require('../shaders.js');
-  const Film = require('../film.js');
+  const Shaders = require('../src/shaders.js');
+  const Film = require('../src/film.js');
   assert.match(Shaders.FILM_GLSL, /747796405u/);
   assert.match(Shaders.FILM_GLSL, /2891336453u/);
   assert.match(Shaders.FILM_GLSL, /277803737u/);

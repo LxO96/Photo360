@@ -1,8 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const AutoWb = require('../autowb.js');
-const Wb = require('../wb.js');
+const AutoWb = require('../src/autowb.js');
+const Wb = require('../src/wb.js');
 
 function rng(seed) {
   let s = seed >>> 0;

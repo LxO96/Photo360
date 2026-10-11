@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Shortcuts = require('../shortcuts.js');
+const Shortcuts = require('../src/shortcuts.js');
 
 const FREE = { typing: false, onSlider: false };
 const SLIDER = { typing: false, onSlider: true };

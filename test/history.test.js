@@ -1,8 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const History = require('../history.js');
-const Settings = require('../settings.js');
+const History = require('../src/history.js');
+const Settings = require('../src/settings.js');
 
 test('undo and redo walk back and forth through recorded changes', () => {
   const h = History.create();

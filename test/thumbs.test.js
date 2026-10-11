@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Thumbs = require('../thumbs.js');
+const Thumbs = require('../src/thumbs.js');
 
 // A JPEG with an APP1 Exif segment whose IFD1 points at a 4-byte "thumbnail".
 function jpegWithThumb() {

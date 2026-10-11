@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Film = require('../film.js');
+const Film = require('../src/film.js');
 
 const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} ${a} vs ${b}`);
 
@@ -285,7 +285,7 @@ test('referenceBands joins bands seamlessly (equals the whole-image reference)',
 });
 
 test('Settings.ENUMS.stock lists Off then Film.STOCKS in order', () => {
-  const Settings = require('../settings.js');
+  const Settings = require('../src/settings.js');
   assert.deepStrictEqual(Settings.ENUMS.stock, ['off'].concat(Film.STOCKS.map((s) => s.id)));
   assert.deepStrictEqual(Settings.ENUMS.gauge, Film.GAUGES.map((g) => g.id));
 });

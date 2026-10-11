@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Photos = require('../photos.js');
+const Photos = require('../src/photos.js');
 
 const f = (name, size = 10, lastModified = 1) => ({ name, size, lastModified });
 function memStorage() {

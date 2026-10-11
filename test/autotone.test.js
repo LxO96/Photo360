@@ -1,9 +1,9 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const AutoTone = require('../autotone.js');
-const Edge = require('../edge.js');
-const Scopes = require('../scopes.js');
+const AutoTone = require('../src/autotone.js');
+const Edge = require('../src/edge.js');
+const Scopes = require('../src/scopes.js');
 
 const N = 256;
 

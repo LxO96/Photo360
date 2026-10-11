@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Lens = require('../lens.js');
+const Lens = require('../src/lens.js');
 
 test('roll is mirrored between the two back-to-back lenses', () => {
   const s = { rollDeg: 12, nudgeDeg: { A: 0, B: 0 } };

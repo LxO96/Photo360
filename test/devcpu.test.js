@@ -1,10 +1,10 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const DevCpu = require('../devcpu.js');
-const DevPlan = require('../devplan.js');
-const Detail = require('../detail.js');
-const Noise = require('../noise.js');
+const DevCpu = require('../src/devcpu.js');
+const DevPlan = require('../src/devplan.js');
+const Detail = require('../src/detail.js');
+const Noise = require('../src/noise.js');
 
 function rng(seed) {
   let s = seed >>> 0;

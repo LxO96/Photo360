@@ -1,14 +1,14 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Settings = require('../settings.js');
+const Settings = require('../src/settings.js');
 // gl.js expects a global Lens (browser <script> load order); dragSign's
 // tests exercise it together with the real GL.physicalLens, not a stand-in,
 // so a regression to reading the slot label instead of the physical lens
 // inside gl.js itself would also be caught here.
-const Lens = require('../lens.js');
+const Lens = require('../src/lens.js');
 global.Lens = Lens;
-const GL = require('../gl.js');
+const GL = require('../src/gl.js');
 
 const DEFAULTS = {
   fovDeg: 180, thetaMaxDeg: 105,

@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const DngWrite = require('../dngwrite.js');
+const DngWrite = require('../src/dngwrite.js');
 
 // A minimal little-endian TIFF reader: IFD0's tags as { tag: values[] }.
 const TYPE_SIZE = { 1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 10: 8 };

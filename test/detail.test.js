@@ -1,8 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Detail = require('../detail.js');
-const Noise = require('../noise.js');
+const Detail = require('../src/detail.js');
+const Noise = require('../src/noise.js');
 
 const OFF = { sharpenAmount: 0, sharpenRadius: 1, lumaNoise: 0, colorNoise: 0 };
 

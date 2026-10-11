@@ -11,7 +11,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const Settings = require('../settings.js');
+const Settings = require('../src/settings.js');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
 
@@ -92,7 +92,7 @@ for (const [id, [range, scale]] of Object.entries(SLIDER_TO_RANGE)) {
 //   - the static HTML max is what app.js would set for the default
 //     calibration (2 x Lens.THETA_MAX_DEG = 210), so the slider does not
 //     jump before app.js runs, and its min is fovRangeFor's fixed 120.
-const Lens = require('../lens.js');
+const Lens = require('../src/lens.js');
 
 test('Settings.RANGES.fovDeg covers the FOV range at every calibration', () => {
   const [tLo, tHi] = Settings.RANGES.thetaMaxDeg;

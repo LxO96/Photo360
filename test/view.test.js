@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const View = require('../view.js');
+const View = require('../src/view.js');
 
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
 

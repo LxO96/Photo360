@@ -8,9 +8,9 @@
 // state.sensorRotationDeg term.
 const test = require('node:test');
 const assert = require('node:assert');
-const Lens = require('../lens.js');
+const Lens = require('../src/lens.js');
 global.Lens = Lens;
-const GL = require('../gl.js');
+const GL = require('../src/gl.js');
 
 // Insta360 ONE X raw frames are stored 90 degrees off from how the camera's
 // own JPEG pipeline presents them; the two lenses are back-to-back, so they

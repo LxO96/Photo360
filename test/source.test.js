@@ -11,10 +11,10 @@ const test = require('node:test');
 const assert = require('node:assert');
 // source.js expects Lens/Exif/Dng as globals (browser <script> load order);
 // mirror the pattern test/gl.test.js already uses for gl.js's Lens global.
-global.Lens = require('../lens.js');
-global.Exif = require('../exif.js');
-global.Dng = require('../dng.js');
-const Source = require('../source.js');
+global.Lens = require('../src/lens.js');
+global.Exif = require('../src/exif.js');
+global.Dng = require('../src/dng.js');
+const Source = require('../src/source.js');
 
 // A synthetic 4-wide x 8-tall single-strip "sensor": pixel value = row*4 +
 // col, stored as little-endian uint16, row-major -- mimicking two 4x4 lenses
@@ -111,8 +111,8 @@ test('Source.UNSUPPORTED_MSG matches the message decodeDng throws for an unsuppo
 test('decodeMerged merges the 174907 bracket pair into float planes', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  global.Wb = global.Wb || require('../wb.js');
-  global.HdrMerge = global.HdrMerge || require('../hdrmerge.js');
+  global.Wb = global.Wb || require('../src/wb.js');
+  global.HdrMerge = global.HdrMerge || require('../src/hdrmerge.js');
   const DIR = path.join(__dirname, '..', 'Testfiles');
   const fileOf = (p) => ({ name: path.basename(p), arrayBuffer: async () => {
     const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); } });
@@ -146,8 +146,8 @@ test('decodeMerged merges the 174907 bracket pair into float planes', async () =
 test('decodeMerged merges an ISO-stepped pair (173735: 1/146 s ISO 100 + 1/60 s ISO 164)', async () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  global.Wb = global.Wb || require('../wb.js');
-  global.HdrMerge = global.HdrMerge || require('../hdrmerge.js');
+  global.Wb = global.Wb || require('../src/wb.js');
+  global.HdrMerge = global.HdrMerge || require('../src/hdrmerge.js');
   const DIR = path.join(__dirname, '..', 'Testfiles', 'HDR');
   const fileOf = (p) => ({ name: path.basename(p), arrayBuffer: async () => {
     const b = fs.readFileSync(p); return b.buffer.slice(b.byteOffset, b.byteOffset + b.length); } });

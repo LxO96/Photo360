@@ -1,8 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const DevPlan = require('../devplan.js');
-const Detail = require('../detail.js');
+const DevPlan = require('../src/devplan.js');
+const Detail = require('../src/detail.js');
 
 function rng(seed) {
   let s = seed >>> 0;

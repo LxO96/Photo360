@@ -1,8 +1,8 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const ToneBase = require('../tonebase.js');
-const Edge = require('../edge.js');
+const ToneBase = require('../src/tonebase.js');
+const Edge = require('../src/edge.js');
 
 const NEUTRAL = { exposureEv: 0, contrast: 0, saturation: 0, highlights: 0, shadows: 0, whites: 0, blacks: 0 };
 

@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const Edge = require('../edge.js');
+const Edge = require('../src/edge.js');
 
 test('the terminator is fully open inside the falloff start', () => {
   assert.strictEqual(Edge.terminator(0.0, 0.9, 1), 1);
@@ -178,7 +178,7 @@ test('blurProfileAngular clamps its kernel radius to MAX_BLUR_RADIUS_BINS instea
 test('gl.js wires PROFILE_BLUR_FS\'s uMaxRadiusBins from Edge.MAX_BLUR_RADIUS_BINS, not a duplicated literal', () => {
   const fs = require('node:fs');
   const path = require('node:path');
-  const glSrc = fs.readFileSync(path.join(__dirname, '..', 'gl.js'), 'utf8');
+  const glSrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'gl.js'), 'utf8');
   assert.ok(glSrc.includes('Edge.MAX_BLUR_RADIUS_BINS'),
     'gl.js must reference Edge.MAX_BLUR_RADIUS_BINS when setting the blur uniform, ' +
     'so the GLSL loop bound and the JS kernel clamp can never drift apart');
@@ -221,7 +221,7 @@ const CHANNELS = ['r', 'g', 'b'];
 // Task 9 section) applied to the actual GLSL string, so a shader change
 // that isn't mirrored here fails loudly instead of silently.
 test('the COMPOSITE_FS shader source still matches this test\'s transcription of it', () => {
-  const Shaders = require('../shaders.js');
+  const Shaders = require('../src/shaders.js');
   const src = Shaders.COMPOSITE_FS;
   // The cast is now the look's castColor (edge.js PRESETS), X1 classic's
   // being the old fixed COOL this transcribes.
@@ -457,7 +457,7 @@ test('sunGlare: a low sun lights its side of the rim over twice as much as the f
 // Shaders.SUN_PARITY_FS; it proves something about the shipped shaders only
 // if they share its SUN_GLSL, and rimLight adds it.
 test('both composites and the sun parity shader share one SUN_GLSL, added in rimLight', () => {
-  const Shaders = require('../shaders.js');
+  const Shaders = require('../src/shaders.js');
   for (const name of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS', 'COMPOSITE_DNG_FS', 'SUN_PARITY_FS']) {
     assert.ok(Shaders[name].includes(Shaders.SUN_GLSL), name);
   }
@@ -472,7 +472,7 @@ test('sunRadial: the haze bell inside the rim, a much tighter fall outside it', 
 });
 
 test('the shaders lay the sun glare on sunRadial, with uSunOut = Edge.SUN.OUT', () => {
-  const Shaders = require('../shaders.js');
+  const Shaders = require('../src/shaders.js');
   assert.ok(/sunGlare\(theta \+ uRoll\) \* sunRadial\(u\)/.test(Shaders.EDGE_GLSL));
   assert.ok(/float sunRadial\(float u\)/.test(Shaders.EDGE_GLSL));
 });
@@ -508,7 +508,7 @@ test('edgeFade fringe: none inside the falloff, peak where the image is half fad
 });
 
 test('LOOKS: X1 classic first and equal to the preset, unique ids, every value in range', () => {
-  const Settings = require('../settings.js');
+  const Settings = require('../src/settings.js');
   assert.strictEqual(Edge.LOOKS[0].id, 'x1classic');
   assert.deepStrictEqual(Edge.LOOKS[0].edge, X1);
   assert.strictEqual(new Set(Edge.LOOKS.map((l) => l.id)).size, Edge.LOOKS.length);
@@ -531,7 +531,7 @@ test('lookOf: the look whose values these are, else null', () => {
 });
 
 test('the composites fade the image through EDGE_GLSL edgeFade; the fixed COOL is gone', () => {
-  const Shaders = require('../shaders.js');
+  const Shaders = require('../src/shaders.js');
   assert.ok(!/const vec3 COOL/.test(Shaders.EDGE_GLSL));
   assert.ok(/vec3 edgeFade\(vec3 img, float u, float a\)/.test(Shaders.EDGE_GLSL));
   for (const name of ['COMPOSITE_FS', 'COMPOSITE_RAW_FS', 'EDGE_FADE_PARITY_FS']) {
@@ -591,7 +591,7 @@ test('Prism follows the sun; the other looks do not', () => {
 });
 
 test('rimLight weights the glow ring by ringSunWeight', () => {
-  const Shaders = require('../shaders.js');
+  const Shaders = require('../src/shaders.js');
   assert.ok(/\* intensity \* tint \* ringSunWeight\(theta \+ uRoll\)/.test(Shaders.EDGE_GLSL));
   assert.ok(Shaders.SUN_PARITY_FS.includes('ringSunWeight(a)'));
 });

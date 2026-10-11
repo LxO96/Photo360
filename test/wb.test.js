@@ -3,12 +3,12 @@ const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const Wb = require('../wb.js');
-global.Lens = require('../lens.js');
-global.Exif = require('../exif.js');
-global.Dng = require('../dng.js');
+const Wb = require('../src/wb.js');
+global.Lens = require('../src/lens.js');
+global.Exif = require('../src/exif.js');
+global.Dng = require('../src/dng.js');
 global.Wb = Wb;
-const Source = require('../source.js');
+const Source = require('../src/source.js');
 
 const DIR = path.join(__dirname, '..', 'Testfiles');
 const FILES = [
@@ -181,7 +181,7 @@ test('Dng.parse exposes the raw ColorMatrix1 (independently verified values)', (
 // -- White-balance pipette ----------------------------------------------
 
 test('neutralFromRendered recovers the camera colour of a rendered spot', () => {
-  const Dng = require('../dng.js');
+  const Dng = require('../src/dng.js');
   const M1 = [0.9312, -0.1238, -0.0846, -0.5823, 1.4648, 0.3586, -0.0969, 0.179, 0.856];
   const current = [0.5, 1, 0.55];
   const m = Dng.camToSrgbForNeutral(M1, current);

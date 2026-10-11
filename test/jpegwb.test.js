@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const JpegWb = require('../jpegwb.js');
+const JpegWb = require('../src/jpegwb.js');
 
 const grey = [0.4, 0.4, 0.4];
 const chroma = (v) => [v[0] / v[1], v[2] / v[1]];

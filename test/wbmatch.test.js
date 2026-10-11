@@ -1,9 +1,9 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const WbMatch = require('../wbmatch.js');
-const Wb = require('../wb.js');
-const Dng = require('../dng.js');
+const WbMatch = require('../src/wbmatch.js');
+const Wb = require('../src/wb.js');
+const Dng = require('../src/dng.js');
 
 const disc = (roll) => ({ cx: 400, cy: 300, radius: 250, roll, crop: 0.9 });
 

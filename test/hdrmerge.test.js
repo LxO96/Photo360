@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const H = require('../hdrmerge.js');
+const H = require('../src/hdrmerge.js');
 
 const meta = (o) => Object.assign({ model: 'X', dateTimeOriginal: '2024:08:25 17:49:07', iso: 100,
   exposureTime: 1 / 200, width: 8, height: 4, cfaPattern: [0, 1, 1, 2] }, o);

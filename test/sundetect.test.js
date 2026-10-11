@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const S = require('../sundetect.js');
+const S = require('../src/sundetect.js');
 
 // A lens frame over its image circle (luv space, row 0 = v 0), filled with
 // `base` and with `spots` ({x, y, r, v, rgb}) painted on.

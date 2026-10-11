@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
-const Scopes = require('../scopes.js');
+const Scopes = require('../src/scopes.js');
 
 const near = (a, b, eps = 1e-9) => Math.abs(a - b) <= eps;
 
