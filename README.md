@@ -1,56 +1,55 @@
-<p align="center"><img src="logo.svg" width="96" height="96" alt="Fisheye Print Extractor logo: two overlapping circles with their shared region cut away"></p>
+<p align="center"><img src="assets/banner.png" alt="Fisheye Print Extractor: Insta360 dual-fisheye photos to print-ready fisheye images"></p>
 
-# Fisheye Print Extractor
+<p align="center">
+  <a href="https://lxo96.github.io/Photo360/"><img src="https://img.shields.io/badge/Open_the_app-%E2%86%92-f0a04b?style=for-the-badge&labelColor=181818" alt="Open the app"></a>
+</p>
 
-A single static web page that turns an Insta360 dual-fisheye photo into a
-print-ready 2D fisheye image of one lens (or both, side by side).
+Turn a photo from an Insta360 360° camera into a real fisheye photograph —
+one lens, or both side by side — ready to print. Free, in your browser, and
+nothing is uploaded.
 
-## Why this exists
+## What it does
 
-An Insta360 X5 or ONE X shoots two overlapping fisheye circles onto one
-frame — one per lens, back to back — meant to be stitched into a 360°
-panorama. If instead you just want *one* fisheye photograph out of it (the
-classic circular "fisheye look," not a stitched sphere), two things stand in
-your way:
+- **One true fisheye per lens.** Each lens is cropped to exactly 180° with a
+  per-camera calibration, so nothing the other lens saw is repeated. Or go
+  wider or narrower.
+- **A real lens rim.** The camera crops off the glowing, fringed edge a
+  fisheye lens shows. This puts it back, lit by your photo's own light, with
+  sun glare and a gallery of rim looks.
+- **A full photo editor.** Raw `.dng` files, HDR bracket merging, white
+  balance per lens, tone, noise reduction and sharpening, and film looks
+  with real grain.
+- **Ready to print or share.** Full-resolution JPEG, PNG, Ultra HDR JPEG or
+  linear DNG, or print straight from the page.
 
-1. **Each lens sees more than a hemisphere.** The X5's lens covers roughly
-   210° and the ONE X's roughly 190°, not the 180° a single fisheye
-   photograph should show. The extra angle beyond 180° is the same real-world
-   wedge the *other* lens also captured, so cropping to exactly 180° removes
-   duplicated content, not real information.
-2. **The camera's own sensor crops off the lens's own edge.** Insta360's
-   hardware crops the image circle at the sensor's edge, discarding the
-   soft, flared, dispersed rim that a real fisheye photograph shows at its
-   circumference. Cropping to 180° alone leaves a photograph that ends in a
-   flat, hard-edged circle — correct in framing, but visibly not what a
-   fisheye lens actually renders.
+## Quick start
 
-This tool does both: it crops each lens to exactly 180° using a per-camera
-lens calibration, then synthesizes the missing rim — driven by the
-photograph's own content (its brightness and color right at the crop edge)
-— using a falloff shape numerically fitted against real Insta360 ONE X
-reference photographs. See "The edge preset" below for exactly how much to
-trust that synthesis.
+1. Open **[the app](https://lxo96.github.io/Photo360/)** in a desktop Chrome, Edge or Firefox.
+2. Drop one or more `.insp`, `.jpg` or `.dng` files from your Insta360 onto
+   the page.
+3. Level the horizon (drag a circle, or use **Straighten**), pick a rim look
+   under **Edge**, and adjust **Tone**.
+4. **Export** (Ctrl+Shift+E) or **Print** (Ctrl+P).
 
-## Running it
+Your photos never leave your computer: decoding, editing and export all
+happen in the browser, and the page works offline once it is open. Edits are
+remembered per photo, in your browser only.
 
-This is a static page: no build step, no package to install, no server-side
-code, and no network dependency once the page is open. Nothing you load is
-uploaded anywhere — all decoding, rendering and export happens in your
-browser.
+**Cameras.** The Insta360 X5 and ONE X are calibrated; other Insta360
+dual-fisheye cameras open with the X5's figure as a default (see
+[Calibration](#calibration)). Raw files must be uncompressed 16-bit DNGs, as
+the ONE X writes.
 
-- **Simplest:** double-click `index.html`. Everything works from `file://`
-  **except** the built-in parity self-check (`App.checkParity`, used only by
-  the test suite's browser-side half), which needs `fetch` and so needs the
-  page served over HTTP.
-- **To also enable that self-check**, serve the directory over HTTP, e.g.
-  `python -m http.server 8765` from the project root, then open
-  `http://localhost:8765/index.html`.
+### Browser
 
-Drop an `.insp`, `.jpg`, or `.dng` dual-fisheye file onto the page (or click
-to choose one) to get started.
+The renderer needs **WebGL2** with the `EXT_color_buffer_float` extension
+(required for the floating-point render targets the rim-glow pass uses). A
+current desktop Chrome, Edge, or Firefox has both. Without WebGL2 the page
+reports "This browser has no WebGL2 support"; without the float extension,
+"This GPU/browser lacks floating-point render targets (EXT_color_buffer_float),
+needed for the rim glow."
 
-### Several photos
+## Several photos
 
 Open or drop any number of files at once and they line up in a strip under
 the picture; click one to open it. Each photo keeps its own edits and undo
@@ -82,7 +81,7 @@ EV`).
   and the current Output settings (DNG only for raw photos, JPEG for the
   rest), one download each. Esc stops it.
 
-### HDR (bracket merge)
+## HDR bracket merge
 
 Raw (DNG) exposure brackets of a still scene — the same camera and second,
 different exposures (shutter time × ISO: the ONE X steps both) — are
@@ -100,20 +99,11 @@ its files each time it is opened (a second or two). JPEG / .insp brackets
 aren't merged, there is no alignment or ghost removal (use a still
 camera), and a merged photo can't be exported as DNG yet.
 
-### Browser requirement
-
-The renderer needs **WebGL2** with the `EXT_color_buffer_float` extension
-(required for the floating-point render targets the rim-glow pass uses). A
-current desktop Chrome, Edge, or Firefox has both. Without WebGL2 the page
-reports "This browser has no WebGL2 support"; without the float extension,
-"This GPU/browser lacks floating-point render targets (EXT_color_buffer_float),
-needed for the rim glow."
-
 ## The controls
 
 The header bar shows the open file and has an **Open…** button that is
 always there. The panel on the right is split into collapsible sections
-(Framing, Level, White balance for raw files only, Edge, Tone, Detail, Output). The
+(Framing, Level, White balance, Edge, Tone, Detail, Film, Output). The
 page remembers which sections are open along with your other settings. Every
 number beside a slider can be edited: type a value and press Enter, or click
 away, to apply it. Values outside a slider's range are clamped to it, and
@@ -153,8 +143,7 @@ while you type in a number box, and Ctrl+Z there undoes the typing.
 History records edits to the picture (Framing, Level, White balance, Edge,
 Tone, Detail), one step per finished change: a whole slider drag, a held
 arrow key, an Auto click. Open sections, the scopes and zoom are not edits.
-Each photo has its own history, kept while the page is open. `history.js` and `shortcuts.js` hold
-the logic and the table.
+Each photo has its own history, kept while the page is open.
 
 ### Scopes
 
@@ -381,8 +370,7 @@ highlights (often the sky's blue channel) are left out of what they measure.
 
 Internally, `wb.js` converts Kelvin/tint to a camera-space neutral triple
 (green fixed at 1, on the Planckian locus for tint 0) via the file's own
-`ColorMatrix1`, then feeds that triple through exactly the same shader path
-Task 16 established: the renderer divides the demosaiced pixel by it, so a
+`ColorMatrix1`, then feeds that triple through the raw shader path: the renderer divides the demosaiced pixel by it, so a
 *lower* value in a channel makes that channel *stronger* in the image.
 Because white balance is applied in the fragment shader (demosaic, white
 balance, colour matrix and gamma all happen live, every frame, from the
@@ -503,9 +491,7 @@ fallbacks, and `App.developInfo()` shows the path in use.
 
 ### Film
 
-A film look on top of your edit (spec
-`docs/superpowers/specs/2026-10-03-film-simulation-design.md`). Pick a
-**stock** (Off by default):
+A film look on top of your edit. Pick a **stock** (Off by default):
 
 - colour negative: **Portrait 160** (soft, natural), **Golden 200** (warm),
   **Vivid 100** (saturated, very fine grain), **Pastel 400** (soft, lifted
@@ -582,7 +568,36 @@ shows the photo with Film off too.
   browser's own menu gets the same page. With no file loaded, Ctrl+P prints
   the page as usual.
 
-## Calibration
+## Under the hood
+
+### Why this exists
+
+An Insta360 X5 or ONE X shoots two overlapping fisheye circles onto one
+frame — one per lens, back to back — meant to be stitched into a 360°
+panorama. If instead you just want *one* fisheye photograph out of it (the
+classic circular "fisheye look," not a stitched sphere), two things stand in
+your way:
+
+1. **Each lens sees more than a hemisphere.** The X5's lens covers roughly
+   210° and the ONE X's roughly 190°, not the 180° a single fisheye
+   photograph should show. The extra angle beyond 180° is the same real-world
+   wedge the *other* lens also captured, so cropping to exactly 180° removes
+   duplicated content, not real information.
+2. **The camera's own sensor crops off the lens's own edge.** Insta360's
+   hardware crops the image circle at the sensor's edge, discarding the
+   soft, flared, dispersed rim that a real fisheye photograph shows at its
+   circumference. Cropping to 180° alone leaves a photograph that ends in a
+   flat, hard-edged circle — correct in framing, but visibly not what a
+   fisheye lens actually renders.
+
+This tool does both: it crops each lens to exactly 180° using a per-camera
+lens calibration, then synthesizes the missing rim — driven by the
+photograph's own content (its brightness and color right at the crop edge)
+— using a falloff shape numerically fitted against real Insta360 ONE X
+reference photographs. See "The edge preset and its known limits" below for exactly how much to
+trust that synthesis.
+
+### Calibration
 
 Turning "180° field of view" into an actual crop radius requires knowing
 how many degrees of the real world one physical lens's image circle spans
@@ -618,7 +633,7 @@ X5 never writes that shape, so the tool falls back to the ONE X figure
 instead, and says plainly in the UI that the camera wasn't identified and
 the number is a guess from the file's shape, not a read tag.
 
-## Export sizing
+### Export sizing
 
 Exports are sized from the **source pixels actually available**, never
 upscaled to some invented target resolution:
@@ -649,7 +664,7 @@ upscaled to some invented target resolution:
   on-screen size readout always shows the ratio you'll actually get, e.g.
   "1.86:1", so a departure from 2:1 is visible rather than silent.
 
-## Raw (DNG) input
+### Raw (DNG) input
 
 The page also accepts Insta360 ONE X raw files (`.dng`), decoded entirely by
 `dng.js` — pure byte parsing, no dependency, working the same from `file://`
@@ -715,7 +730,7 @@ renders the same clipped sky a plausible pale white/blue instead.
 **Per-lens white balance, not a single global one.** See "White balance" in
 "The controls" above.
 
-## The edge preset and its known limits
+### The edge preset and its known limits
 
 The rim-glow shape shipped as `Edge.PRESETS.x1classic` (`edge.js`) was
 fitted numerically by `tools/fit-x1-edge.py` against two real Insta360 ONE X
@@ -761,7 +776,18 @@ and the sensitivity numbers behind each one are documented in the long
 comment above `PRESETS` in `edge.js`, and reproduced in detail by running
 `tools/fit-x1-edge.py` itself (it prints its own sensitivity table).
 
-## Running the tests
+## Running it locally
+
+This is a static page: no build step, no package to install, no server-side
+code. Clone the repository and either:
+
+- double-click `index.html`. Everything works from `file://` **except** the
+  built-in parity self-check (`App.checkParity`, used only by the test
+  suite's browser-side half), which needs `fetch`; or
+- serve the directory over HTTP, e.g. `python -m http.server 8765` from the
+  project root, then open `http://localhost:8765/index.html`.
+
+### Running the tests
 
 ```
 npm test
@@ -783,3 +809,7 @@ depend on `Testfiles/` and passes on a bare clone.
 `tools/fit-x1-edge.py` and `tools/verify-rim.py` are developer tools, not
 part of the test suite — they need Python 3 with `numpy`, `Pillow`, and (for
 the fitter only) `scipy`, and they too read from `Testfiles/Outputs/`.
+
+## License
+
+[GPL-3.0](LICENSE). Not affiliated with or endorsed by Insta360.

@@ -5,3 +5,5 @@ scratch/
 
 # Large local-only test media (85 MB); see README
 Testfiles/
+.claude/
+docs/superpowers/

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="Fisheye Print Extractor: Insta360 dual-fisheye photos to print-ready fisheye prints, in your browser">
+  <title>Fisheye Print Extractor</title>
+  <!-- The logo mark at banner scale: two lens circles (r = 118, centres 131
+       apart, the logo's 9 : 10), filled even-odd so the region both lenses
+       saw is cut out — and here picked out in the app's one accent colour.
+       The dashed rings mark each lens's full ~210° circle, beyond the 180°
+       crop. -->
+  <rect width="1280" height="640" fill="#101010"/>
+  <g fill="none" stroke="#3a3a3a" stroke-width="2" stroke-dasharray="3 9">
+    <circle cx="574.5" cy="232" r="138"/>
+    <circle cx="705.5" cy="232" r="138"/>
+  </g>
+  <path fill="#ededed" fill-rule="evenodd" d="M456.5 232a118 118 0 1 0 236 0a118 118 0 1 0-236 0ZM587.5 232a118 118 0 1 0 236 0a118 118 0 1 0-236 0Z"/>
+  <path fill="#f0a04b" d="M640 133.85A118 118 0 0 1 640 330.15A118 118 0 0 1 640 133.85Z"/>
+  <g font-family="Inter, 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif" text-anchor="middle">
+    <text x="640" y="462" font-size="62" font-weight="700" letter-spacing="-1" fill="#ededed">Fisheye Print Extractor</text>
+    <text x="640" y="516" font-size="26" fill="#8a8a8a">Insta360 dual-fisheye photos → print-ready fisheye images</text>
+    <text x="640" y="578" font-size="18" letter-spacing="3" fill="#f0a04b">RUNS IN YOUR BROWSER · NOTHING UPLOADED</text>
+  </g>
+</svg>
