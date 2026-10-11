@@ -599,6 +599,7 @@
     'Set the film stock to Off to go on.';
 
   function render() {
+    updateRevertButtons();
     if (!ctx || !state.sourceLensSize) return;
     const m = stageMetrics();
     const g = GL.exportGeometry(state);
@@ -1796,6 +1797,63 @@
     });
   }
 
+  // -- Revert buttons (one per section header, Settings.REVERT_SECTIONS) --
+  // Shown only while the section differs from its defaults: the built-in
+  // DEFAULTS, with the FOV kept in this lens's range, Sensors kept to lens A
+  // for a single-lens file, and white balance at the photo's as-shot value.
+  // Each revert is one undo step (scheduleSave).
+  const REVERT_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">'
+    + '<path d="M3.5 6.5A5 5 0 1 1 3 9.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>'
+    + '<path d="M2.2 2.8v4.2h4.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  const revertBtns = new Map();
+  for (const el of panelEls) {
+    const sec = el.dataset.panel;
+    if (!Settings.REVERT_SECTIONS.includes(sec)) continue;
+    const summary = el.querySelector(':scope > summary');
+    const name = (summary.firstChild && summary.firstChild.nodeType === 3 ? summary.firstChild.textContent : summary.textContent).trim();
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'revert';
+    b.hidden = true;
+    b.title = 'Reset ' + name;
+    b.setAttribute('aria-label', 'Reset ' + name);
+    b.innerHTML = REVERT_ICON;
+    // Inside the <summary>: keep the click from opening or closing it.
+    b.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); revertSection(sec); });
+    summary.appendChild(b);
+    revertBtns.set(sec, b);
+  }
+  function sectionDefaults() {
+    const d = JSON.parse(JSON.stringify(DEFAULTS));
+    const r = Lens.fovRangeFor(state.thetaMaxDeg);
+    d.fovDeg = Math.min(r[1], Math.max(r[0], d.fovDeg));
+    if (state.lensCount === 1) d.sensors = 'A';
+    if (state.isRaw && state.rawAsShotNeutral) {
+      const kt = asShotWb();
+      d.rawWb = { A: { kelvin: kt.kelvin, tint: kt.tint }, B: { kelvin: kt.kelvin, tint: kt.tint } };
+    }
+    return d;
+  }
+  function updateRevertButtons() {
+    const d = sectionDefaults();
+    for (const [sec, b] of revertBtns) b.hidden = !Settings.sectionDiffers(state, d, sec);
+  }
+  function revertSection(sec) {
+    if (sec === 'whiteBalance') { wbResetEl.click(); updateRevertButtons(); return; }
+    Settings.resetSection(state, sectionDefaults(), sec);
+    syncControlsFromState();
+    if (sec === 'output') {
+      hdrHeadroomEl.value = String(state.hdrHeadroom);
+      padToSensorSquareEl.checked = state.padToSensorSquare;
+      updateExportLabel();
+    }
+    if (sec === 'level') pokeGuides();
+    render();
+    updateExportSize();
+    scheduleSave();
+    updateRevertButtons();
+  }
+
   // Reflects `state` (whatever loadSettings just merged in, or the built-in
   // defaults if there was nothing to load) into every control's value and
   // its adjacent readout.
@@ -2657,10 +2715,11 @@
 
   const hdrHeadroomRowEl = document.getElementById('hdrHeadroomRow');
   const hdrHeadroomEl = document.getElementById('hdrHeadroom');
-  hdrHeadroomEl.addEventListener('input', () => { state.hdrHeadroom = Number(hdrHeadroomEl.value); });
+  hdrHeadroomEl.addEventListener('input', () => { state.hdrHeadroom = Number(hdrHeadroomEl.value); updateRevertButtons(); });
   formatEl.addEventListener('input', () => {
     state.format = formatEl.value;
     updateExportLabel();
+    updateRevertButtons();
   });
 
   padToSensorSquareEl.addEventListener('input', () => {

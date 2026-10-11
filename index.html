@@ -271,6 +271,14 @@
     margin-left: auto; font-size: 9.5px; letter-spacing: .06em; color: var(--mut);
     border: 1px solid var(--line-2); border-radius: 2px; padding: 0 4px; line-height: 14px;
   }
+  /* The section's revert button (app.js), at the header's right end. */
+  details.sec > summary .revert {
+    margin-left: auto; display: grid; place-items: center; width: 20px; height: 20px; padding: 0;
+    border: 1px solid transparent; border-radius: 3px; background: none; color: var(--mut); cursor: pointer;
+  }
+  details.sec > summary .revert[hidden] { display: none; }
+  details.sec > summary .tag + .revert { margin-left: 0; }
+  details.sec > summary .revert:hover { color: var(--fg); border-color: var(--line-2); }
   details.sec > .body { padding: 6px 12px 10px; }
   /* The Edge panel: the rim look gallery, then its sliders under Adjust. */
 /* The Film panel's stock chips. */

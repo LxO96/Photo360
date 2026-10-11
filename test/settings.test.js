@@ -370,3 +370,91 @@ test('film settings: persisted, enums and ranges validated', () => {
   assert.deepStrictEqual(Settings.ENUMS.stock, ['off', 'portrait160', 'golden200', 'vivid100', 'pastel400', 'verdant400', 'tungsten800', 'classic400bw', 'smooth400bw']);
   assert.deepStrictEqual(Settings.ENUMS.gauge, ['s8', 's16', '35', '120']);
 });
+
+// Section revert buttons: each panel section's fields, whether they differ
+// from the defaults, and resetting them.
+const SECTION_DEFAULTS = {
+  fovDeg: 180, sensors: 'both', orientation: 'side', swap: false, gapFrac: 0, marginFrac: 0,
+  rollDeg: 0, nudgeDeg: { A: 0, B: 0 },
+  isRaw: false,
+  rawWb: { A: { kelvin: 5200, tint: 3 }, B: { kelvin: 5200, tint: 3 } },
+  jpegWb: { A: { temp: 0, tint: 0 }, B: { temp: 0, tint: 0 } },
+  edge: { edgeIntensity: 0.26, castColor: [1, 0.9, 0.8] },
+  sun: { on: true, status: 'pending', dir: [0, 0, 1], strength: 1, tint: [1, 1, 1] },
+  tone: { exposureEv: 0, contrast: 0, mono: false },
+  detail: { sharpenAmount: 0, sharpenRadius: 1 },
+  film: { stock: 'off', gauge: '35', grain: 1, halation: 0.5 },
+  format: 'jpeg', quality: 98, hdrHeadroom: 2, padToSensorSquare: false,
+  panels: { tone: true },
+};
+const sectionState = () => JSON.parse(JSON.stringify(SECTION_DEFAULTS));
+
+test('every revertible section is a panel section; Edge Adjust has none of its own', () => {
+  for (const s of Settings.REVERT_SECTIONS) assert.ok(Settings.PANEL_SECTIONS.includes(s), s);
+  assert.deepStrictEqual(Settings.REVERT_SECTIONS,
+    ['framing', 'level', 'whiteBalance', 'edge', 'tone', 'detail', 'film', 'output']);
+});
+
+test('sectionDiffers: false at the defaults, true once any field of that section moves', () => {
+  const s = sectionState();
+  for (const sec of Settings.REVERT_SECTIONS) assert.strictEqual(Settings.sectionDiffers(s, SECTION_DEFAULTS, sec), false, sec);
+  const moves = {
+    framing: (x) => { x.swap = true; }, level: (x) => { x.nudgeDeg.B = 0.5; },
+    whiteBalance: (x) => { x.jpegWb.A.tint = 4; }, edge: (x) => { x.edge.castColor[2] = 0.7; },
+    tone: (x) => { x.tone.mono = true; }, detail: (x) => { x.detail.sharpenRadius = 1.5; },
+    film: (x) => { x.film.gauge = 's16'; }, output: (x) => { x.quality = 90; },
+  };
+  for (const [sec, move] of Object.entries(moves)) {
+    const x = sectionState();
+    move(x);
+    for (const other of Settings.REVERT_SECTIONS) {
+      assert.strictEqual(Settings.sectionDiffers(x, SECTION_DEFAULTS, other), other === sec, sec + ' -> ' + other);
+    }
+  }
+});
+
+test('sectionDiffers: Edge owns the sun glare switch and strength, not where the sun is', () => {
+  const x = sectionState();
+  x.sun.dir = [0.3, 0.4, 0.866]; x.sun.status = 'auto'; x.sun.tint = [1, 0.9, 0.8];
+  assert.strictEqual(Settings.sectionDiffers(x, SECTION_DEFAULTS, 'edge'), false);
+  x.sun.on = false;
+  assert.strictEqual(Settings.sectionDiffers(x, SECTION_DEFAULTS, 'edge'), true);
+});
+
+test('sectionDiffers: white balance compares the raw Kelvin/tint for a raw photo, the JPEG sliders otherwise', () => {
+  const x = sectionState();
+  x.rawWb.A.kelvin = 6000;
+  assert.strictEqual(Settings.sectionDiffers(x, SECTION_DEFAULTS, 'whiteBalance'), false);
+  x.isRaw = true;
+  assert.strictEqual(Settings.sectionDiffers(x, SECTION_DEFAULTS, 'whiteBalance'), true);
+  x.rawWb.A.kelvin = 5200;
+  x.jpegWb.B.temp = 10;
+  assert.strictEqual(Settings.sectionDiffers(x, SECTION_DEFAULTS, 'whiteBalance'), false);
+});
+
+test('sectionDiffers ignores key order (edge values re-built from a look or stored blob)', () => {
+  const x = sectionState();
+  x.edge = { castColor: [1, 0.9, 0.8], edgeIntensity: 0.26 };
+  assert.strictEqual(Settings.sectionDiffers(x, SECTION_DEFAULTS, 'edge'), false);
+});
+
+test('resetSection restores only that section, as copies of the defaults', () => {
+  const x = sectionState();
+  x.tone.exposureEv = 1.2; x.tone.mono = true; x.rollDeg = 12; x.film.stock = 'golden200';
+  x.sun.on = false; x.sun.strength = 1.6; x.sun.dir = [0.3, 0.4, 0.866]; x.edge.edgeIntensity = 2;
+  Settings.resetSection(x, SECTION_DEFAULTS, 'tone');
+  assert.deepStrictEqual(x.tone, SECTION_DEFAULTS.tone);
+  assert.notStrictEqual(x.tone, SECTION_DEFAULTS.tone);
+  assert.strictEqual(x.rollDeg, 12);
+  assert.strictEqual(x.film.stock, 'golden200');
+  Settings.resetSection(x, SECTION_DEFAULTS, 'edge');
+  assert.deepStrictEqual(x.edge, SECTION_DEFAULTS.edge);
+  assert.notStrictEqual(x.edge.castColor, SECTION_DEFAULTS.edge.castColor);
+  assert.strictEqual(x.sun.on, true);
+  assert.strictEqual(x.sun.strength, 1);
+  assert.deepStrictEqual(x.sun.dir, [0.3, 0.4, 0.866], 'the found sun stays');
+  x.film.grain = 0.2;
+  Settings.resetSection(x, SECTION_DEFAULTS, 'film');
+  assert.deepStrictEqual(x.film, SECTION_DEFAULTS.film);
+  for (const sec of Settings.REVERT_SECTIONS) assert.strictEqual(Settings.sectionDiffers(x, SECTION_DEFAULTS, sec), sec === 'level', sec);
+});

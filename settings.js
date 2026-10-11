@@ -373,8 +373,49 @@
     return Math.min(max, Math.max(min, v));
   }
 
+  // The revert button in each panel section's header: the state fields
+  // the section owns (dotted paths reach inside an object), whether any of
+  // them differs from `defaults`, and putting them back. Edge Adjust shares
+  // Edge's. White balance owns the raw Kelvin/tint on a raw photo and the
+  // JPEG sliders otherwise; the caller's defaults hold the as-shot values.
+  // Edge owns the sun glare switch and strength, not where the sun was found.
+  const REVERT_SECTIONS = ['framing', 'level', 'whiteBalance', 'edge', 'tone', 'detail', 'film', 'output'];
+  function sectionFields(section, state) {
+    switch (section) {
+      case 'framing': return ['fovDeg', 'sensors', 'orientation', 'swap', 'gapFrac', 'marginFrac'];
+      case 'level': return ['rollDeg', 'nudgeDeg'];
+      case 'whiteBalance': return [state.isRaw ? 'rawWb' : 'jpegWb'];
+      case 'edge': return ['edge', 'sun.on', 'sun.strength'];
+      case 'tone': return ['tone'];
+      case 'detail': return ['detail'];
+      case 'film': return ['film'];
+      case 'output': return ['format', 'quality', 'hdrHeadroom', 'padToSensorSquare'];
+      default: return [];
+    }
+  }
+  function sameValue(a, b) {
+    if (a === b) return true;
+    if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+    const ka = Object.keys(a), kb = Object.keys(b);
+    return ka.length === kb.length && ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && sameValue(a[k], b[k]));
+  }
+  function sectionDiffers(state, defaults, section) {
+    return sectionFields(section, state).some((f) => !sameValue(valueAt(state, f), valueAt(defaults, f)));
+  }
+  function resetSection(state, defaults, section) {
+    for (const f of sectionFields(section, state)) {
+      const keys = f.split('.'), last = keys.pop();
+      let o = state;
+      for (const k of keys) o = o[k] = Object.assign({}, o[k]);
+      const v = valueAt(defaults, f);
+      o[last] = v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v;
+    }
+    return state;
+  }
+
   return {
     valueAt, visibleLenses, fitScopeScale, STORAGE_KEY, PERSISTED_KEYS, RANGES, ENUMS, PANEL_SECTIONS, DEFAULT_PANELS,
+    REVERT_SECTIONS, sectionFields, sectionDiffers, resetSection,
     sanitize, serialize, save, load,
     normalizeAngleDeltaDeg, rollForDrag, dragSign, resolveSwapForLoad,
     parseReadout, decimalsForStep, nudgeSliderValue,

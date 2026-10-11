@@ -118,7 +118,9 @@ page remembers which sections are open along with your other settings. Every
 number beside a slider can be edited: type a value and press Enter, or click
 away, to apply it. Values outside a slider's range are clamped to it, and
 Escape cancels. Double-click a slider to reset it to its default; the
-white-balance sliders reset to the file's as-shot values. With a slider or its number focused, ← and → nudge the
+white-balance sliders reset to the file's as-shot values. A section that
+differs from its defaults shows a ↺ button at the right of its header: it
+resets the whole section (one undo step). With a slider or its number focused, ← and → nudge the
 value. Shift makes the step coarser, Ctrl makes it finer, and Page Up/Down
 make a coarse step. ↑ and ↓ move to the previous or next slider. **Export** sits at the bottom of the panel, next to the
 exact pixel size and aspect ratio it will write.
